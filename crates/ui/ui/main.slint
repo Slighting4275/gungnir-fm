@@ -4,7 +4,7 @@
 // window in slint-lsp Live-Preview / slint-viewer with no Rust attached. At runtime
 // the Rust controller (crates/ui/src/controller.rs) replaces it with live models.
 
-import { LineEdit } from "std-widgets.slint";
+import { LineEdit, Button, ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { FileRow, PaneInfo, TabInfo, Crumb, PlaceItem, MountItem, TreeRow, TransferRow, StatusInfo, KeyValue, DeviceItem, CustomActionItem } from "types.slint";
 import { Glyph, ToolButton, ZoomControl } from "widgets.slint";
@@ -139,6 +139,14 @@ export component AppWindow inherits Window {
     in-out property <string> dialog-input;
     in-out property <image> preview-image;
     in-out property <string> preview-detail;
+    in-out property <bool> terminal-open: false;
+    in property <string> terminal-cwd: "";
+    in property <string> terminal-output: "";
+    in-out property <string> terminal-input: "";
+    in-out property <bool> dialog-opt1: false;
+    in-out property <bool> dialog-opt2: false;
+    in-out property <string> dialog-extra1: "";
+    in-out property <string> dialog-extra2: "";
 
     // ---- Callbacks to the Rust controller -----------------------------------------
     callback navigate(pane: int, location: string);
@@ -171,6 +179,9 @@ export component AppWindow inherits Window {
     callback zoom-changed(zoom: float);
     callback dropped(src-pane: int, src-index: int, dst-pane: int, dst-index: int, copy: bool);
     pure callback drag-data(pane: int, index: int) -> data-transfer;
+    callback terminal-run(cmd: string);
+    callback terminal-clear();
+    callback dialog-custom-action(action: string, opt1: bool, opt2: bool, extra1: string, extra2: string);
 
     // Internal drag and drop: where the current drag started.
     in-out property <bool> drag-active: false;
@@ -244,6 +255,10 @@ export component AppWindow inherits Window {
             MenuSeparator { }
             MenuItem { title: "Select All (Ctrl+A)"; activated => { root.command("select-all"); } }
             MenuItem { title: "Filter…"; shortcut: @keys(Control + F); activated => { root.focus-filter(); } }
+            MenuSeparator { }
+            MenuItem { title: "Find & Grep Files…"; shortcut: @keys(Control + Shift + F); activated => { root.command("deep-search"); } }
+            MenuItem { title: "Batch Rename…"; activated => { root.command("batch-rename"); } }
+            MenuItem { title: "Compare Panes"; shortcut: @keys(Control + Shift + D); activated => { root.command("compare-panes"); } }
         }
         Menu {
             title: "View";
@@ -258,6 +273,7 @@ export component AppWindow inherits Window {
             MenuItem { title: "Normal Size (100%)"; shortcut: @keys(Control + "0"); activated => { root.zoom-level = 1.0; root.zoom-changed(1.0); } }
             MenuSeparator { }
             MenuItem { title: "Dual Pane"; shortcut: @keys(F3); checkable: true; checked <=> root.dual-pane; activated => { root.command("toggle-dual"); } }
+            MenuItem { title: "Terminal Drawer"; shortcut: @keys(F4); checkable: true; checked <=> root.terminal-open; activated => { root.command("toggle-terminal"); } }
             MenuItem { title: "Sidebar"; shortcut: @keys(F9); checkable: true; checked <=> root.sidebar-visible; activated => { root.command("toggle-sidebar"); } }
             MenuItem { title: "Hidden Files"; shortcut: @keys(Control + H); checkable: true; checked <=> root.show-hidden; activated => { root.command("toggle-hidden"); } }
             MenuItem { title: "Sidebar: Places"; activated => { root.sidebar-mode = 0; root.sidebar-mode-changed(0); } }
@@ -308,6 +324,9 @@ export component AppWindow inherits Window {
                 if root.dual-pane { root.activate-pane(1 - p); }
                 return accept;
             }
+            if e.text == Key.F4 { root.command("toggle-terminal"); return accept; }
+            if e.modifiers.control && e.modifiers.shift && (e.text == "f" || e.text == "F") { root.command("deep-search"); return accept; }
+            if e.modifiers.control && e.modifiers.shift && (e.text == "d" || e.text == "D") { root.command("compare-panes"); return accept; }
             if e.modifiers.control && e.text == Key.Tab {
                 root.tab-cycle(p, e.modifiers.shift ? -1 : 1);
                 return accept;
@@ -543,6 +562,72 @@ export component AppWindow inherits Window {
                 action(id, a) => { root.transfer-action(id, a); }
             }
 
+            if root.terminal-open: Rectangle {
+                height: 180px;
+                background: #0f172a;
+                border-width: 1px;
+                border-color: Theme.border-strong;
+                VerticalLayout {
+                    padding: 6px;
+                    spacing: 4px;
+                    HorizontalLayout {
+                        height: 24px;
+                        spacing: 8px;
+                        Text {
+                            text: ">_ Terminal: " + root.terminal-cwd;
+                            color: #94a3b8;
+                            font-family: "monospace";
+                            font-size: 11px;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                            overflow: elide;
+                        }
+                        Button {
+                            text: "Clear";
+                            clicked => { root.terminal-clear(); }
+                        }
+                        Button {
+                            text: "Close (F4)";
+                            clicked => { root.terminal-open = false; root.command("toggle-terminal"); }
+                        }
+                    }
+                    ScrollView {
+                        vertical-stretch: 1;
+                        Text {
+                            text: root.terminal-output;
+                            color: #f1f5f9;
+                            font-family: "monospace";
+                            font-size: 11px;
+                            wrap: word-wrap;
+                        }
+                    }
+                    HorizontalLayout {
+                        height: 28px;
+                        spacing: 6px;
+                        Text {
+                            text: "$";
+                            color: Theme.accent;
+                            font-family: "monospace";
+                            font-size: 12px;
+                            font-weight: 700;
+                            vertical-alignment: center;
+                        }
+                        LineEdit {
+                            text <=> root.terminal-input;
+                            placeholder-text: "Type shell command and press Enter (e.g. ls, git status, cargo test, mkdir…)";
+                            font-family: "monospace";
+                            font-size: 11px;
+                            accepted(cmd) => {
+                                if cmd != "" {
+                                    root.terminal-run(cmd);
+                                    self.text = "";
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             StatusBar {
                 info: root.status;
                 active-transfers: root.active-transfers;
@@ -561,11 +646,16 @@ export component AppWindow inherits Window {
             message: root.dialog-message;
             rows: root.dialog-rows;
             input <=> root.dialog-input;
+            opt1 <=> root.dialog-opt1;
+            opt2 <=> root.dialog-opt2;
+            extra1 <=> root.dialog-extra1;
+            extra2 <=> root.dialog-extra2;
             preview-image: root.preview-image;
             preview-detail: root.preview-detail;
             accept(t) => { root.dialog-accept(t); }
             cancel => { root.dialog-cancel(); }
             choose(i) => { root.dialog-choose(i); }
+            custom-action(a) => { root.dialog-custom-action(a, root.dialog-opt1, root.dialog-opt2, root.dialog-extra1, root.dialog-extra2); }
         }
     }
 }

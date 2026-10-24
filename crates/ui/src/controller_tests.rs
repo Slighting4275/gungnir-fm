@@ -399,3 +399,240 @@ fn test_zoom_command_and_bounds() {
     h.send(Command::Zoom(-5.0)); // Should clamp safely
     let _ = h.drain_for(Duration::from_millis(50));
 }
+
+#[test]
+fn test_terminal_drawer_toggle_and_commands() {
+    let tmp = std::env::temp_dir().join(format!("gungnir_test_term_{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&tmp);
+    let sub = tmp.join("subfolder");
+    let _ = std::fs::create_dir_all(&sub);
+
+    let tmp_str = tmp.to_str().unwrap_or_else(|| panic!("valid utf8"));
+    let h = start(tmp_str, tmp_str, MockConfig::default());
+    let _ = h.drain_for(Duration::from_millis(100));
+
+    // Toggle terminal open
+    h.send(Command::Run("toggle-terminal".into()));
+    let term_updates = h.until(Duration::from_millis(500), |u| {
+        matches!(u, Update::Terminal { open, .. } if *open)
+    });
+    assert!(!term_updates.is_empty(), "terminal should open");
+
+    // Run shell command
+    h.send(Command::TerminalRun("echo gungnir_test_output_123".into()));
+    let out_updates = h.until(Duration::from_millis(1500), |u| {
+        matches!(u, Update::Terminal { output, .. } if output.contains("gungnir_test_output_123"))
+    });
+    assert!(!out_updates.is_empty(), "terminal should receive output");
+
+    // Clear output
+    h.send(Command::TerminalClear);
+    let clear_updates = h.until(Duration::from_millis(500), |u| {
+        matches!(u, Update::Terminal { output, .. } if output.is_empty())
+    });
+    assert!(!clear_updates.is_empty(), "terminal should clear output");
+
+    // Test cd command
+    h.send(Command::TerminalRun("cd subfolder".into()));
+    let cd_updates = h.until(Duration::from_millis(500), |u| {
+        matches!(u, Update::Terminal { cwd, .. } if cwd.ends_with("subfolder"))
+    });
+    assert!(!cd_updates.is_empty(), "terminal cwd should update on cd");
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn test_deep_recursive_search_and_grep() {
+    let tmp = std::env::temp_dir().join(format!("gungnir_test_search_{}", std::process::id()));
+    let nested = tmp.join("alpha").join("beta");
+    let _ = std::fs::create_dir_all(&nested);
+    let file = nested.join("target_file.txt");
+    std::fs::write(&file, "magic_marker_line_456\nother text\n").unwrap_or_else(|e| panic!("{e}"));
+
+    let tmp_str = tmp.to_str().unwrap_or_else(|| panic!("valid utf8"));
+    let h = start(tmp_str, tmp_str, MockConfig::default());
+    let _ = h.drain_for(Duration::from_millis(100));
+
+    // Open search dialog
+    h.send(Command::Run("deep-search".into()));
+    let search_dialog = h.until(Duration::from_millis(500), |u| {
+        matches!(u, Update::Dialog(d) if matches!(d.kind, crate::DialogKind::Search))
+    });
+    assert!(!search_dialog.is_empty(), "search dialog should open");
+
+    // Search by filename
+    h.send(Command::DialogCustomAction {
+        action: "search".into(),
+        opt1: false,
+        opt2: false,
+        extra1: "target".into(),
+        extra2: "".into(),
+    });
+    let name_results = h.until(Duration::from_millis(1500), |u| {
+        matches!(u, Update::Dialog(d) if d.rows.iter().any(|(name, _)| name == "target_file.txt"))
+    });
+    assert!(!name_results.is_empty(), "should find target_file.txt by filename");
+
+    // Search by content grep
+    h.send(Command::DialogCustomAction {
+        action: "search".into(),
+        opt1: true,
+        opt2: false,
+        extra1: "magic_marker".into(),
+        extra2: "".into(),
+    });
+    let grep_results = h.until(Duration::from_millis(1500), |u| {
+        matches!(u, Update::Dialog(d) if d.rows.iter().any(|(_, detail)| detail.contains("magic_marker")))
+    });
+    assert!(!grep_results.is_empty(), "should find content match via grep");
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn test_batch_rename_preview_and_apply() {
+    let tmp = std::env::temp_dir().join(format!("gungnir_test_rename_{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&tmp);
+    let f1 = tmp.join("test_item_1.txt");
+    let f2 = tmp.join("test_item_2.txt");
+    std::fs::write(&f1, "a").unwrap_or_else(|e| panic!("{e}"));
+    std::fs::write(&f2, "b").unwrap_or_else(|e| panic!("{e}"));
+
+    let tmp_str = tmp.to_str().unwrap_or_else(|| panic!("valid utf8"));
+    let h = start(tmp_str, tmp_str, MockConfig::default());
+    let _ = h.drain_for(Duration::from_millis(150));
+
+    // Select all items
+    h.send(Command::Run("select-all".into()));
+    let _ = h.drain_for(Duration::from_millis(50));
+
+    // Trigger batch rename
+    h.send(Command::Run("batch-rename".into()));
+    let rename_dialog = h.until(Duration::from_millis(500), |u| {
+        matches!(u, Update::Dialog(d) if matches!(d.kind, crate::DialogKind::BatchRename))
+    });
+    assert!(!rename_dialog.is_empty(), "batch rename dialog should open");
+
+    // Preview find/replace
+    h.send(Command::DialogCustomAction {
+        action: "preview-rename".into(),
+        opt1: false,
+        opt2: false,
+        extra1: "test_item".into(),
+        extra2: "renamed_item".into(),
+    });
+    let preview_updates = h.until(Duration::from_millis(500), |u| {
+        matches!(u, Update::Dialog(d) if d.rows.iter().any(|(_, new_n)| new_n.starts_with("renamed_item")))
+    });
+    assert!(!preview_updates.is_empty(), "preview should show renamed_item");
+
+    // Apply batch rename
+    h.send(Command::DialogCustomAction {
+        action: "apply-batch-rename".into(),
+        opt1: false,
+        opt2: false,
+        extra1: "".into(),
+        extra2: "".into(),
+    });
+    let close = h.until(Duration::from_millis(1000), |u| matches!(u, Update::CloseDialog));
+    assert!(!close.is_empty(), "dialog should close after apply");
+
+    // Allow background op to finish
+    let _ = h.drain_for(Duration::from_millis(100));
+    assert!(tmp.join("renamed_item_1.txt").exists());
+    assert!(tmp.join("renamed_item_2.txt").exists());
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn test_pane_comparison_and_sync() {
+    let tmp = std::env::temp_dir().join(format!("gungnir_test_compare_{}", std::process::id()));
+    let left = tmp.join("left");
+    let right = tmp.join("right");
+    let _ = std::fs::create_dir_all(&left);
+    let _ = std::fs::create_dir_all(&right);
+
+    std::fs::write(left.join("common.txt"), "shared").unwrap_or_else(|e| panic!("{e}"));
+    std::fs::write(right.join("common.txt"), "shared").unwrap_or_else(|e| panic!("{e}"));
+    std::fs::write(left.join("left_unique.txt"), "left").unwrap_or_else(|e| panic!("{e}"));
+    std::fs::write(right.join("right_unique.txt"), "right").unwrap_or_else(|e| panic!("{e}"));
+
+    let left_str = left.to_str().unwrap_or_else(|| panic!("valid utf8"));
+    let right_str = right.to_str().unwrap_or_else(|| panic!("valid utf8"));
+    let h = start(left_str, right_str, MockConfig::default());
+    let _ = h.drain_for(Duration::from_millis(200));
+
+    // Open comparison dialog
+    h.send(Command::Run("compare-panes".into()));
+    let compare_dialog = h.until(Duration::from_millis(800), |u| {
+        matches!(u, Update::Dialog(d) if matches!(d.kind, crate::DialogKind::ComparePanes))
+    });
+    assert!(!compare_dialog.is_empty(), "compare dialog should open");
+
+    // Verify row contents reflect Left and Right differences
+    let last = compare_dialog.last().unwrap_or_else(|| panic!("dialog update"));
+    if let Update::Dialog(d) = last {
+        assert!(d.rows.iter().any(|(k, _)| k.contains("[LEFT ONLY] left_unique.txt")));
+        assert!(d.rows.iter().any(|(k, _)| k.contains("[RIGHT ONLY] right_unique.txt")));
+        assert!(d.rows.iter().any(|(k, _)| k.contains("[IDENTICAL] common.txt")));
+    } else {
+        panic!("expected Dialog update");
+    }
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn test_conflict_detection_and_resolution() {
+    let tmp = std::env::temp_dir().join(format!("gungnir_test_conflict_{}", std::process::id()));
+    let left = tmp.join("left");
+    let right = tmp.join("right");
+    let _ = std::fs::create_dir_all(&left);
+    let _ = std::fs::create_dir_all(&right);
+
+    let left_file = left.join("collision.txt");
+    let right_file = right.join("collision.txt");
+    std::fs::write(&left_file, "new_source_content").unwrap_or_else(|e| panic!("{e}"));
+    std::fs::write(&right_file, "old_target_content").unwrap_or_else(|e| panic!("{e}"));
+
+    let left_str = left.to_str().unwrap_or_else(|| panic!("valid utf8"));
+    let right_str = right.to_str().unwrap_or_else(|| panic!("valid utf8"));
+    let h = start(left_str, right_str, MockConfig::default());
+    let _ = h.drain_for(Duration::from_millis(200));
+
+    // Open dual pane (F3) so copy-to-other works
+    h.send(Command::Run("toggle-dual".into()));
+    let _ = h.drain_for(Duration::from_millis(50));
+
+    // Select the file in left pane and copy to right pane (F5)
+    h.send(Command::Run("select-all".into()));
+    let _ = h.drain_for(Duration::from_millis(50));
+    h.send(Command::Run("copy-to-other".into()));
+
+    // Conflict dialog should appear!
+    let conflict_updates = h.until(Duration::from_millis(1000), |u| {
+        matches!(u, Update::Dialog(d) if matches!(d.kind, crate::DialogKind::Conflict))
+    });
+    assert!(!conflict_updates.is_empty(), "collision dialog should be presented");
+
+    // Choose replace
+    h.send(Command::DialogCustomAction {
+        action: "replace".into(),
+        opt1: false,
+        opt2: false,
+        extra1: "".into(),
+        extra2: "".into(),
+    });
+
+    let close = h.until(Duration::from_millis(1000), |u| matches!(u, Update::CloseDialog));
+    assert!(!close.is_empty(), "dialog should close on resolution");
+
+    let _ = h.drain_for(Duration::from_millis(200));
+    // Verify target content replaced
+    let target_content = std::fs::read_to_string(&right_file).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(target_content, "new_source_content");
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}

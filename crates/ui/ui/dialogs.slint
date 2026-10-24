@@ -19,6 +19,10 @@ export enum DialogKind {
     preview,
     hash,
     connect-server,
+    conflict,
+    search,
+    batch-rename,
+    compare-panes,
 }
 
 component DialogButton inherits Rectangle {
@@ -62,9 +66,14 @@ export component DialogOverlay inherits Rectangle {
     in-out property <string> input;
     in property <image> preview-image;
     in property <string> preview-detail;
+    in-out property <bool> opt1: false;
+    in-out property <bool> opt2: false;
+    in-out property <string> extra1: "";
+    in-out property <string> extra2: "";
     callback accept(text: string);
     callback cancel();
     callback choose(index: int);
+    callback custom-action(action: string);
 
     public function focus-input() {
         field.focus();
@@ -80,7 +89,7 @@ export component DialogOverlay inherits Rectangle {
     }
 
     card := Rectangle {
-        width: min(parent.width - 48px, root.kind == DialogKind.preview ? 680px : root.kind == DialogKind.properties || root.kind == DialogKind.inspect || root.kind == DialogKind.hash ? 640px : 440px);
+        width: min(parent.width - 48px, root.kind == DialogKind.preview || root.kind == DialogKind.conflict || root.kind == DialogKind.search || root.kind == DialogKind.batch-rename || root.kind == DialogKind.compare-panes ? 720px : root.kind == DialogKind.properties || root.kind == DialogKind.inspect || root.kind == DialogKind.hash ? 640px : 440px);
         height: layout.preferred-height;
         x: (parent.width - self.width) / 2;
         y: max(24px, (parent.height - self.height) / 2.4);
@@ -99,8 +108,8 @@ export component DialogOverlay inherits Rectangle {
                 spacing: 10px;
                 Glyph {
                     y: (parent.height - self.height) / 2;
-                    name: root.kind == DialogKind.hash ? "edit" : root.kind == DialogKind.connect-server ? "desktop" : root.kind == DialogKind.preview ? "image" : root.kind == DialogKind.inspect ? "spear" : root.kind == DialogKind.confirm-delete ? "trash" : root.kind == DialogKind.new-folder ? "folder" : "document";
-                    tint: root.kind == DialogKind.hash ? Theme.accent : root.kind == DialogKind.preview ? Theme.accent : root.kind == DialogKind.inspect ? Theme.gold : root.kind == DialogKind.error || root.kind == DialogKind.confirm-delete ? Theme.bad : Theme.accent;
+                    name: root.kind == DialogKind.hash ? "edit" : root.kind == DialogKind.connect-server ? "desktop" : root.kind == DialogKind.preview ? "image" : root.kind == DialogKind.inspect ? "spear" : root.kind == DialogKind.confirm-delete ? "trash" : root.kind == DialogKind.new-folder ? "folder" : root.kind == DialogKind.conflict ? "warning" : root.kind == DialogKind.search ? "search" : root.kind == DialogKind.batch-rename ? "edit" : root.kind == DialogKind.compare-panes ? "split" : "document";
+                    tint: root.kind == DialogKind.hash ? Theme.accent : root.kind == DialogKind.preview ? Theme.accent : root.kind == DialogKind.inspect ? Theme.gold : root.kind == DialogKind.error || root.kind == DialogKind.confirm-delete || root.kind == DialogKind.conflict ? Theme.bad : Theme.accent;
                 }
                 Text {
                     text: root.title;
@@ -179,7 +188,128 @@ export component DialogOverlay inherits Rectangle {
                     }
                 }
             }
-            if root.kind == DialogKind.choose: Rectangle {
+            if root.kind == DialogKind.conflict: VerticalLayout {
+                spacing: 8px;
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+                    Rectangle {
+                        width: 18px;
+                        height: 18px;
+                        border-radius: 4px;
+                        border-width: 1px;
+                        border-color: root.opt1 ? Theme.accent : Theme.border-strong;
+                        background: root.opt1 ? Theme.accent : Theme.field;
+                        Text {
+                            text: root.opt1 ? "✓" : "";
+                            color: #ffffff;
+                            font-size: 11px;
+                            font-weight: 700;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                        TouchArea { clicked => { root.opt1 = !root.opt1; } }
+                    }
+                    Text {
+                        text: "Apply this decision to all remaining conflicts in this transfer";
+                        color: Theme.text;
+                        font-size: Theme.font-size;
+                        vertical-alignment: center;
+                        TouchArea { clicked => { root.opt1 = !root.opt1; } }
+                    }
+                }
+            }
+            if root.kind == DialogKind.search: VerticalLayout {
+                spacing: 8px;
+                HorizontalLayout {
+                    spacing: 8px;
+                    LineEdit {
+                        text <=> root.extra1;
+                        placeholder-text: "Search filename pattern (e.g. *.rs) or text content...";
+                        horizontal-stretch: 1;
+                        accepted(t) => { root.custom-action("search"); }
+                    }
+                    DialogButton {
+                        label: "Find";
+                        primary: true;
+                        clicked => { root.custom-action("search"); }
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 16px;
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Rectangle {
+                            width: 16px;
+                            height: 16px;
+                            border-radius: 3px;
+                            border-width: 1px;
+                            border-color: root.opt1 ? Theme.accent : Theme.border-strong;
+                            background: root.opt1 ? Theme.accent : Theme.field;
+                            Text {
+                                text: root.opt1 ? "✓" : "";
+                                color: #ffffff;
+                                font-size: 10px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                            TouchArea { clicked => { root.opt1 = !root.opt1; } }
+                        }
+                        Text {
+                            text: "Grep inside file contents";
+                            color: Theme.text-dim;
+                            font-size: Theme.font-size-small;
+                            vertical-alignment: center;
+                            TouchArea { clicked => { root.opt1 = !root.opt1; } }
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Rectangle {
+                            width: 16px;
+                            height: 16px;
+                            border-radius: 3px;
+                            border-width: 1px;
+                            border-color: root.opt2 ? Theme.accent : Theme.border-strong;
+                            background: root.opt2 ? Theme.accent : Theme.field;
+                            Text {
+                                text: root.opt2 ? "✓" : "";
+                                color: #ffffff;
+                                font-size: 10px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                            TouchArea { clicked => { root.opt2 = !root.opt2; } }
+                        }
+                        Text {
+                            text: "Case sensitive";
+                            color: Theme.text-dim;
+                            font-size: Theme.font-size-small;
+                            vertical-alignment: center;
+                            TouchArea { clicked => { root.opt2 = !root.opt2; } }
+                        }
+                    }
+                }
+            }
+            if root.kind == DialogKind.batch-rename: VerticalLayout {
+                spacing: 8px;
+                HorizontalLayout {
+                    spacing: 8px;
+                    LineEdit {
+                        text <=> root.extra1;
+                        placeholder-text: "Find text or numbering prefix...";
+                        horizontal-stretch: 1;
+                        edited(t) => { root.custom-action("preview-rename"); }
+                    }
+                    LineEdit {
+                        text <=> root.extra2;
+                        placeholder-text: "Replace with (or start index e.g. 1)...";
+                        horizontal-stretch: 1;
+                        edited(t) => { root.custom-action("preview-rename"); }
+                    }
+                }
+            }
+            if root.kind == DialogKind.choose || (root.kind == DialogKind.search && root.rows.length > 0): Rectangle {
                 height: min(400px, root.rows.length * 40px + 8px);
                 border-radius: Theme.radius;
                 background: Theme.field;
@@ -206,7 +336,7 @@ export component DialogOverlay inherits Rectangle {
                     }
                 }
             }
-            if root.rows.length > 0 && root.kind != DialogKind.choose: Rectangle {
+            if root.rows.length > 0 && root.kind != DialogKind.choose && root.kind != DialogKind.search: Rectangle {
                 // Values wrap (long URIs), so size by row count rather than the unwrapped estimate.
                 height: min(400px, max(rows-layout.preferred-height + 2px, root.rows.length * 30px + 18px));
                 border-radius: Theme.radius;
@@ -242,19 +372,76 @@ export component DialogOverlay inherits Rectangle {
             HorizontalLayout {
                 alignment: end;
                 spacing: 8px;
-                if root.kind == DialogKind.new-folder || root.kind == DialogKind.confirm-delete || root.kind == DialogKind.connect-server: DialogButton {
-                    label: "Cancel";
+                if root.kind == DialogKind.conflict: HorizontalLayout {
+                    spacing: 8px;
+                    DialogButton {
+                        label: "Skip";
+                        clicked => { root.custom-action("skip"); }
+                    }
+                    DialogButton {
+                        label: "Auto-Rename";
+                        clicked => { root.custom-action("auto-rename"); }
+                    }
+                    DialogButton {
+                        label: "Replace If Newer";
+                        clicked => { root.custom-action("replace-if-newer"); }
+                    }
+                    DialogButton {
+                        label: "Replace";
+                        primary: true;
+                        danger: true;
+                        clicked => { root.custom-action("replace"); }
+                    }
+                }
+                if root.kind == DialogKind.search: DialogButton {
+                    label: "Close";
                     clicked => { root.cancel(); }
                 }
-                DialogButton {
-                    label: root.kind == DialogKind.new-folder ? "Create" : root.kind == DialogKind.connect-server ? "Connect" : root.kind == DialogKind.confirm-delete ? "Delete" : "Close";
-                    primary: true;
-                    danger: root.kind == DialogKind.confirm-delete;
-                    clicked => {
-                        if root.kind == DialogKind.new-folder || root.kind == DialogKind.confirm-delete || root.kind == DialogKind.connect-server {
-                            root.accept(root.input);
-                        } else {
-                            root.cancel();
+                if root.kind == DialogKind.batch-rename: HorizontalLayout {
+                    spacing: 8px;
+                    DialogButton {
+                        label: "Cancel";
+                        clicked => { root.cancel(); }
+                    }
+                    DialogButton {
+                        label: "Rename All";
+                        primary: true;
+                        clicked => { root.custom-action("apply-batch-rename"); }
+                    }
+                }
+                if root.kind == DialogKind.compare-panes: HorizontalLayout {
+                    spacing: 8px;
+                    DialogButton {
+                        label: "Sync Left → Right";
+                        primary: true;
+                        clicked => { root.custom-action("sync-left-to-right"); }
+                    }
+                    DialogButton {
+                        label: "Sync Right → Left";
+                        primary: true;
+                        clicked => { root.custom-action("sync-right-to-left"); }
+                    }
+                    DialogButton {
+                        label: "Close";
+                        clicked => { root.cancel(); }
+                    }
+                }
+                if root.kind != DialogKind.conflict && root.kind != DialogKind.search && root.kind != DialogKind.batch-rename && root.kind != DialogKind.compare-panes: HorizontalLayout {
+                    spacing: 8px;
+                    if root.kind == DialogKind.new-folder || root.kind == DialogKind.confirm-delete || root.kind == DialogKind.connect-server: DialogButton {
+                        label: "Cancel";
+                        clicked => { root.cancel(); }
+                    }
+                    DialogButton {
+                        label: root.kind == DialogKind.new-folder ? "Create" : root.kind == DialogKind.connect-server ? "Connect" : root.kind == DialogKind.confirm-delete ? "Delete" : "Close";
+                        primary: true;
+                        danger: root.kind == DialogKind.confirm-delete;
+                        clicked => {
+                            if root.kind == DialogKind.new-folder || root.kind == DialogKind.confirm-delete || root.kind == DialogKind.connect-server {
+                                root.accept(root.input);
+                            } else {
+                                root.cancel();
+                            }
                         }
                     }
                 }

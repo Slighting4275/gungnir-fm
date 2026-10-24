@@ -147,6 +147,13 @@ Gungnir FM is built to run natively across all 24 Linux and BSD init systems and
 - **Legacy Daemonization**: Clean `-d / --daemon` and `--pidfile <PATH>` options for traditional SysVinit and BSD `rc.subr` scripts.
 - **POSIX /bin/sh Shell Scripts**: All deployment, installation, and build scripts strictly adhere to POSIX `/bin/sh` syntax.
 
+### 🛠️ Advanced Operations & Utilities
+- **Transfer Collision & Conflict Resolution**: Side-by-side comparison card displaying source vs destination file metadata, timestamps, sizes, thumbnail preview, and badge indicators. Offers `Replace`, `Replace if Newer`, `Auto-Rename` (generating non-colliding copy names), and `Skip`, plus an "Apply to all remaining conflicts" batch checkbox.
+- **Embedded Interactive Terminal Drawer (`F4`)**: In-window collapsible terminal panel above the status bar with bidirectional directory sync: navigating in a pane updates the terminal `cwd`; executing `cd` in the terminal navigates the active pane. Features command execution, log output, and clear actions.
+- **Deep Recursive Search & Content Grep (`Ctrl+Shift+F`)**: Recursive asynchronous subtree walk supporting filename search (glob/substring) and multi-line UTF-8 text content grep. Matches are presented in an interactive list; clicking a result immediately navigates to its parent directory and highlights the file.
+- **Transactional Multi-File Batch Renamer (`F2` with 2+ files selected)**: Live preview table displaying Old Name → Proposed Name. Supports Find & Replace, prefix/suffix insertion, and sequential numbering patterns (`#`). Features collision pre-check and transactional execution.
+- **Dual-Pane Directory Comparison & Sync Engine (`Ctrl+Shift+D`)**: Compares files between Left and Right panes, categorizing items into Unique to Left, Unique to Right, Newer/Modified, and Identical. Provides one-click bidirectional synchronization (`Sync Left → Right` and `Sync Right → Left`).
+
 ### 🔒 File Hashing & Interactive Checksum Verification
 - **Streaming Multi-Hash Engine**: Computes MD5, SHA-1, SHA-256, and SHA-512 concurrently in a single streaming pass over 64 KB buffers without loading entire files into memory.
 - **Interactive Checksum Dialog**: Right-click any file → **"Check File Hash…"** displays all computed digests with an interactive input field. Pasting an expected hash provides immediate visual verification (green on match, red on mismatch).
@@ -190,6 +197,9 @@ Gungnir FM is built to run natively across all 24 Linux and BSD init systems and
 | Shortcut | Action |
 | --- | --- |
 | `F3` | Toggle dual split view |
+| `F4` | Toggle embedded interactive terminal drawer |
+| `Ctrl+Shift+F` | Deep recursive search & content grep |
+| `Ctrl+Shift+D` | Dual-pane directory comparison & sync |
 | `F9` | Toggle sidebar (Places, Gungnir, Tree, Devices) |
 | `Ctrl+T` | Open new tab in current directory |
 | `Ctrl+W` | Close active tab (collapses secondary pane if last tab) |
@@ -205,7 +215,7 @@ Gungnir FM is built to run natively across all 24 Linux and BSD init systems and
 | `Ctrl+-` / `Ctrl+_` | Zoom out previews / icons (down to 50%) |
 | `Ctrl+0` | Reset preview zoom to 100% |
 | `Space` | Quick Preview overlay (image/video/text) |
-| `F2` | Rename selected file or directory |
+| `F2` | Rename selected file or directory (opens Batch Renamer when 2+ files selected) |
 | `F5` / `F6` | Copy / Move selection to other pane |
 | `F7` | Create new directory |
 | `Ctrl+C` / `Ctrl+X` / `Ctrl+V` | Copy / Cut / Paste selection |

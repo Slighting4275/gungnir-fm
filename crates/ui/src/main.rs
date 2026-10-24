@@ -102,6 +102,20 @@ fn wire(ui: &AppWindow, tx: &mpsc::Sender<Msg>) {
     on!(on_transfer_action, |id, a| Command::TransferAction { id: i64::from(id), action: a.to_string() });
     on!(on_dialog_accept, |t| Command::DialogAccept(t.to_string()));
     on!(on_dialog_cancel, || Command::DialogCancel);
+    ui.on_dialog_custom_action({
+        let tx = tx.clone();
+        move |a, opt1, opt2, ex1, ex2| {
+            let _ = tx.blocking_send(Msg::Ui(Command::DialogCustomAction {
+                action: a.to_string(),
+                opt1,
+                opt2,
+                extra1: ex1.to_string(),
+                extra2: ex2.to_string(),
+            }));
+        }
+    });
+    on!(on_terminal_run, |cmd| Command::TerminalRun(cmd.to_string()));
+    on!(on_terminal_clear, || Command::TerminalClear);
     // Drag payload: a plain-text tag naming the row (computed on the UI thread, trivial).
     // `.into()` reaches Slint's data-transfer type through its public `From<SharedString>`.
     ui.on_drag_data(|p, i| slint::SharedString::from(format!("gungnir-fm:{p}:{i}")).into());

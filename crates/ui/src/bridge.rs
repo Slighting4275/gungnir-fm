@@ -39,6 +39,27 @@ pub struct DialogView {
     pub rows: Vec<(String, String)>,
     pub input: String,
     pub preview_path: Option<PathBuf>,
+    pub opt1: bool,
+    pub opt2: bool,
+    pub extra1: String,
+    pub extra2: String,
+}
+
+impl Default for DialogView {
+    fn default() -> Self {
+        Self {
+            kind: DialogKind::None,
+            title: String::new(),
+            message: String::new(),
+            rows: Vec::new(),
+            input: String::new(),
+            preview_path: None,
+            opt1: false,
+            opt2: false,
+            extra1: String::new(),
+            extra2: String::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -106,6 +127,11 @@ pub enum Update {
     CustomActions {
         pane: usize,
         actions: Vec<crate::CustomActionItem>,
+    },
+    Terminal {
+        open: bool,
+        cwd: String,
+        output: String,
     },
     Quit,
 }
@@ -267,12 +293,25 @@ pub fn apply(ui: &AppWindow, u: Update) {
                 d.rows.into_iter().map(|(k, v)| KeyValue { key: k.into(), value: v.into() }).collect(),
             ));
             ui.set_dialog_input(SharedString::from(d.input));
+            ui.set_dialog_opt1(d.opt1);
+            ui.set_dialog_opt2(d.opt2);
+            ui.set_dialog_extra1(SharedString::from(d.extra1));
+            ui.set_dialog_extra2(SharedString::from(d.extra2));
             ui.set_dialog_kind(d.kind);
         }
         Update::CloseDialog => {
             ui.set_preview_image(slint::Image::default());
             ui.set_preview_detail(SharedString::new());
             ui.set_dialog_kind(DialogKind::None);
+            ui.set_dialog_opt1(false);
+            ui.set_dialog_opt2(false);
+            ui.set_dialog_extra1(SharedString::new());
+            ui.set_dialog_extra2(SharedString::new());
+        }
+        Update::Terminal { open, cwd, output } => {
+            ui.set_terminal_open(open);
+            ui.set_terminal_cwd(cwd.into());
+            ui.set_terminal_output(output.into());
         }
         Update::Rename { pane, index } => {
             ui.set_renaming_pane(pane);

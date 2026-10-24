@@ -7,8 +7,8 @@
 //! `CancellationToken`: navigating away cancels the in-flight listing at once, and
 //! late results from superseded work are dropped.
 
-use std::collections::{BTreeSet, HashSet};
-use std::path::PathBuf;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -54,6 +54,15 @@ pub enum Command {
     DialogCancel,
     /// A row picked in a chooser dialog.
     DialogChoose(usize),
+    DialogCustomAction {
+        action: String,
+        opt1: bool,
+        opt2: bool,
+        extra1: String,
+        extra2: String,
+    },
+    TerminalRun(String),
+    TerminalClear,
     /// Internal drag and drop: source row, target row (`None`: the pane's folder).
     Drop { src_pane: usize, src_index: usize, dst_pane: usize, dst_index: Option<usize>, copy: bool },
     /// Sidebar device clicked (mounts it first if needed), or its eject button.
@@ -126,6 +135,14 @@ pub enum Event {
     BusReady(zbus::Connection),
     Devices(Vec<crate::drives::Device>),
     Mounted { object: String, result: Result<String, String> },
+    SearchResults {
+        root: VfsUri,
+        results: Vec<(String, String)>,
+    },
+    TerminalOutput {
+        text: String,
+        reload_loc: VfsUri,
+    },
     Tick,
 }
 
@@ -260,6 +277,25 @@ struct Transfer {
     took: Option<Duration>,
 }
 
+#[derive(Debug, Clone)]
+pub struct ConflictItem {
+    pub src: VfsUri,
+    pub filename: String,
+    pub src_size: u64,
+    pub dst_size: u64,
+    pub src_mtime: Option<std::time::SystemTime>,
+    pub dst_mtime: Option<std::time::SystemTime>,
+    pub src_is_newer: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConflictAction {
+    Replace,
+    ReplaceIfNewer,
+    AutoRename,
+    Skip,
+}
+
 enum PendingDialog {
     NewFolder { pane: usize },
     ConnectServer { pane: usize },
@@ -267,6 +303,26 @@ enum PendingDialog {
     /// "Open With": the files and the candidate applications shown as rows.
     OpenWith { files: Vec<PathBuf>, apps: Vec<crate::desktop::App> },
     Info,
+    Conflict {
+        kind: TransferKind,
+        sources: Vec<VfsUri>,
+        dest: VfsUri,
+        conflicts: Vec<ConflictItem>,
+        current_idx: usize,
+        resolutions: Vec<(VfsUri, ConflictAction)>,
+    },
+    Search {
+        results: Vec<(String, String)>,
+    },
+    BatchRename {
+        pane: usize,
+        items: Vec<(VfsUri, String)>,
+        new_names: Vec<(VfsUri, String)>,
+    },
+    ComparePanes {
+        left_loc: VfsUri,
+        right_loc: VfsUri,
+    },
 }
 
 pub struct Controller {
@@ -303,6 +359,10 @@ pub struct Controller {
     devices: Vec<crate::drives::Device>,
     session_saver: Option<crate::session::SessionSaver>,
     actions: crate::actions::ActionRegistry,
+    terminal_open: bool,
+    terminal_cwd: PathBuf,
+    terminal_output: String,
+    search_task: Option<JoinHandle<()>>,
 }
 
 /// Breadcrumbs as Nemo shows them: a folder below `home` starts at a "Home" crumb, the
@@ -434,6 +494,10 @@ impl Controller {
             devices: Vec::new(),
             session_saver: None,
             actions,
+            terminal_open: false,
+            terminal_cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
+            terminal_output: String::from("Gungnir FM Embedded Terminal (F4)\nType shell commands and press Enter\n"),
+            search_task: None,
         }
     }
 
@@ -802,6 +866,7 @@ impl Controller {
             rows,
             input: String::new(),
             preview_path: None,
+            ..Default::default()
         }));
     }
 
@@ -1149,9 +1214,15 @@ impl Controller {
         for (_, u) in location.crumbs() {
             self.tree_expanded.insert(u);
         }
-        self.load(pane, location, false);
+        self.load(pane, location.clone(), false);
         if pane == self.active_pane {
             self.push_places();
+            if self.terminal_open
+                && let Some(p) = location.to_local_path()
+            {
+                self.terminal_cwd = p;
+                self.push_terminal();
+            }
         }
         self.trigger_save_session();
     }
@@ -1358,6 +1429,201 @@ impl Controller {
         if kind == TransferKind::Move && sources.iter().all(|s| s.parent().as_ref() == Some(&dest)) {
             return;
         }
+
+        // Collision detection for local paths
+        let dest_path = match dest.scheme() {
+            Scheme::File => dest.to_local_path(),
+            Scheme::Gungnir if dest.authority().is_empty() => Some(PathBuf::from(dest.path())),
+            _ => None,
+        };
+        if let Some(ref dest_dir) = dest_path {
+            let mut conflicts = Vec::new();
+            for s in &sources {
+                if let Some(name) = s.file_name() {
+                    let target = dest_dir.join(name);
+                    if let Ok(dm) = target.symlink_metadata() {
+                        let src_path = match s.scheme() {
+                            Scheme::File => s.to_local_path(),
+                            Scheme::Gungnir if s.authority().is_empty() => Some(PathBuf::from(s.path())),
+                            _ => None,
+                        };
+                        let (src_size, src_mtime) = if let Some(sp) = src_path.as_ref().and_then(|p| p.symlink_metadata().ok()) {
+                            (sp.len(), sp.modified().ok())
+                        } else {
+                            (0, None)
+                        };
+                        let dst_size = dm.len();
+                        let dst_mtime = dm.modified().ok();
+                        let src_is_newer = match (src_mtime, dst_mtime) {
+                            (Some(sm), Some(dm_time)) => sm > dm_time,
+                            _ => false,
+                        };
+                        conflicts.push(ConflictItem {
+                            src: s.clone(),
+                            filename: name.to_string(),
+                            src_size,
+                            dst_size,
+                            src_mtime,
+                            dst_mtime,
+                            src_is_newer,
+                        });
+                    }
+                }
+            }
+            if !conflicts.is_empty() {
+                self.dialog = Some(PendingDialog::Conflict {
+                    kind,
+                    sources,
+                    dest,
+                    conflicts,
+                    current_idx: 0,
+                    resolutions: Vec::new(),
+                });
+                self.show_conflict();
+                return;
+            }
+        }
+
+        self.execute_transfer(kind, sources, dest, false);
+    }
+
+    fn show_conflict(&mut self) {
+        let Some(PendingDialog::Conflict { conflicts, current_idx, .. }) = &self.dialog else { return };
+        let Some(c) = conflicts.get(*current_idx) else { return };
+        let total = conflicts.len();
+        let idx_1based = *current_idx + 1;
+        let format_time = |t: Option<std::time::SystemTime>| {
+            t.and_then(|st| st.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| {
+                    let secs = d.as_secs();
+                    let hours = (secs / 3600) % 24;
+                    let mins = (secs % 3600) / 60;
+                    format!("{hours:02}:{mins:02} UTC")
+                })
+                .unwrap_or_else(|| "Unknown".into())
+        };
+        let src_mod = format!("{} · Modified: {} {}", format::size(c.src_size), format_time(c.src_mtime), if c.src_is_newer { "[NEWER]" } else { "" });
+        let dst_mod = format!("{} · Modified: {} {}", format::size(c.dst_size), format_time(c.dst_mtime), if !c.src_is_newer { "[NEWER/SAME]" } else { "" });
+        let rows = vec![
+            ("File name".to_string(), c.filename.clone()),
+            ("Source file".to_string(), src_mod),
+            ("Existing file".to_string(), dst_mod),
+            ("Conflict".to_string(), format!("{idx_1based} of {total} collisions")),
+        ];
+        self.ui.send(Update::Dialog(DialogView {
+            kind: DialogKind::Conflict,
+            title: format!("File Collision: {}", c.filename),
+            message: format!("A file named '{}' already exists in destination. Choose an action:", c.filename),
+            rows,
+            input: String::new(),
+            preview_path: c.src.to_local_path(),
+            opt1: false,
+            ..Default::default()
+        }));
+    }
+
+    fn handle_conflict_action(&mut self, action_str: &str, apply_all: bool) {
+        let action = match action_str {
+            "replace" => ConflictAction::Replace,
+            "replace-if-newer" => ConflictAction::ReplaceIfNewer,
+            "auto-rename" => ConflictAction::AutoRename,
+            "skip" => ConflictAction::Skip,
+            _ => return,
+        };
+        let Some(PendingDialog::Conflict {
+            kind,
+            sources,
+            dest,
+            conflicts,
+            mut current_idx,
+            mut resolutions,
+            ..
+        }) = self.dialog.take() else {
+            return;
+        };
+
+        if apply_all {
+            for c in &conflicts[current_idx..] {
+                resolutions.push((c.src.clone(), action));
+            }
+            current_idx = conflicts.len();
+        } else {
+            if let Some(c) = conflicts.get(current_idx) {
+                resolutions.push((c.src.clone(), action));
+            }
+            current_idx += 1;
+        }
+
+        if current_idx < conflicts.len() {
+            self.dialog = Some(PendingDialog::Conflict {
+                kind,
+                sources,
+                dest,
+                conflicts,
+                current_idx,
+                resolutions,
+            });
+            self.show_conflict();
+            return;
+        }
+
+        // All conflicts resolved!
+        self.ui.send(Update::CloseDialog);
+
+        let mut final_sources = Vec::new();
+        let mut replace_any = false;
+        let dest_path = match dest.scheme() {
+            Scheme::File => dest.to_local_path(),
+            Scheme::Gungnir if dest.authority().is_empty() => Some(PathBuf::from(dest.path())),
+            _ => None,
+        };
+
+        for s in sources {
+            if let Some((_, act)) = resolutions.iter().find(|(src_uri, _)| src_uri == &s) {
+                match act {
+                    ConflictAction::Skip => {
+                        continue;
+                    }
+                    ConflictAction::Replace => {
+                        if let (Some(dp), Some(name)) = (&dest_path, s.file_name()) {
+                            let _ = std::fs::remove_file(dp.join(name));
+                            let _ = std::fs::remove_dir_all(dp.join(name));
+                        }
+                        replace_any = true;
+                        final_sources.push(s);
+                    }
+                    ConflictAction::ReplaceIfNewer => {
+                        let is_newer = conflicts.iter().find(|c| c.src == s).map(|c| c.src_is_newer).unwrap_or(false);
+                        if is_newer {
+                            if let (Some(dp), Some(name)) = (&dest_path, s.file_name()) {
+                                let _ = std::fs::remove_file(dp.join(name));
+                                let _ = std::fs::remove_dir_all(dp.join(name));
+                            }
+                            replace_any = true;
+                            final_sources.push(s);
+                        }
+                    }
+                    ConflictAction::AutoRename => {
+                        final_sources.push(s);
+                    }
+                }
+            } else {
+                final_sources.push(s);
+            }
+        }
+
+        if final_sources.is_empty() {
+            self.say("Transfer skipped (all conflicting files skipped)", false);
+            return;
+        }
+
+        self.execute_transfer(kind, final_sources, dest, replace_any);
+    }
+
+    fn execute_transfer(&mut self, kind: TransferKind, sources: Vec<VfsUri>, dest: VfsUri, overwrite: bool) {
+        if sources.is_empty() {
+            return;
+        }
         let names: Vec<&str> = sources.iter().filter_map(VfsUri::file_name).collect();
         let pick = |p: &Arc<dyn VfsProvider>| sources.iter().all(|s| p.can_transfer(s, &dest));
         let provider =
@@ -1406,7 +1672,7 @@ impl Controller {
             },
         ));
         self.push_transfers(Some(true));
-        let req = TransferRequest { id, kind, sources, dest_dir: dest, overwrite: false };
+        let req = TransferRequest { id, kind, sources, dest_dir: dest, overwrite };
         let ctl = TransferControl { progress: ptx, cancel, paused };
         let tx = self.tx.clone();
         tokio::spawn(async move {
@@ -1473,14 +1739,69 @@ impl Controller {
             "copy-to-other" => self.transfer(TransferKind::Copy),
             "move-to-other" => self.transfer(TransferKind::Move),
             "rename" => {
-                let t = self.panes[p].tab();
-                if let Some(e) = t.entry_at(t.cursor) {
-                    self.renaming = Some((p, t.cursor, e.uri.clone()));
-                    self.ui.send(Update::Rename {
-                        pane: i32::try_from(p).unwrap_or(0),
-                        index: i32::try_from(t.cursor).unwrap_or(0),
-                    });
+                let targets = self.panes[p].tab().targets();
+                if targets.len() > 1 {
+                    self.run_command("batch-rename");
+                } else {
+                    let t = self.panes[p].tab();
+                    if let Some(e) = t.entry_at(t.cursor) {
+                        self.renaming = Some((p, t.cursor, e.uri.clone()));
+                        self.ui.send(Update::Rename {
+                            pane: i32::try_from(p).unwrap_or(0),
+                            index: i32::try_from(t.cursor).unwrap_or(0),
+                        });
+                    }
                 }
+            }
+            "toggle-terminal" => {
+                self.terminal_open = !self.terminal_open;
+                if self.terminal_open
+                    && let Some(p) = self.panes[self.active_pane].tab().location.to_local_path()
+                {
+                    self.terminal_cwd = p;
+                }
+                self.push_terminal();
+            }
+            "deep-search" => {
+                let root = self.panes[p].tab().location.clone();
+                self.dialog = Some(PendingDialog::Search { results: Vec::new() });
+                self.ui.send(Update::Dialog(DialogView {
+                    kind: DialogKind::Search,
+                    title: "Find & Grep Files".into(),
+                    message: format!("Search recursively within {}", root.display()),
+                    rows: Vec::new(),
+                    input: String::new(),
+                    preview_path: None,
+                    opt1: false,
+                    opt2: false,
+                    extra1: String::new(),
+                    extra2: String::new(),
+                }));
+            }
+            "batch-rename" => {
+                let targets = self.panes[p].tab().targets();
+                if targets.is_empty() {
+                    return;
+                }
+                let items: Vec<(VfsUri, String)> = targets.iter().map(|e| (e.uri.clone(), e.name.clone())).collect();
+                let rows: Vec<(String, String)> = items.iter().map(|(_, name)| (name.clone(), name.clone())).collect();
+                let n = items.len();
+                self.dialog = Some(PendingDialog::BatchRename { pane: p, items: items.clone(), new_names: items });
+                self.ui.send(Update::Dialog(DialogView {
+                    kind: DialogKind::BatchRename,
+                    title: format!("Batch Rename ({n} files)"),
+                    message: "Enter find/replace pattern or numbering prefix below. Live preview updates automatically:".into(),
+                    rows,
+                    input: String::new(),
+                    preview_path: None,
+                    opt1: false,
+                    opt2: false,
+                    extra1: String::new(),
+                    extra2: String::new(),
+                }));
+            }
+            "compare-panes" => {
+                self.compare_panes();
             }
             "new-folder" => {
                 self.dialog = Some(PendingDialog::NewFolder { pane: p });
@@ -1492,6 +1813,7 @@ impl Controller {
                     rows: Vec::new(),
                     input: "New Folder".into(),
                     preview_path: None,
+                    ..Default::default()
                 }));
             }
             "trash" => {
@@ -1529,6 +1851,7 @@ impl Controller {
                     rows: Vec::new(),
                     input: "sftp://".into(),
                     preview_path: None,
+                    ..Default::default()
                 }));
             }
             "check-hash" => {
@@ -1834,6 +2157,7 @@ impl Controller {
             rows,
             input: String::new(),
             preview_path: None,
+            ..Default::default()
         }));
     }
 
@@ -1921,6 +2245,7 @@ impl Controller {
             rows,
             input: String::new(),
             preview_path,
+            ..Default::default()
         }));
     }
 
@@ -2212,6 +2537,361 @@ impl Controller {
                 self.renaming = None;
                 self.ui.send(Update::Rename { pane: -1, index: -1 });
             }
+            Command::DialogCustomAction { action, opt1, opt2, extra1, extra2 } => {
+                self.dialog_custom_action(&action, opt1, opt2, &extra1, &extra2);
+            }
+            Command::TerminalRun(cmd) => {
+                self.terminal_run(&cmd);
+            }
+            Command::TerminalClear => {
+                self.terminal_clear();
+            }
+        }
+    }
+
+    fn dialog_custom_action(&mut self, action: &str, opt1: bool, opt2: bool, extra1: &str, extra2: &str) {
+        match action {
+            "replace" | "replace-if-newer" | "auto-rename" | "skip" => {
+                self.handle_conflict_action(action, opt1);
+            }
+            "search" => {
+                self.handle_search(extra1.to_string(), opt1, opt2);
+            }
+            "preview-rename" => {
+                self.handle_batch_rename_preview(extra1, extra2);
+            }
+            "apply-batch-rename" => {
+                self.handle_batch_rename_apply();
+            }
+            "sync-left-to-right" => {
+                self.handle_compare_sync(true);
+            }
+            "sync-right-to-left" => {
+                self.handle_compare_sync(false);
+            }
+            _ => {}
+        }
+    }
+
+    fn push_terminal(&self) {
+        self.ui.send(Update::Terminal {
+            open: self.terminal_open,
+            cwd: self.terminal_cwd.display().to_string(),
+            output: self.terminal_output.clone(),
+        });
+    }
+
+    fn terminal_run(&mut self, cmd: &str) {
+        let trimmed = cmd.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        self.terminal_output.push_str(&format!("$ {trimmed}\n"));
+        if trimmed == "clear" {
+            self.terminal_output.clear();
+            self.push_terminal();
+            return;
+        }
+        if trimmed == "cd" || trimmed.starts_with("cd ") {
+            let target = trimmed.strip_prefix("cd").unwrap_or("").trim();
+            let new_path = if target.is_empty() || target == "~" {
+                self.cfg.home.to_local_path().unwrap_or_else(|| PathBuf::from(self.cfg.home.path()))
+            } else {
+                let p = Path::new(target);
+                if p.is_absolute() {
+                    p.to_path_buf()
+                } else {
+                    self.terminal_cwd.join(p)
+                }
+            };
+            match std::fs::canonicalize(&new_path) {
+                Ok(real) if real.is_dir() => {
+                    self.terminal_cwd = real.clone();
+                    if let Ok(uri) = VfsUri::from_local_path(&real) {
+                        self.navigate_to(self.active_pane, uri);
+                    }
+                }
+                _ => {
+                    self.terminal_output.push_str(&format!("cd: {target}: No such file or directory\n"));
+                }
+            }
+            self.push_terminal();
+            return;
+        }
+
+        let cwd = self.terminal_cwd.clone();
+        let cmd_str = trimmed.to_string();
+        let tx = self.tx.clone();
+        let active_loc = self.panes[self.active_pane].tab().location.clone();
+        tokio::task::spawn_blocking(move || {
+            let out = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(&cmd_str)
+                .current_dir(&cwd)
+                .output();
+            let text = match out {
+                Ok(o) => {
+                    let mut s = String::from_utf8_lossy(&o.stdout).to_string();
+                    let err = String::from_utf8_lossy(&o.stderr);
+                    if !err.is_empty() {
+                        if !s.is_empty() && !s.ends_with('\n') {
+                            s.push('\n');
+                        }
+                        s.push_str(&err);
+                    }
+                    if s.is_empty() && !o.status.success() {
+                        s = format!("Process exited with status {}\n", o.status);
+                    }
+                    s
+                }
+                Err(e) => format!("Error executing command: {e}\n"),
+            };
+            let _ = tx.blocking_send(Msg::Ev(Event::TerminalOutput { text, reload_loc: active_loc }));
+        });
+        self.push_terminal();
+    }
+
+    fn terminal_clear(&mut self) {
+        self.terminal_output.clear();
+        self.push_terminal();
+    }
+
+    fn handle_search(&mut self, query: String, grep_content: bool, case_sensitive: bool) {
+        let trimmed = query.trim().to_string();
+        if trimmed.is_empty() {
+            return;
+        }
+        let root = self.panes[self.active_pane].tab().location.clone();
+        let Some(root_path) = root.to_local_path() else {
+            self.say("Recursive search is only supported on local filesystems", true);
+            return;
+        };
+
+        let tx = self.tx.clone();
+        let task = tokio::task::spawn_blocking(move || {
+            let mut results = Vec::new();
+            let mut stack = vec![root_path.clone()];
+            let mut files_checked = 0;
+            let query_norm = if case_sensitive { trimmed.clone() } else { trimmed.to_lowercase() };
+
+            while let Some(dir) = stack.pop() {
+                if results.len() >= 500 || files_checked >= 15_000 {
+                    break;
+                }
+                let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    let filename = entry.file_name().to_string_lossy().into_owned();
+                    if filename.starts_with('.') || filename == "target" || filename == "node_modules" {
+                        continue;
+                    }
+                    if path.is_dir() {
+                        stack.push(path);
+                    } else if path.is_file() {
+                        files_checked += 1;
+                        if grep_content {
+                            if let Ok(meta) = entry.metadata()
+                                && meta.len() <= 5 * 1024 * 1024
+                                && let Ok(contents) = std::fs::read_to_string(&path)
+                            {
+                                for (idx, line) in contents.lines().enumerate() {
+                                    let matches = if case_sensitive {
+                                        line.contains(&query_norm)
+                                    } else {
+                                        line.to_lowercase().contains(&query_norm)
+                                    };
+                                    if matches {
+                                        let display_line = line.trim();
+                                        let line_preview = if display_line.len() > 60 {
+                                            format!("{}...", &display_line[..60])
+                                        } else {
+                                            display_line.to_string()
+                                        };
+                                        results.push((
+                                            format!("{}:{}", filename, idx + 1),
+                                            format!("{} [{}]", path.display(), line_preview),
+                                        ));
+                                        if results.len() >= 500 {
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            let matches = if case_sensitive {
+                                filename.contains(&query_norm)
+                            } else {
+                                filename.to_lowercase().contains(&query_norm)
+                            };
+                            if matches {
+                                results.push((filename, path.display().to_string()));
+                            }
+                        }
+                    }
+                }
+            }
+            let _ = tx.blocking_send(Msg::Ev(Event::SearchResults { root, results }));
+        });
+        self.search_task = Some(task);
+    }
+
+    fn handle_batch_rename_preview(&mut self, find_pattern: &str, replace_pattern: &str) {
+        let Some(PendingDialog::BatchRename { pane, items, .. }) = &self.dialog else { return };
+        let pane = *pane;
+        let items = items.clone();
+        let mut new_items = Vec::new();
+        let mut rows = Vec::new();
+        let is_numbering = find_pattern.contains('#') || find_pattern == "#";
+        let start_num: usize = replace_pattern.parse().unwrap_or(1);
+
+        for (idx, (uri, old_name)) in items.iter().enumerate() {
+            let proposed = if find_pattern.is_empty() && !replace_pattern.is_empty() {
+                format!("{replace_pattern}{old_name}")
+            } else if is_numbering {
+                let num_str = format!("{:02}", start_num + idx);
+                find_pattern.replace('#', &num_str)
+            } else if !find_pattern.is_empty() {
+                old_name.replace(find_pattern, replace_pattern)
+            } else {
+                old_name.clone()
+            };
+            rows.push((old_name.clone(), proposed.clone()));
+            new_items.push((uri.clone(), proposed));
+        }
+
+        self.dialog = Some(PendingDialog::BatchRename { pane, items, new_names: new_items });
+        self.ui.send(Update::Dialog(DialogView {
+            kind: DialogKind::BatchRename,
+            title: format!("Batch Rename ({} files)", rows.len()),
+            message: "Preview of planned file renames:".into(),
+            rows,
+            input: String::new(),
+            preview_path: None,
+            opt1: false,
+            opt2: false,
+            extra1: find_pattern.to_string(),
+            extra2: replace_pattern.to_string(),
+        }));
+    }
+
+    fn handle_batch_rename_apply(&mut self) {
+        let Some(PendingDialog::BatchRename { pane, new_names, .. }) = self.dialog.take() else { return };
+        self.ui.send(Update::CloseDialog);
+        let loc = self.panes[pane].tab().location.clone();
+        let Ok(provider) = self.registry.resolve(&loc) else { return };
+
+        let tx = self.tx.clone();
+        tokio::task::spawn(async move {
+            let mut count = 0;
+            for (uri, new_name) in new_names {
+                if uri.file_name() != Some(new_name.as_str())
+                    && !new_name.trim().is_empty()
+                    && provider.rename(&uri, &new_name).await.is_ok()
+                {
+                    count += 1;
+                }
+            }
+            let _ = tx.send(Msg::Ev(Event::Op {
+                result: Ok(format!("Successfully renamed {count} files")),
+                reload: vec![loc],
+                select: None,
+            })).await;
+        });
+    }
+
+    fn compare_panes(&mut self) {
+        self.dual = true;
+        self.push_flags();
+        let left_loc = self.panes[0].tab().location.clone();
+        let right_loc = self.panes[1].tab().location.clone();
+        let left_entries = &self.panes[0].tab().entries;
+        let right_entries = &self.panes[1].tab().entries;
+
+        let mut names = BTreeSet::new();
+        let mut left_map = BTreeMap::new();
+        let mut right_map = BTreeMap::new();
+
+        for e in left_entries.iter() {
+            names.insert(e.name.clone());
+            left_map.insert(e.name.clone(), e.clone());
+        }
+        for e in right_entries.iter() {
+            names.insert(e.name.clone());
+            right_map.insert(e.name.clone(), e.clone());
+        }
+
+        let mut rows = Vec::new();
+
+        for name in names {
+            match (left_map.get(&name), right_map.get(&name)) {
+                (Some(l), None) => {
+                    rows.push((format!("[LEFT ONLY] {name}"), format!("{} · Missing on Right", format::size(l.size))));
+                }
+                (None, Some(r)) => {
+                    rows.push((format!("[RIGHT ONLY] {name}"), format!("{} · Missing on Left", format::size(r.size))));
+                }
+                (Some(l), Some(r)) => {
+                    if l.size == r.size && l.modified == r.modified {
+                        rows.push((format!("[IDENTICAL] {name}"), format!("{} · Same size & mtime", format::size(l.size))));
+                    } else if l.modified > r.modified {
+                        rows.push((format!("[NEWER LEFT] {name}"), format!("Left: {} vs Right: {}", format::size(l.size), format::size(r.size))));
+                    } else {
+                        rows.push((format!("[NEWER RIGHT] {name}"), format!("Right: {} vs Left: {}", format::size(r.size), format::size(l.size))));
+                    }
+                }
+                (None, None) => {}
+            }
+        }
+
+        self.dialog = Some(PendingDialog::ComparePanes { left_loc: left_loc.clone(), right_loc: right_loc.clone() });
+        self.ui.send(Update::Dialog(DialogView {
+            kind: DialogKind::ComparePanes,
+            title: "Dual-Pane Comparison & Sync".into(),
+            message: format!("Left: {}\nRight: {}", left_loc.display(), right_loc.display()),
+            rows,
+            input: String::new(),
+            preview_path: None,
+            ..Default::default()
+        }));
+    }
+
+    fn handle_compare_sync(&mut self, to_right: bool) {
+        let Some(PendingDialog::ComparePanes { left_loc, right_loc, .. }) = self.dialog.take() else { return };
+        self.ui.send(Update::CloseDialog);
+        if to_right {
+            let left_entries = &self.panes[0].tab().entries;
+            let right_map: BTreeMap<String, &FileEntry> = self.panes[1].tab().entries.iter().map(|e| (e.name.clone(), e)).collect();
+            let mut to_sync = Vec::new();
+            for l in left_entries.iter() {
+                match right_map.get(&l.name) {
+                    None => to_sync.push(l.uri.clone()),
+                    Some(r) if l.modified > r.modified => to_sync.push(l.uri.clone()),
+                    _ => {}
+                }
+            }
+            if to_sync.is_empty() {
+                self.say("Right pane is already up to date with Left pane", false);
+            } else {
+                self.say(format!("Syncing {} items Left → Right...", to_sync.len()), false);
+                self.start_transfer(TransferKind::Copy, to_sync, right_loc);
+            }
+        } else {
+            let right_entries = &self.panes[1].tab().entries;
+            let left_map: BTreeMap<String, &FileEntry> = self.panes[0].tab().entries.iter().map(|e| (e.name.clone(), e)).collect();
+            let mut to_sync = Vec::new();
+            for r in right_entries.iter() {
+                match left_map.get(&r.name) {
+                    None => to_sync.push(r.uri.clone()),
+                    Some(l) if r.modified > l.modified => to_sync.push(r.uri.clone()),
+                    _ => {}
+                }
+            }
+            if to_sync.is_empty() {
+                self.say("Left pane is already up to date with Right pane", false);
+            } else {
+                self.say(format!("Syncing {} items Right → Left...", to_sync.len()), false);
+                self.start_transfer(TransferKind::Copy, to_sync, left_loc);
+            }
         }
     }
 
@@ -2337,17 +3017,39 @@ impl Controller {
     }
 
     fn dialog_choose(&mut self, index: usize) {
-        let Some(PendingDialog::OpenWith { files, apps }) = self.dialog.take() else { return };
-        self.ui.send(Update::CloseDialog);
-        let Some(app) = apps.into_iter().nth(index) else { return };
-        let tx = self.tx.clone();
-        tokio::task::spawn_blocking(move || {
-            let result = match crate::desktop::launch(&app, &files) {
-                Ok(_) => Ok(format!("Opened with {}", app.name)),
-                Err(e) => Err(format!("{}: {e}", app.name)),
-            };
-            let _ = tx.blocking_send(Msg::Ev(Event::Op { result, reload: Vec::new(), select: None }));
-        });
+        match self.dialog.take() {
+            Some(PendingDialog::OpenWith { files, apps }) => {
+                self.ui.send(Update::CloseDialog);
+                let Some(app) = apps.into_iter().nth(index) else { return };
+                let tx = self.tx.clone();
+                tokio::task::spawn_blocking(move || {
+                    let result = match crate::desktop::launch(&app, &files) {
+                        Ok(_) => Ok(format!("Opened with {}", app.name)),
+                        Err(e) => Err(format!("{}: {e}", app.name)),
+                    };
+                    let _ = tx.blocking_send(Msg::Ev(Event::Op { result, reload: Vec::new(), select: None }));
+                });
+            }
+            Some(PendingDialog::Search { results, .. }) => {
+                self.ui.send(Update::CloseDialog);
+                if let Some((_, full_path_str)) = results.get(index) {
+                    let path_part = full_path_str.split_whitespace().next().unwrap_or(full_path_str);
+                    let clean_path = path_part.split(':').next().unwrap_or(path_part);
+                    let p = Path::new(clean_path);
+                    let target_dir = if p.is_dir() {
+                        p.to_path_buf()
+                    } else {
+                        p.parent().unwrap_or(p).to_path_buf()
+                    };
+                    if let Ok(uri) = VfsUri::from_local_path(&target_dir) {
+                        self.navigate_to(self.active_pane, uri);
+                    }
+                }
+            }
+            _ => {
+                self.ui.send(Update::CloseDialog);
+            }
+        }
     }
 
     fn transfer_action(&mut self, id: i64, action: &str) {
@@ -2416,7 +3118,12 @@ impl Controller {
                     Ok(format!("Deleted {n} item{}", if n == 1 { "" } else { "s" }))
                 });
             }
-            PendingDialog::Info | PendingDialog::OpenWith { .. } => {}
+            PendingDialog::Info
+            | PendingDialog::OpenWith { .. }
+            | PendingDialog::Conflict { .. }
+            | PendingDialog::Search { .. }
+            | PendingDialog::BatchRename { .. }
+            | PendingDialog::ComparePanes { .. } => {}
         }
     }
 
@@ -2571,7 +3278,31 @@ impl Controller {
                     rows,
                     input: String::new(),
                     preview_path: None,
+                    ..Default::default()
                 }));
+            }
+            Event::SearchResults { root, results } => {
+                let n = results.len();
+                let message = format!("Found {n} match{} in {}", if n == 1 { "" } else { "es" }, root.display());
+                self.dialog = Some(PendingDialog::Search { results: results.clone() });
+                self.ui.send(Update::Dialog(DialogView {
+                    kind: DialogKind::Search,
+                    title: "Search Results".into(),
+                    message,
+                    rows: results,
+                    input: String::new(),
+                    preview_path: None,
+                    ..Default::default()
+                }));
+            }
+            Event::TerminalOutput { text, reload_loc } => {
+                self.terminal_output.push_str(&text);
+                if self.terminal_output.len() > 30_000 {
+                    let cut = self.terminal_output.len() - 25_000;
+                    self.terminal_output.drain(..cut);
+                }
+                self.push_terminal();
+                self.reload_matching(&[reload_loc]);
             }
             Event::Tick => {
                 if self.transfers_dirty {
