@@ -1627,9 +1627,9 @@ impl Controller {
                     backends::time::format_local(e.modified)
                 );
 
-                // For text, code, markup, and config files, append a clean preview snippet
+                // For text, code, markup, config and text-document files, append a clean preview snippet
                 if thumb_path.is_none()
-                    && matches!(cat, core_vfs::format::Category::Code)
+                    && matches!(cat, core_vfs::format::Category::Code | core_vfs::format::Category::Document)
                     && let Some(ref lp) = local_path
                     && let Ok(file) = std::fs::File::open(lp)
                 {
