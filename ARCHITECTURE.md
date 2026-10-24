@@ -23,6 +23,7 @@ gungnir-fm/
 │   ├── backends/
 │   │   ├── src/local.rs       LocalPosixBackend (daily driver)
 │   │   ├── src/mock.rs        MockGungnirBackend (synthetic gungnir:// nodes, stress dirs)
+│   │   ├── src/remote.rs      RemoteVfsBackend (built-in sftp:// and smb://)
 │   │   ├── src/gungnir/       GungnirVfsBackend (live gungnird client)
 │   │   │   ├── proto.rs       protocol v2 wire format, mirrored from ../gungnir-vfs
 │   │   │   ├── link.rs        the gungnir-link thread: ring I/O, seq routing, health
@@ -40,12 +41,18 @@ gungnir-fm/
 │       │   ├── sidebar.slint  Places, Gungnir mounts with status, directory tree
 │       │   ├── pane.slint     tabs, sortable header, virtualized list / compact / grid
 │       │   ├── statusbar.slint status bar and transfer drawer
-│       │   └── dialogs.slint  in-window dialogs (new folder, delete, properties, inspect)
+│       │   └── dialogs.slint  in-window dialogs (new folder, delete, properties, inspect, hash, preview)
 │       └── src/
 │           ├── main.rs        runtime, backend selection, callback wiring
 │           ├── controller.rs  the controller actor (all application state)
 │           ├── bridge.rs      Update enum + the only code that touches models
 │           ├── rows.rs        FileEntry -> FileRow, filtering
+│           ├── actions.rs     custom actions engine (Nemo actions equivalent)
+│           ├── session.rs     atomic crash-resilient session persistence
+│           ├── thumbnails.rs  async image and video thumbnail generator and cache
+│           ├── hash.rs        streaming multi-hash computation and checksum verification
+│           ├── drives.rs      removable storage and partitions via udisks2 over D-Bus
+│           ├── desktop.rs     freedesktop .desktop application launcher
 │           └── controller_tests.rs  headless tests through a recording UiSink
 └── scripts/build-gungnird.sh  builds gungnird from ../gungnir-vfs into ./.build
 ```
