@@ -146,8 +146,9 @@ export component Sidebar inherits Rectangle {
                     active: p.active;
                     clicked => { root.open(p.uri); }
                 } }
-                SectionHeader { text: root.gungnir-label; tint: Theme.gold.darker(10%); open <=> root.gungnir-open; }
-                if root.gungnir-open: VerticalLayout { spacing: 1px; for m in root.mounts: SideItem {
+                // Hidden entirely when Gungnir is off (empty label).
+                if root.gungnir-label != "": SectionHeader { text: root.gungnir-label; tint: Theme.gold.darker(10%); open <=> root.gungnir-open; }
+                if root.gungnir-open && root.gungnir-label != "": VerticalLayout { spacing: 1px; for m in root.mounts: SideItem {
                     label: m.label;
                     glyph: "spear";
                     glyph-tint: Theme.gold;

@@ -1258,6 +1258,9 @@ impl Controller {
                     self.move_cursor_keep(p, 1);
                 }
             }
+            "gungnir-root" if self.cfg.gungnir_label.is_empty() => {
+                self.say("Gungnir is off (GUNGNIR_FM_BACKEND); start gungnird and use live-or-off or auto", true);
+            }
             "gungnir-root" => {
                 let root = self.cfg.gungnir_root.clone();
                 self.navigate_to(p, root);

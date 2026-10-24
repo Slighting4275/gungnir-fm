@@ -218,8 +218,11 @@ GUNGNIR_FM_BACKEND=live cargo run --release -p gungnir-fm
 `GUNGNIR_FM_BACKEND` selects the backend:
 
 - `auto` (default): live if gungnird answers its handshake within 500 ms, else mock.
+- `live-or-off`: live if gungnird answers, else no Gungnir at all (the sidebar section
+  is hidden). The menu entry from `scripts/install-local.sh` uses this for daily use.
 - `mock`: always the mock.
 - `live`: always the live backend, which keeps retrying a missing daemon.
+- `off`: local files only.
 
 The sidebar header shows which one is active (`GUNGNIR VFS · LIVE` or `· MOCK`).
 `GUNGNIR_SOCKET` overrides the socket path, with the same lookup order as gungnird.

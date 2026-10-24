@@ -8,8 +8,11 @@
 //! updates come back only through `slint::invoke_from_event_loop`.
 //!
 //! Environment:
-//! - `GUNGNIR_FM_BACKEND=auto|mock|live` (default `auto`: the live gungnird if it
-//!   answers its handshake within 500 ms, else the mock backend).
+//! - `GUNGNIR_FM_BACKEND` picks the Gungnir backend:
+//!   - `auto` (default): the live gungnird if it answers its handshake within 500 ms,
+//!     else the mock backend (development);
+//!   - `live-or-off`: the live gungnird if it answers, else no Gungnir at all (daily use);
+//!   - `live`, `mock`, `off`: always that one (`live` keeps retrying a missing daemon).
 //! - `GUNGNIR_SOCKET`: the gungnird socket (else gungnird's own default path).
 //! - `GUNGNIR_FM_TRACE=1`: print listing timings to stderr.
 //!
@@ -107,7 +110,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Pick the Gungnir backend before the window exists (bounded: 500 ms handshake).
     let mut registry = VfsRegistry::new();
     registry.register(Arc::new(LocalPosixBackend::new()));
-    let live = if mode == "mock" {
+    let mode = match mode.as_str() {
+        "auto" | "live" | "mock" | "off" | "live-or-off" => mode,
+        other => {
+            eprintln!("gungnir-fm: unknown GUNGNIR_FM_BACKEND={other:?}, using auto");
+            "auto".to_owned()
+        }
+    };
+    let live = if matches!(mode.as_str(), "mock" | "off") {
         None
     } else {
         match socket_path_from_env() {
@@ -132,6 +142,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let root = VfsUri::gungnir("", "/")?;
             (root, label, VfsUri::gungnir("", home.path())?)
         }
+        // No Gungnir at all: local files only, and the sidebar section is hidden.
+        None if matches!(mode.as_str(), "off" | "live-or-off") => (home.clone(), String::new(), home.clone()),
         None => {
             registry.register(Arc::new(MockGungnirBackend::default()));
             (VfsUri::gungnir("odin", "/")?, "GUNGNIR VFS · MOCK".to_owned(), VfsUri::gungnir("odin", "/asgard")?)

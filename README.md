@@ -24,6 +24,16 @@ cargo build --release
 target/release/gungnir-fm [LEFT] [RIGHT]
 ```
 
+Install it for your user (binary in `~/.local/bin`, an icon and a menu entry; your
+default file manager is not changed). Undo with `--uninstall`:
+
+```sh
+scripts/install-local.sh
+```
+
+The menu entry starts in `live-or-off` mode: Gungnir features when gungnird runs,
+otherwise plain local files with no Gungnir section.
+
 With a running gungnird the live backend is used automatically; otherwise the mock
 backend fills the Gungnir section. See [ARCHITECTURE.md](ARCHITECTURE.md) for the
 design, the Slint live-preview workflow and how to switch between backends.
