@@ -206,3 +206,37 @@ fn crumbs_start_at_home_like_nemo() {
     assert_eq!(c[0].icon, 3);
     assert_eq!(crumb_views(&uri("gungnir:///home"), &home)[0].label, "gungnir");
 }
+
+#[test]
+fn copy_paste_and_cut_paste_between_folders() {
+    let d = temp_dir("clip");
+    std::fs::create_dir_all(d.join("src_dir")).ok();
+    std::fs::create_dir_all(d.join("dst_dir")).ok();
+    std::fs::write(d.join("src_dir/sample_document.pdf"), b"pdf").ok();
+    std::fs::write(d.join("src_dir/archive_alpha.tar.gz"), b"tgz").ok();
+    let src = d.join("src_dir");
+    let h = start(src.to_str().unwrap_or("/"), "gungnir://odin/asgard", MockConfig::instant());
+    h.until(Duration::from_secs(5), |u| full_rows(u, 0, 2));
+
+    // Ctrl+C on the first row, then Ctrl+V in the other folder.
+    h.send(Command::RowClicked { pane: 0, index: 0, ctrl: false, shift: false });
+    h.send(Command::Run("copy".into()));
+    h.send(Command::Navigate { pane: 0, location: d.join("dst_dir").display().to_string() });
+    h.until(Duration::from_secs(5), |u| full_rows(u, 0, 0));
+    h.send(Command::Run("paste".into()));
+    h.until(Duration::from_secs(5), |u| matches!(u, Update::Status(s) if s.message.contains("finished")));
+    assert!(d.join("dst_dir/archive_alpha.tar.gz").exists(), "copied");
+    assert!(d.join("src_dir/archive_alpha.tar.gz").exists(), "copy keeps the source");
+
+    // Ctrl+X in the source folder, Ctrl+V here: a move.
+    h.send(Command::Navigate { pane: 0, location: src.display().to_string() });
+    h.until(Duration::from_secs(5), |u| full_rows(u, 0, 2));
+    h.send(Command::RowClicked { pane: 0, index: 1, ctrl: false, shift: false });
+    h.send(Command::Run("cut".into()));
+    h.send(Command::Navigate { pane: 0, location: d.join("dst_dir").display().to_string() });
+    h.until(Duration::from_secs(5), |u| full_rows(u, 0, 1));
+    h.send(Command::Run("paste".into()));
+    h.until(Duration::from_secs(5), |u| matches!(u, Update::Status(s) if s.message.starts_with("Moving") && s.message.contains("finished")));
+    assert!(d.join("dst_dir/sample_document.pdf").exists() && !d.join("src_dir/sample_document.pdf").exists(), "moved");
+    let _ = std::fs::remove_dir_all(&d);
+}

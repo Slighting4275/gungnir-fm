@@ -49,6 +49,13 @@ pub enum Command {
     TransferAction { id: i64, action: String },
     DialogAccept(String),
     DialogCancel,
+    /// A row picked in a chooser dialog.
+    DialogChoose(usize),
+    /// Internal drag and drop: source row, target row (`None`: the pane's folder).
+    Drop { src_pane: usize, src_index: usize, dst_pane: usize, dst_index: Option<usize>, copy: bool },
+    /// Sidebar device clicked (mounts it first if needed), or its eject button.
+    DeviceOpen(String),
+    DeviceEject(String),
     RenameCommit { pane: usize, index: usize, name: String },
     RenameCancel,
 }
@@ -106,6 +113,10 @@ pub enum Event {
         id: u64,
         result: VfsResult<()>,
     },
+    OpenWith { mime: String, files: Vec<PathBuf>, apps: Vec<crate::desktop::App> },
+    BusReady(zbus::Connection),
+    Devices(Vec<crate::drives::Device>),
+    Mounted { object: String, result: Result<String, String> },
     Tick,
 }
 
@@ -233,11 +244,15 @@ struct Transfer {
     cancel: CancellationToken,
     pause: watch::Sender<bool>,
     can_pause: bool,
+    /// How long it took, frozen when it finished.
+    took: Option<Duration>,
 }
 
 enum PendingDialog {
     NewFolder { pane: usize },
     Delete { pane: usize, uris: Vec<VfsUri> },
+    /// "Open With": the files and the candidate applications shown as rows.
+    OpenWith { files: Vec<PathBuf>, apps: Vec<crate::desktop::App> },
     Info,
 }
 
@@ -267,6 +282,11 @@ pub struct Controller {
     tree_task: Option<JoinHandle<()>>,
     /// URIs of the tree rows last shown (index -> location for `TreeToggle`).
     tree_rows: Vec<String>,
+    /// Ctrl+C / Ctrl+X: the items and whether they are cut (moved on paste).
+    clipboard: Option<(Vec<VfsUri>, bool)>,
+    /// udisks2 over the system bus (None until connected, or without udisks).
+    bus: Option<zbus::Connection>,
+    devices: Vec<crate::drives::Device>,
 }
 
 /// Breadcrumbs as Nemo shows them: a folder below `home` starts at a "Home" crumb, the
@@ -323,6 +343,9 @@ impl Controller {
             tree_expanded: BTreeSet::new(),
             tree_task: None,
             tree_rows: Vec::new(),
+            clipboard: None,
+            bus: None,
+            devices: Vec::new(),
         }
     }
 
@@ -364,6 +387,26 @@ impl Controller {
                     return;
                 }
                 tokio::time::sleep(Duration::from_secs(3)).await;
+            }
+        });
+        // Removable drives (udisks2). Without a system bus or udisks the section stays hidden.
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            let Ok(conn) = zbus::Connection::system().await else { return };
+            if tx.send(Msg::Ev(Event::BusReady(conn.clone()))).await.is_err() {
+                return;
+            }
+            let mut last: Option<Vec<crate::drives::Device>> = None;
+            loop {
+                if let Ok(d) = crate::drives::list(&conn).await
+                    && last.as_ref() != Some(&d)
+                {
+                    last = Some(d.clone());
+                    if tx.send(Msg::Ev(Event::Devices(d))).await.is_err() {
+                        return;
+                    }
+                }
+                tokio::time::sleep(Duration::from_secs(2)).await;
             }
         });
         // Ticker for transfer rates and message expiry.
@@ -527,7 +570,7 @@ impl Controller {
                         format!(
                             "Done · {} in {:.1} s",
                             format::size(p.bytes_total.max(p.bytes_done)),
-                            t.started.elapsed().as_secs_f32()
+                            t.took.unwrap_or_else(|| t.started.elapsed()).as_secs_f32()
                         ),
                         1.0,
                     ),
@@ -1062,6 +1105,23 @@ impl Controller {
         }
         let dest = self.panes[1 - src_pane].tab().location.clone();
         let sources: Vec<VfsUri> = targets.iter().map(|e| e.uri.clone()).collect();
+        self.start_transfer(kind, sources, dest);
+    }
+
+    /// Copy or move `sources` into the folder `dest` (F5/F6, paste, drag and drop).
+    fn start_transfer(&mut self, kind: TransferKind, sources: Vec<VfsUri>, dest: VfsUri) {
+        if sources.is_empty() {
+            return;
+        }
+        if sources.iter().any(|s| dest.starts_with(s)) {
+            self.say("A folder cannot be copied or moved into itself", true);
+            return;
+        }
+        // Moving files into the folder they are already in does nothing.
+        if kind == TransferKind::Move && sources.iter().all(|s| s.parent().as_ref() == Some(&dest)) {
+            return;
+        }
+        let names: Vec<&str> = sources.iter().filter_map(VfsUri::file_name).collect();
         let pick = |p: &Arc<dyn VfsProvider>| sources.iter().all(|s| p.can_transfer(s, &dest));
         let provider =
             [self.registry.resolve(&dest), self.registry.resolve(&sources[0])].into_iter().flatten().find(|p| pick(p));
@@ -1078,7 +1138,7 @@ impl Controller {
         };
         let id = self.next_transfer;
         self.next_transfer += 1;
-        let what = if targets.len() == 1 { targets[0].name.clone() } else { format!("{} items", targets.len()) };
+        let what = if let [one] = names.as_slice() { (*one).to_owned() } else { format!("{} items", sources.len()) };
         let title = format!("{} {what} to {}", kind.verb(), dest.display());
         let cancel = CancellationToken::new();
         let (pause, paused) = watch::channel(false);
@@ -1105,6 +1165,7 @@ impl Controller {
                 cancel: cancel.clone(),
                 pause,
                 can_pause: provider.capabilities().pause_transfers,
+                took: None,
             },
         ));
         self.push_transfers(Some(true));
@@ -1145,10 +1206,32 @@ impl Controller {
                 let c = self.panes[p].tab().cursor;
                 self.activate(p, c);
             }
+            "open-with" => self.open_with(p),
             "open-in-tab" => {
                 if let Some(e) = self.panes[p].tab().targets().into_iter().find(FileEntry::is_navigable) {
                     self.new_tab(p, Some(e.uri));
                 }
+            }
+            "copy" | "cut" => {
+                let uris: Vec<VfsUri> = self.panes[p].tab().targets().into_iter().map(|e| e.uri).collect();
+                if uris.is_empty() {
+                    return;
+                }
+                let cut = name == "cut";
+                let n = uris.len();
+                self.clipboard = Some((uris, cut));
+                self.say(format!("{} {n} item{} (Ctrl+V to paste)", if cut { "Cut" } else { "Copied" }, if n == 1 { "" } else { "s" }), false);
+            }
+            "paste" => {
+                let Some((uris, cut)) = self.clipboard.clone() else {
+                    self.say("Nothing to paste", true);
+                    return;
+                };
+                if cut {
+                    self.clipboard = None; // a cut is pasted once
+                }
+                let dest = self.panes[p].tab().location.clone();
+                self.start_transfer(if cut { TransferKind::Move } else { TransferKind::Copy }, uris, dest);
             }
             "copy-to-other" => self.transfer(TransferKind::Copy),
             "move-to-other" => self.transfer(TransferKind::Move),
@@ -1639,6 +1722,12 @@ impl Controller {
             }
             Command::TransferAction { id, action } => self.transfer_action(id, &action),
             Command::DialogAccept(text) => self.dialog_accept(text),
+            Command::DialogChoose(i) => self.dialog_choose(i),
+            Command::DeviceOpen(object) => self.device_open(&object),
+            Command::DeviceEject(object) => self.device_eject(&object),
+            Command::Drop { src_pane, src_index, dst_pane, dst_index, copy } => {
+                self.drop_items(src_pane, src_index, dst_pane, dst_index, copy);
+            }
             Command::DialogCancel => {
                 self.dialog = None;
                 self.ui.send(Update::CloseDialog);
@@ -1662,6 +1751,141 @@ impl Controller {
                 self.ui.send(Update::Rename { pane: -1, index: -1 });
             }
         }
+    }
+
+    /// "Open With…": find the applications for the selection's type (blocking work off the
+    /// actor), then show them in a chooser dialog.
+    fn open_with(&mut self, pane: usize) {
+        let targets = self.panes[pane].tab().targets();
+        let local: Vec<(PathBuf, bool)> = targets
+            .iter()
+            .filter_map(|e| {
+                let path = match e.uri.scheme() {
+                    Scheme::File => e.uri.to_local_path(),
+                    Scheme::Gungnir if e.uri.authority().is_empty() => Some(PathBuf::from(e.uri.path())),
+                    Scheme::Gungnir => None,
+                }?;
+                Some((path, e.is_navigable()))
+            })
+            .collect();
+        if local.is_empty() {
+            self.say(
+                if targets.is_empty() { "Nothing selected" } else { "Only local files can be opened with an application" },
+                true,
+            );
+            return;
+        }
+        let tx = self.tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let idx = crate::desktop::DesktopIndex::load(&crate::desktop::Dirs::from_env());
+            let (first, is_dir) = &local[0];
+            let name = first.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let mime = idx.mime_for(&name, *is_dir);
+            let apps: Vec<crate::desktop::App> = idx.apps_for(&mime).into_iter().cloned().collect();
+            let files = local.into_iter().map(|(p, _)| p).collect();
+            let _ = tx.blocking_send(Msg::Ev(Event::OpenWith { mime, files, apps }));
+        });
+    }
+
+    /// A drop: the dragged row, or the whole selection when the row is part of it, goes
+    /// into the folder row it was dropped on, or into the target pane's folder.
+    fn drop_items(&mut self, src_pane: usize, src_index: usize, dst_pane: usize, dst_index: Option<usize>, copy: bool) {
+        let st = self.panes[src_pane].tab();
+        let Some(entry) = st.entry_at(src_index).cloned() else { return };
+        let sources: Vec<VfsUri> = if st.selected.contains(&entry.name) {
+            st.targets().into_iter().map(|e| e.uri).collect()
+        } else {
+            vec![entry.uri]
+        };
+        let dt = self.panes[dst_pane].tab();
+        let dest = match dst_index.and_then(|i| dt.entry_at(i)) {
+            Some(e) if e.is_navigable() => e.uri.clone(),
+            _ => dt.location.clone(),
+        };
+        // Dropped back where it came from, or a folder onto itself: nothing to do.
+        if sources.contains(&dest) || sources.iter().all(|s| s.parent().as_ref() == Some(&dest)) {
+            return;
+        }
+        self.focus_pane(dst_pane);
+        self.start_transfer(if copy { TransferKind::Copy } else { TransferKind::Move }, sources, dest);
+    }
+
+    fn push_devices(&self) {
+        let loc = self.panes[self.active_pane].tab().location.display();
+        let items = self
+            .devices
+            .iter()
+            .map(|d| crate::DeviceItem {
+                label: d.label.as_str().into(),
+                uri: d.mount_point.clone().unwrap_or_default().into(),
+                object: d.object.as_str().into(),
+                mounted: d.mount_point.is_some(),
+                size_text: format::size(d.size).into(),
+                active: d.mount_point.as_deref().is_some_and(|m| m == loc),
+            })
+            .collect();
+        self.ui.send(Update::Devices(items));
+    }
+
+    /// Open a sidebar device: navigate to it, mounting it first if needed.
+    fn device_open(&mut self, object: &str) {
+        let Some(dev) = self.devices.iter().find(|d| d.object == object).cloned() else { return };
+        if let Some(mp) = dev.mount_point.as_deref().and_then(|m| VfsUri::parse(m).ok()) {
+            let p = self.active_pane;
+            self.navigate_to(p, mp);
+            return;
+        }
+        let Some(conn) = self.bus.clone() else { return };
+        self.say(format!("Mounting {}…", dev.label), false);
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            let result = crate::drives::mount(&conn, &dev.object).await.map_err(|e| format!("Mount {}: {e}", dev.label));
+            let _ = tx.send(Msg::Ev(Event::Mounted { object: dev.object, result })).await;
+        });
+    }
+
+    /// Eject button: move panes off the drive, unmount, eject or power off.
+    fn device_eject(&mut self, object: &str) {
+        let Some(dev) = self.devices.iter().find(|d| d.object == object).cloned() else { return };
+        let Some(conn) = self.bus.clone() else { return };
+        if let Some(mp) = dev.mount_point.as_deref().and_then(|m| VfsUri::parse(m).ok()) {
+            for p in 0..2 {
+                for t in &mut self.panes[p].tabs {
+                    if t.location.starts_with(&mp) {
+                        t.cancel.cancel();
+                        if let Some(w) = t.watch.take() {
+                            w.abort();
+                        }
+                    }
+                }
+                if self.panes[p].tab().location.starts_with(&mp) {
+                    let home = self.cfg.home.clone();
+                    self.navigate_to(p, home);
+                }
+            }
+        }
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            let result = crate::drives::safely_remove(&conn, &dev)
+                .await
+                .map(|()| format!("{} can be safely removed", dev.label))
+                .map_err(|e| format!("Eject {}: {e}", dev.label));
+            let _ = tx.send(Msg::Ev(Event::Op { result, reload: Vec::new(), select: None })).await;
+        });
+    }
+
+    fn dialog_choose(&mut self, index: usize) {
+        let Some(PendingDialog::OpenWith { files, apps }) = self.dialog.take() else { return };
+        self.ui.send(Update::CloseDialog);
+        let Some(app) = apps.into_iter().nth(index) else { return };
+        let tx = self.tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let result = match crate::desktop::launch(&app, &files) {
+                Ok(_) => Ok(format!("Opened with {}", app.name)),
+                Err(e) => Err(format!("{}: {e}", app.name)),
+            };
+            let _ = tx.blocking_send(Msg::Ev(Event::Op { result, reload: Vec::new(), select: None }));
+        });
     }
 
     fn transfer_action(&mut self, id: i64, action: &str) {
@@ -1721,7 +1945,7 @@ impl Controller {
                     Ok(format!("Deleted {n} item{}", if n == 1 { "" } else { "s" }))
                 });
             }
-            PendingDialog::Info => {}
+            PendingDialog::Info | PendingDialog::OpenWith { .. } => {}
         }
     }
 
@@ -1818,6 +2042,7 @@ impl Controller {
             }
             Event::TransferEnded { id, result } => {
                 let Some((_, t)) = self.transfers.iter_mut().find(|(i, _)| *i == id) else { return };
+                t.took.get_or_insert_with(|| t.started.elapsed());
                 t.progress.state = match &result {
                     Ok(()) => TransferState::Done,
                     Err(VfsError::Cancelled) => TransferState::Cancelled,
@@ -1836,6 +2061,40 @@ impl Controller {
                 self.push_transfers(None);
                 self.say(msg.0, msg.1);
                 self.reload_matching(&dirs);
+            }
+            Event::BusReady(conn) => self.bus = Some(conn),
+            Event::Devices(d) => {
+                self.devices = d;
+                self.push_devices();
+            }
+            Event::Mounted { object, result } => match result {
+                Ok(mp) => {
+                    let label = self.devices.iter().find(|d| d.object == object).map(|d| d.label.clone()).unwrap_or_default();
+                    self.say(format!("Mounted {label} at {mp}"), false);
+                    if let Ok(u) = VfsUri::parse(&mp) {
+                        let p = self.active_pane;
+                        self.navigate_to(p, u);
+                    }
+                }
+                Err(e) => self.say(e, true),
+            },
+            Event::OpenWith { mime, files, apps } => {
+                if apps.is_empty() {
+                    self.say(format!("No application is registered for {mime}"), true);
+                    return;
+                }
+                let n = files.len();
+                let rows = apps.iter().map(|a| (a.name.clone(), a.id.trim_end_matches(".desktop").to_owned())).collect();
+                let what = files.first().and_then(|f| f.file_name()).map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+                let what = if n == 1 { what } else { format!("{n} files") };
+                self.dialog = Some(PendingDialog::OpenWith { files, apps });
+                self.ui.send(Update::Dialog(DialogView {
+                    kind: DialogKind::Choose,
+                    title: format!("Open {what} with"),
+                    message: mime,
+                    rows,
+                    input: String::new(),
+                }));
             }
             Event::Tick => {
                 if self.transfers_dirty {

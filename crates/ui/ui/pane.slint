@@ -171,6 +171,16 @@ export component Pane inherits Rectangle {
     callback command(name: string);
     callback rename-commit(index: int, name: string);
     callback rename-cancel();
+    // Drag and drop inside the app: the pane reports where a drag started and where
+    // it was dropped (index -1: the pane's own folder).
+    in property <bool> dragging-from-app: false;
+    in-out property <int> pending-single: -1;
+    callback drag-start(index: int);
+    callback drag-end();
+    callback drop-on(index: int, copy: bool);
+    // The drag payload (built by the host; it only names the row, the drop reads the
+    // source from drag-start).
+    pure callback drag-data(index: int) -> data-transfer;
 
     property <length> row-h: root.view-mode == 0 ? Theme.compact-row-height : Theme.row-height;
     property <bool> show-type: list-area.width > 640px;
@@ -275,10 +285,27 @@ export component Pane inherits Rectangle {
 
         list-area := Rectangle {
             vertical-stretch: 1;
+            // Drops on empty space or on a file go into this pane's folder.
+            pane-drop := DropArea {
+                can-drop(e) => { root.dragging-from-app ? e.proposed-action : DragAction.none }
+                dropped(e) => {
+                    root.drop-on(-1, e.proposed-action == DragAction.copy);
+                    e.proposed-action
+                }
+            }
+            if pane-drop.has-drag: Rectangle {
+                border-width: 2px;
+                border-color: Theme.accent-dim;
+            }
             cm := ContextMenuArea {
                 Menu {
                     MenuItem { title: "Open"; activated => { root.command("open"); } }
                     MenuItem { title: "Open in New Tab"; activated => { root.command("open-in-tab"); } }
+                    MenuItem { title: "Open With…"; activated => { root.command("open-with"); } }
+                    MenuSeparator { }
+                    MenuItem { title: "Cut"; activated => { root.command("cut"); } }
+                    MenuItem { title: "Copy"; activated => { root.command("copy"); } }
+                    MenuItem { title: "Paste"; activated => { root.command("paste"); } }
                     MenuSeparator { }
                     MenuItem { title: "Copy to Other Pane (F5)"; activated => { root.command("copy-to-other"); } }
                     MenuItem { title: "Move to Other Pane (F6)"; activated => { root.command("move-to-other"); } }
@@ -304,12 +331,27 @@ export component Pane inherits Rectangle {
                         border-width: idx == root.info.cursor && root.active && !f.selected ? 1px : 0px;
                         border-color: Theme.border-strong;
 
+                        // Press-and-move drags the row (and the rest of the selection if the row is
+                        // selected); a plain click still selects. TouchArea sits inside the DragArea.
+                        row-drag := DragArea {
+                            allow-copy: true;
+                            allow-move: true;
+                            data: root.drag-data(idx);
+                            changed dragging => {
+                                if self.dragging { root.drag-start(idx); } else { root.drag-end(); }
+                            }
                         row-touch := TouchArea {
                             pointer-event(e) => {
                                 if e.kind == PointerEventKind.down {
                                     root.focus-pane();
                                     if e.button == PointerEventButton.left {
-                                        root.row-clicked(idx, e.modifiers.control, e.modifiers.shift);
+                                        // On an already selected row, wait for the release: this
+                                        // press may start dragging the whole selection.
+                                        if f.selected && !e.modifiers.control && !e.modifiers.shift {
+                                            root.pending-single = idx;
+                                        } else {
+                                            root.row-clicked(idx, e.modifiers.control, e.modifiers.shift);
+                                        }
                                     } else if e.button == PointerEventButton.right {
                                         root.row-context(idx);
                                         cm.show({
@@ -319,7 +361,30 @@ export component Pane inherits Rectangle {
                                     }
                                 }
                             }
+                            clicked => {
+                                if root.pending-single == idx {
+                                    root.pending-single = -1;
+                                    root.row-clicked(idx, false, false);
+                                }
+                            }
                             double-clicked => { root.row-activated(idx); }
+                        }
+                        }
+
+                        // Folders accept drops (copy with Ctrl, move otherwise).
+                        row-drop := DropArea {
+                            enabled: f.is-dir;
+                            can-drop(e) => { root.dragging-from-app ? e.proposed-action : DragAction.none }
+                            dropped(e) => {
+                                root.drop-on(idx, e.proposed-action == DragAction.copy);
+                                e.proposed-action
+                            }
+                        }
+                        Rectangle {
+                            visible: row-drop.has-drag;
+                            border-width: 2px;
+                            border-color: Theme.accent;
+                            border-radius: Theme.radius-small;
                         }
 
                         HorizontalLayout {

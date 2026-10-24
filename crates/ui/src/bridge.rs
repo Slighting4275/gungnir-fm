@@ -75,6 +75,7 @@ pub enum Update {
         label: String,
     },
     Tree(Vec<TreeRow>),
+    Devices(Vec<crate::DeviceItem>),
     Transfers {
         rows: Vec<TransferRow>,
         active: i32,
@@ -111,6 +112,7 @@ impl SlintSink {
         ui.set_places(ModelRc::default());
         ui.set_mounts(ModelRc::default());
         ui.set_tree(ModelRc::default());
+        ui.set_devices(ModelRc::default());
         Self { weak: ui.as_weak() }
     }
 }
@@ -167,6 +169,7 @@ pub fn apply(ui: &AppWindow, u: Update) {
             ui.set_gungnir_label(label.into());
         }
         Update::Tree(t) => ui.set_tree(model(t)),
+        Update::Devices(d) => ui.set_devices(model(d)),
         Update::Transfers { rows, active, open } => {
             let m = ui.get_transfers();
             match m.as_any().downcast_ref::<VecModel<TransferRow>>() {

@@ -59,6 +59,16 @@ export struct MountItem {
     active: bool,
 }
 
+// A removable drive (udisks2). uri is its mount point, empty while unmounted.
+export struct DeviceItem {
+    label: string,
+    uri: string,
+    object: string,
+    mounted: bool,
+    size-text: string,
+    active: bool,
+}
+
 export struct TreeRow {
     label: string,
     uri: string,

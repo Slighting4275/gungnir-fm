@@ -14,6 +14,8 @@ export enum DialogKind {
     properties,
     inspect,
     error,
+    // A list of clickable choices (Open With).
+    choose,
 }
 
 component DialogButton inherits Rectangle {
@@ -57,6 +59,7 @@ export component DialogOverlay inherits Rectangle {
     in-out property <string> input;
     callback accept(text: string);
     callback cancel();
+    callback choose(index: int);
 
     public function focus-input() {
         field.focus();
@@ -123,7 +126,34 @@ export component DialogOverlay inherits Rectangle {
                     EventResult.reject
                 }
             }
-            if root.rows.length > 0: Rectangle {
+            if root.kind == DialogKind.choose: Rectangle {
+                height: min(400px, root.rows.length * 40px + 8px);
+                border-radius: Theme.radius;
+                background: Theme.field;
+                border-width: 1px;
+                border-color: Theme.border;
+                ScrollView {
+                    VerticalLayout {
+                        padding: 4px;
+                        for r[i] in root.rows: Rectangle {
+                            height: 40px;
+                            border-radius: Theme.radius-small;
+                            background: pick.pressed ? Theme.pressed : pick.has-hover ? Theme.selection : transparent;
+                            pick := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.choose(i); }
+                            }
+                            VerticalLayout {
+                                padding-left: 10px;
+                                alignment: center;
+                                Text { text: r.key; color: Theme.text; font-size: Theme.font-size; font-weight: i == 0 ? 600 : 400; }
+                                Text { text: r.value; color: Theme.text-faint; font-size: 11px; }
+                            }
+                        }
+                    }
+                }
+            }
+            if root.rows.length > 0 && root.kind != DialogKind.choose: Rectangle {
                 // Values wrap (long URIs), so size by row count rather than the unwrapped estimate.
                 height: min(400px, max(rows-layout.preferred-height + 2px, root.rows.length * 30px + 18px));
                 border-radius: Theme.radius;

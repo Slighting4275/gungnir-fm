@@ -2,7 +2,7 @@
 
 import { ScrollView, ListView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { PlaceItem, MountItem, TreeRow } from "types.slint";
+import { PlaceItem, MountItem, TreeRow, DeviceItem } from "types.slint";
 import { Glyph, Dot } from "widgets.slint";
 
 component SectionHeader inherits Rectangle {
@@ -81,6 +81,58 @@ component SideItem inherits Rectangle {
     }
 }
 
+component DeviceRow inherits Rectangle {
+    in property <DeviceItem> item;
+    callback open;
+    callback eject;
+    height: 28px;
+    border-radius: Theme.radius-small;
+    background: item.active ? Theme.selection : touch.has-hover ? Theme.hover : transparent;
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.open(); }
+    }
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 4px;
+        spacing: 9px;
+        Glyph {
+            y: (parent.height - self.height) / 2;
+            name: "drive";
+            tint: root.item.mounted ? Theme.text-dim : Theme.text-faint;
+        }
+        Text {
+            text: root.item.label;
+            color: root.item.mounted ? Theme.text-dim : Theme.text-faint;
+            font-size: Theme.font-size;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 1;
+        }
+        if !root.item.mounted: Text {
+            text: root.item.size-text;
+            color: Theme.text-faint;
+            font-size: 10.5px;
+            vertical-alignment: center;
+        }
+        // Unmount + eject: safe to unplug afterwards.
+        if root.item.mounted: Rectangle {
+            width: 22px;
+            Rectangle {
+                y: (parent.height - 22px) / 2;
+                height: 22px;
+                border-radius: Theme.radius-small;
+                background: ej.has-hover ? Theme.pressed : transparent;
+                Glyph { name: "eject"; width: 12px; height: 12px; tint: ej.has-hover ? Theme.text : Theme.text-faint; }
+                ej := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.eject(); }
+                }
+            }
+        }
+    }
+}
+
 export component Sidebar inherits Rectangle {
     in property <[PlaceItem]> places: [
         { label: "Home", uri: "/home/user", icon: 0, active: false },
@@ -106,6 +158,13 @@ export component Sidebar inherits Rectangle {
         { label: "etc", uri: "/etc", depth: 1, expanded: false, has-children: true, active: false },
         { label: "usr", uri: "/usr", depth: 1, expanded: false, has-children: true, active: false },
     ];
+    in property <[DeviceItem]> devices: [
+        { label: "BACKUP_01", uri: "/run/media/user/BACKUP_01", object: "/demo/sdb1", mounted: true, size-text: "64.0 GB", active: false },
+        { label: "32.0 GB Volume", uri: "", object: "/demo/sdc1", mounted: false, size-text: "32.0 GB", active: false },
+    ];
+    in-out property <bool> devices-open: true;
+    callback device-open(object: string);
+    callback device-eject(object: string);
     in-out property <int> mode: 0;
     in property <string> gungnir-label: "GUNGNIR VFS";
     callback open(uri: string);
@@ -145,6 +204,12 @@ export component Sidebar inherits Rectangle {
                     glyph: root.place-glyph(p.icon);
                     active: p.active;
                     clicked => { root.open(p.uri); }
+                } }
+                if root.devices.length > 0: SectionHeader { text: "DEVICES"; open <=> root.devices-open; }
+                if root.devices-open && root.devices.length > 0: VerticalLayout { spacing: 1px; for d in root.devices: DeviceRow {
+                    item: d;
+                    open => { root.device-open(d.object); }
+                    eject => { root.device-eject(d.object); }
                 } }
                 // Hidden entirely when Gungnir is off (empty label).
                 if root.gungnir-label != "": SectionHeader { text: root.gungnir-label; tint: Theme.gold.darker(10%); open <=> root.gungnir-open; }

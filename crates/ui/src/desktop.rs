@@ -1,0 +1,498 @@
+//! Desktop integration for "Open With": the freedesktop.org specs, implemented directly.
+//!
+//! - MIME type of a file name: shared-mime-info `mime/globs2` (weighted globs) plus
+//!   `mime/subclasses` for parent types (`text/x-rust` falls back to `text/plain`).
+//! - Applications: `applications/*.desktop` in XDG data dirs, highest priority first
+//!   (`$XDG_DATA_HOME`, then `$XDG_DATA_DIRS`); a desktop ID found earlier masks later ones,
+//!   `Hidden=true` deletes it, `TryExec` must exist.
+//! - Defaults and associations: `mimeapps.list` in XDG config dirs, then data dirs
+//!   (`[Default Applications]`, `[Added Associations]`, `[Removed Associations]`), and the
+//!   legacy `defaults.list`.
+//! - Launching: Desktop Entry `Exec` quoting and field codes (`%f %F %u %U %i %c %k %%`).
+//!
+//! Everything here does blocking file I/O; the controller calls it on blocking threads.
+
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+
+/// Where to look, highest priority first.
+#[derive(Debug, Clone)]
+pub struct Dirs {
+    pub data: Vec<PathBuf>,
+    pub config: Vec<PathBuf>,
+}
+
+fn env_dirs(var: &str, default: &str) -> Vec<PathBuf> {
+    let v = std::env::var(var).ok().filter(|s| !s.is_empty()).unwrap_or_else(|| default.to_owned());
+    v.split(':').map(PathBuf::from).filter(|p| p.is_absolute()).collect()
+}
+
+impl Dirs {
+    /// From the XDG environment variables (with the spec's defaults).
+    #[must_use]
+    pub fn from_env() -> Self {
+        let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+        let abs = |var: &str, fallback: PathBuf| {
+            std::env::var_os(var).map(PathBuf::from).filter(|p| p.is_absolute()).unwrap_or(fallback)
+        };
+        let mut data = vec![abs("XDG_DATA_HOME", home.join(".local/share"))];
+        data.extend(env_dirs("XDG_DATA_DIRS", "/usr/local/share:/usr/share"));
+        let mut config = vec![abs("XDG_CONFIG_HOME", home.join(".config"))];
+        config.extend(env_dirs("XDG_CONFIG_DIRS", "/etc/xdg"));
+        Self { data, config }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct App {
+    /// Desktop file ID, e.g. `org.gnome.TextEditor.desktop`.
+    pub id: String,
+    pub name: String,
+    pub exec: String,
+    pub icon: String,
+    pub path: PathBuf,
+    pub mimes: Vec<String>,
+    pub no_display: bool,
+}
+
+#[derive(Debug, Default)]
+struct Globs {
+    /// Lowercased extension (may contain dots, e.g. `tar.gz`) -> (weight, mime).
+    ext: HashMap<String, (u32, String)>,
+    /// Exact file names -> (weight, mime).
+    literal: HashMap<String, (u32, String)>,
+}
+
+#[derive(Debug, Default)]
+pub struct DesktopIndex {
+    apps: HashMap<String, App>,
+    by_mime: HashMap<String, Vec<String>>,
+    defaults: HashMap<String, Vec<String>>,
+    added: HashMap<String, Vec<String>>,
+    removed: HashMap<String, HashSet<String>>,
+    parents: HashMap<String, Vec<String>>,
+    globs: Globs,
+}
+
+/// `[Group]` -> key -> value of an ini-style file (comments and blank lines skipped).
+fn parse_ini(text: &str) -> HashMap<String, HashMap<String, String>> {
+    let mut out: HashMap<String, HashMap<String, String>> = HashMap::new();
+    let mut group = String::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some(g) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
+            group = g.to_owned();
+            continue;
+        }
+        if let Some((k, v)) = line.split_once('=') {
+            out.entry(group.clone()).or_default().entry(k.trim().to_owned()).or_insert_with(|| v.trim().to_owned());
+        }
+    }
+    out
+}
+
+fn list(v: &str) -> Vec<String> {
+    v.split(';').map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned).collect()
+}
+
+/// `TryExec`: an absolute path that exists, or a name found on `$PATH`.
+fn try_exec_ok(prog: &str) -> bool {
+    if prog.contains('/') {
+        return Path::new(prog).exists();
+    }
+    std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(prog).is_file()))
+}
+
+/// All `*.desktop` files below `dir`, with their desktop IDs (`sub/x.desktop` -> `sub-x.desktop`).
+fn desktop_files(dir: &Path, prefix: &str, out: &mut Vec<(String, PathBuf)>) {
+    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    for e in rd.filter_map(Result::ok) {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let path = e.path();
+        if path.is_dir() {
+            desktop_files(&path, &format!("{prefix}{name}-"), out);
+        } else if name.ends_with(".desktop") {
+            out.push((format!("{prefix}{name}"), path));
+        }
+    }
+}
+
+impl DesktopIndex {
+    /// Read everything from `dirs`. Missing files are simply skipped.
+    #[must_use]
+    pub fn load(dirs: &Dirs) -> Self {
+        let mut idx = Self::default();
+        let mut seen: HashSet<String> = HashSet::new();
+        for d in &dirs.data {
+            let mut files = Vec::new();
+            desktop_files(&d.join("applications"), "", &mut files);
+            files.sort();
+            for (id, path) in files {
+                if !seen.insert(id.clone()) {
+                    continue; // a higher-priority dir already defined (or deleted) this ID
+                }
+                let Ok(text) = std::fs::read_to_string(&path) else { continue };
+                let ini = parse_ini(&text);
+                let Some(e) = ini.get("Desktop Entry") else { continue };
+                let truthy = |k: &str| e.get(k).is_some_and(|v| v == "true");
+                if e.get("Type").map(String::as_str) != Some("Application") || truthy("Hidden") {
+                    continue;
+                }
+                if e.get("TryExec").is_some_and(|t| !try_exec_ok(t)) {
+                    continue;
+                }
+                let (Some(name), Some(exec)) = (e.get("Name"), e.get("Exec")) else { continue };
+                let app = App {
+                    id: id.clone(),
+                    name: name.clone(),
+                    exec: exec.clone(),
+                    icon: e.get("Icon").cloned().unwrap_or_default(),
+                    path,
+                    mimes: e.get("MimeType").map(|m| list(m)).unwrap_or_default(),
+                    no_display: truthy("NoDisplay"),
+                };
+                for m in &app.mimes {
+                    idx.by_mime.entry(m.clone()).or_default().push(id.clone());
+                }
+                idx.apps.insert(id, app);
+            }
+        }
+        // mimeapps.list: config dirs, then data dirs' applications/, then legacy defaults.list.
+        let mut lists: Vec<PathBuf> = dirs.config.iter().map(|c| c.join("mimeapps.list")).collect();
+        lists.extend(dirs.data.iter().map(|d| d.join("applications/mimeapps.list")));
+        lists.extend(dirs.data.iter().map(|d| d.join("applications/defaults.list")));
+        for path in lists {
+            let Ok(text) = std::fs::read_to_string(&path) else { continue };
+            let ini = parse_ini(&text);
+            if let Some(g) = ini.get("Default Applications") {
+                for (mime, ids) in g {
+                    idx.defaults.entry(mime.clone()).or_insert_with(|| list(ids)); // first file wins
+                }
+            }
+            if let Some(g) = ini.get("Added Associations") {
+                for (mime, ids) in g {
+                    idx.added.entry(mime.clone()).or_default().extend(list(ids));
+                }
+            }
+            if let Some(g) = ini.get("Removed Associations") {
+                for (mime, ids) in g {
+                    idx.removed.entry(mime.clone()).or_default().extend(list(ids));
+                }
+            }
+        }
+        // shared-mime-info: later (lower-priority) dirs first, so higher ones override.
+        for d in dirs.data.iter().rev() {
+            if let Ok(text) = std::fs::read_to_string(d.join("mime/globs2")) {
+                idx.globs.add_globs2(&text);
+            }
+            if let Ok(text) = std::fs::read_to_string(d.join("mime/subclasses")) {
+                for line in text.lines() {
+                    if let Some((child, parent)) = line.split_once(' ') {
+                        idx.parents.entry(child.to_owned()).or_default().push(parent.trim().to_owned());
+                    }
+                }
+            }
+        }
+        idx
+    }
+
+    /// The MIME type of a file name (`inode/directory` for folders).
+    #[must_use]
+    pub fn mime_for(&self, name: &str, is_dir: bool) -> String {
+        if is_dir {
+            return "inode/directory".into();
+        }
+        self.globs.lookup(name).unwrap_or_else(|| "application/octet-stream".into())
+    }
+
+    /// Applications for `mime`, best first: the default, added associations, then every
+    /// app declaring the type, then the same for parent types. No duplicates, no removed
+    /// associations.
+    #[must_use]
+    pub fn apps_for(&self, mime: &str) -> Vec<&App> {
+        let mut out: Vec<&App> = Vec::new();
+        let mut seen: HashSet<&str> = HashSet::new();
+        let mut queue = vec![mime.to_owned()];
+        let mut visited: HashSet<String> = HashSet::new();
+        while let Some(m) = (!queue.is_empty()).then(|| queue.remove(0)) {
+            if !visited.insert(m.clone()) {
+                continue;
+            }
+            let removed = self.removed.get(&m);
+            let ids = self
+                .defaults
+                .get(&m)
+                .into_iter()
+                .flatten()
+                .chain(self.added.get(&m).into_iter().flatten())
+                .chain(self.by_mime.get(&m).into_iter().flatten());
+            for id in ids {
+                if removed.is_some_and(|r| r.contains(id)) {
+                    continue;
+                }
+                if let Some(app) = self.apps.get(id)
+                    && seen.insert(app.id.as_str())
+                {
+                    out.push(app);
+                }
+            }
+            if let Some(p) = self.parents.get(&m) {
+                queue.extend(p.iter().cloned());
+            } else if m.starts_with("text/") && m != "text/plain" {
+                queue.push("text/plain".into());
+            }
+        }
+        out
+    }
+}
+
+impl Globs {
+    fn add_globs2(&mut self, text: &str) {
+        for line in text.lines() {
+            if line.starts_with('#') {
+                continue;
+            }
+            let mut parts = line.splitn(4, ':');
+            let (Some(w), Some(mime), Some(glob)) = (parts.next(), parts.next(), parts.next()) else { continue };
+            let Ok(weight) = w.parse::<u32>() else { continue };
+            let case_sensitive = parts.next().is_some_and(|f| f.split(',').any(|x| x == "cs"));
+            let entry = (weight, mime.to_owned());
+            if let Some(ext) = glob.strip_prefix("*.") {
+                if !ext.contains(['*', '?', '[']) {
+                    let key = if case_sensitive { ext.to_owned() } else { ext.to_lowercase() };
+                    let better = self.ext.get(&key).is_none_or(|(w0, _)| weight >= *w0);
+                    if better {
+                        self.ext.insert(key, entry);
+                    }
+                }
+            } else if !glob.contains(['*', '?', '[']) {
+                self.literal.insert(glob.to_owned(), entry);
+            }
+        }
+    }
+
+    /// Exact name first, then the longest matching extension (`x.tar.gz` -> `tar.gz`).
+    fn lookup(&self, name: &str) -> Option<String> {
+        if let Some((_, m)) = self.literal.get(name) {
+            return Some(m.clone());
+        }
+        let lower = name.to_lowercase();
+        let mut rest = name;
+        let mut rest_lower = lower.as_str();
+        while let Some(i) = rest.find('.') {
+            let (ext, ext_lower) = (&rest[i + 1..], &rest_lower[i + 1..]);
+            if let Some((_, m)) = self.ext.get(ext).or_else(|| self.ext.get(ext_lower)) {
+                return Some(m.clone());
+            }
+            rest = ext;
+            rest_lower = ext_lower;
+        }
+        None
+    }
+}
+
+/// Split an `Exec` value into arguments (Desktop Entry spec quoting rules).
+fn tokenize(exec: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut in_quotes = false;
+    let mut has_token = false;
+    let mut chars = exec.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => {
+                in_quotes = !in_quotes;
+                has_token = true;
+            }
+            '\\' if in_quotes => {
+                if let Some(n) = chars.next() {
+                    cur.push(n);
+                }
+            }
+            c if c.is_whitespace() && !in_quotes => {
+                if has_token {
+                    out.push(std::mem::take(&mut cur));
+                    has_token = false;
+                }
+            }
+            c => {
+                cur.push(c);
+                has_token = true;
+            }
+        }
+    }
+    if has_token {
+        out.push(cur);
+    }
+    out
+}
+
+fn file_uri(p: &Path) -> String {
+    core_vfs::VfsUri::from_local_path(p).map(|u| u.to_uri_string()).unwrap_or_else(|_| p.display().to_string())
+}
+
+/// The command lines that open `files` with `app`: one per file for `%f`/`%u`, one for
+/// `%F`/`%U` (or for an `Exec` without file codes, which then gets no files).
+#[must_use]
+pub fn command_lines(app: &App, files: &[PathBuf]) -> Vec<Vec<String>> {
+    let args = tokenize(&app.exec);
+    let single = args.iter().any(|a| a.contains("%f") || a.contains("%u"));
+    let expand = |chunk: &[PathBuf]| -> Vec<String> {
+        let mut out = Vec::new();
+        for a in &args {
+            match a.as_str() {
+                "%F" => out.extend(chunk.iter().map(|p| p.display().to_string())),
+                "%U" => out.extend(chunk.iter().map(|p| file_uri(p))),
+                "%i" => {
+                    if !app.icon.is_empty() {
+                        out.push("--icon".into());
+                        out.push(app.icon.clone());
+                    }
+                }
+                _ => {
+                    let first = chunk.first();
+                    let mut s = String::new();
+                    let mut it = a.chars().peekable();
+                    while let Some(c) = it.next() {
+                        if c != '%' {
+                            s.push(c);
+                            continue;
+                        }
+                        match it.next() {
+                            Some('f') => s.push_str(&first.map(|p| p.display().to_string()).unwrap_or_default()),
+                            Some('u') => s.push_str(&first.map(|p| file_uri(p)).unwrap_or_default()),
+                            Some('c') => s.push_str(&app.name),
+                            Some('k') => s.push_str(&app.path.display().to_string()),
+                            Some('%') => s.push('%'),
+                            _ => {} // %F/%U inside a word, and deprecated codes, are dropped
+                        }
+                    }
+                    if !s.is_empty() || !a.contains('%') {
+                        out.push(s);
+                    }
+                }
+            }
+        }
+        out
+    };
+    if single && files.len() > 1 { files.iter().map(|f| expand(std::slice::from_ref(f))).collect() } else { vec![expand(files)] }
+}
+
+/// Start `app` on `files`, detached in its own process group (closing Gungnir FM does not
+/// close it). Returns how many processes were started.
+///
+/// # Errors
+/// The spawn error of the first command that failed.
+pub fn launch(app: &App, files: &[PathBuf]) -> std::io::Result<usize> {
+    use std::os::unix::process::CommandExt;
+    let mut n = 0;
+    for argv in command_lines(app, files) {
+        let Some((prog, rest)) = argv.split_first() else { continue };
+        let mut cmd = std::process::Command::new(prog);
+        cmd.args(rest)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .process_group(0);
+        if let Some(dir) = files.first().and_then(|f| f.parent()) {
+            cmd.current_dir(dir);
+        }
+        let mut child = cmd.spawn()?;
+        // Reap it whenever it exits, on a tiny thread, so no zombie is left behind.
+        std::thread::Builder::new().stack_size(64 * 1024).spawn(move || {
+            let _ = child.wait();
+        })?;
+        n += 1;
+    }
+    Ok(n)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn app(exec: &str) -> App {
+        App {
+            id: "demo.desktop".into(),
+            name: "Demo App".into(),
+            exec: exec.into(),
+            icon: "demo".into(),
+            path: "/usr/share/applications/demo.desktop".into(),
+            mimes: Vec::new(),
+            no_display: false,
+        }
+    }
+
+    #[test]
+    fn exec_tokenizing_and_field_codes() {
+        assert_eq!(tokenize(r#"viewer --title "My \"Viewer\"" %U"#), ["viewer", "--title", r#"My "Viewer""#, "%U"]);
+        let files = [PathBuf::from("/tmp/a b.txt"), PathBuf::from("/tmp/c.txt")];
+        assert_eq!(command_lines(&app("ed %F"), &files), [vec!["ed", "/tmp/a b.txt", "/tmp/c.txt"]]);
+        assert_eq!(command_lines(&app("ed %U"), &files[..1]), [vec!["ed", "file:///tmp/a%20b.txt"]]);
+        assert_eq!(command_lines(&app("ed --file=%f"), &files), [vec!["ed", "--file=/tmp/a b.txt"], vec!["ed", "--file=/tmp/c.txt"]]);
+        assert_eq!(command_lines(&app("ed %i %c %%"), &[]), [vec!["ed", "--icon", "demo", "Demo App", "%"]]);
+        assert_eq!(command_lines(&app("ed %d %m"), &files[..1]), [vec!["ed"]], "deprecated codes are dropped");
+    }
+
+    /// A synthetic XDG tree in the test sandbox (never the real system).
+    struct Tree(PathBuf);
+
+    impl Tree {
+        fn new(name: &str) -> Self {
+            let p = std::env::temp_dir().join("gungnir-test-sandbox").join(format!("{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&p);
+            std::fs::create_dir_all(&p).unwrap_or_else(|e| panic!("{e}"));
+            Self(p)
+        }
+
+        fn write(&self, rel: &str, body: &str) {
+            let p = self.0.join(rel);
+            if let Some(d) = p.parent() {
+                std::fs::create_dir_all(d).unwrap_or_else(|e| panic!("{e}"));
+            }
+            std::fs::write(p, body).unwrap_or_else(|e| panic!("{e}"));
+        }
+
+        fn dirs(&self) -> Dirs {
+            Dirs { data: vec![self.0.join("home-data"), self.0.join("sys-data")], config: vec![self.0.join("config")] }
+        }
+    }
+
+    impl Drop for Tree {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn index_ranks_default_then_associations_then_parents() {
+        let t = Tree::new("desktop");
+        t.write("sys-data/mime/globs2", "50:text/plain:*.txt\n50:text/x-rust:*.rs\n50:application/x-compressed-tar:*.tar.gz\n10:application/gzip:*.gz\n60:text/x-makefile:Makefile\n");
+        t.write("sys-data/mime/subclasses", "text/x-rust text/plain\n");
+        let entry = |name: &str, mime: &str| format!("[Desktop Entry]\nType=Application\nName={name}\nExec={name} %F\nMimeType={mime};\n");
+        t.write("sys-data/applications/editor_alpha.desktop", &entry("EditorAlpha", "text/plain"));
+        t.write("sys-data/applications/editor_beta.desktop", &entry("EditorBeta", "text/plain;text/x-rust"));
+        t.write("sys-data/applications/viewer_gamma.desktop", &entry("ViewerGamma", "text/plain"));
+        t.write("sys-data/applications/sub/nested.desktop", &entry("Nested", "application/gzip"));
+        t.write("home-data/applications/viewer_gamma.desktop", "[Desktop Entry]\nType=Application\nName=ViewerGamma\nExec=x\nHidden=true\n");
+        t.write("config/mimeapps.list", "[Default Applications]\ntext/plain=editor_alpha.desktop;\n[Removed Associations]\ntext/x-rust=editor_beta.desktop;\n");
+        let idx = DesktopIndex::load(&t.dirs());
+
+        assert_eq!(idx.mime_for("notes.TXT", false), "text/plain");
+        assert_eq!(idx.mime_for("archive_alpha.tar.gz", false), "application/x-compressed-tar", "longest extension wins");
+        assert_eq!(idx.mime_for("Makefile", false), "text/x-makefile");
+        assert_eq!(idx.mime_for("blob", false), "application/octet-stream");
+        assert_eq!(idx.mime_for("project_demo", true), "inode/directory");
+
+        let names = |m: &str| idx.apps_for(m).iter().map(|a| a.name.clone()).collect::<Vec<_>>();
+        assert_eq!(names("text/plain"), ["EditorAlpha", "EditorBeta"], "default first; Hidden user entry masks ViewerGamma");
+        // text/x-rust: EditorBeta is removed for it, then the parent text/plain apps follow.
+        // text/x-rust: EditorBeta's own association is removed, so the parent type
+        // (text/plain) supplies the list: its default first, then EditorBeta again.
+        assert_eq!(names("text/x-rust"), ["EditorAlpha", "EditorBeta"]);
+        assert_eq!(idx.apps_for("application/gzip")[0].id, "sub-nested.desktop");
+    }
+}

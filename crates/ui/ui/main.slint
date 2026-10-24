@@ -6,7 +6,7 @@
 
 import { LineEdit } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { FileRow, PaneInfo, TabInfo, Crumb, PlaceItem, MountItem, TreeRow, TransferRow, StatusInfo, KeyValue } from "types.slint";
+import { FileRow, PaneInfo, TabInfo, Crumb, PlaceItem, MountItem, TreeRow, TransferRow, StatusInfo, KeyValue, DeviceItem } from "types.slint";
 import { Glyph, ToolButton } from "widgets.slint";
 import { PathBar } from "pathbar.slint";
 import { Sidebar } from "sidebar.slint";
@@ -14,7 +14,7 @@ import { Pane } from "pane.slint";
 import { StatusBar, TransferDrawer } from "statusbar.slint";
 import { DialogOverlay, DialogKind } from "dialogs.slint";
 
-export { Theme, FileRow, PaneInfo, TabInfo, Crumb, PlaceItem, MountItem, TreeRow, TransferRow, StatusInfo, KeyValue, DialogKind }
+export { Theme, FileRow, PaneInfo, TabInfo, Crumb, PlaceItem, MountItem, TreeRow, TransferRow, StatusInfo, KeyValue, DeviceItem, DialogKind }
 
 component Separator inherits Rectangle {
     width: 1px;
@@ -104,6 +104,9 @@ export component AppWindow inherits Window {
         { label: "muninn/thought", uri: "gungnir://muninn/thought", status: 3, status-text: "Disconnected", detail: "", active: false },
     ];
     in-out property <string> gungnir-label: "GUNGNIR VFS · MOCK";
+    in-out property <[DeviceItem]> devices: [
+        { label: "BACKUP_01", uri: "/run/media/user/BACKUP_01", object: "/demo/sdb1", mounted: true, size-text: "64.0 GB", active: false },
+    ];
     in-out property <[TreeRow]> tree: [
         { label: "/", uri: "/", depth: 0, expanded: true, has-children: true, active: false },
         { label: "home", uri: "/home", depth: 1, expanded: true, has-children: true, active: false },
@@ -148,11 +151,21 @@ export component AppWindow inherits Window {
     callback sidebar-open(uri: string);
     callback tree-toggle(index: int);
     callback sidebar-mode-changed(mode: int);
+    callback device-open(object: string);
+    callback device-eject(object: string);
     callback transfer-action(id: int, action: string);
     callback dialog-accept(text: string);
     callback dialog-cancel();
+    callback dialog-choose(index: int);
     callback rename-commit(pane: int, index: int, name: string);
     callback rename-cancel();
+    callback dropped(src-pane: int, src-index: int, dst-pane: int, dst-index: int, copy: bool);
+    pure callback drag-data(pane: int, index: int) -> data-transfer;
+
+    // Internal drag and drop: where the current drag started.
+    in-out property <bool> drag-active: false;
+    in-out property <int> drag-pane: -1;
+    in-out property <int> drag-index: -1;
 
     // ---- Functions the controller calls -------------------------------------------
     public function focus-files() {
@@ -207,6 +220,10 @@ export component AppWindow inherits Window {
         }
         Menu {
             title: "Edit";
+            MenuItem { title: "Cut (Ctrl+X)"; activated => { root.command("cut"); } }
+            MenuItem { title: "Copy (Ctrl+C)"; activated => { root.command("copy"); } }
+            MenuItem { title: "Paste (Ctrl+V)"; activated => { root.command("paste"); } }
+            MenuSeparator { }
             MenuItem { title: "Rename…"; shortcut: @keys(F2); activated => { root.command("rename"); } }
             MenuItem { title: "Copy to Other Pane"; shortcut: @keys(F5); activated => { root.command("copy-to-other"); } }
             MenuItem { title: "Move to Other Pane"; shortcut: @keys(F6); activated => { root.command("move-to-other"); } }
@@ -290,6 +307,10 @@ export component AppWindow inherits Window {
             if e.text == Key.Home { root.move-cursor(p, -1000000000, e.modifiers.shift); return accept; }
             if e.text == Key.End { root.move-cursor(p, 1000000000, e.modifiers.shift); return accept; }
             if e.text == " " { root.command("toggle-select"); return accept; }
+            // Clipboard keys live here, not in the MenuBar, so text fields keep their own.
+            if e.modifiers.control && (e.text == "c" || e.text == "C") { root.command("copy"); return accept; }
+            if e.modifiers.control && (e.text == "x" || e.text == "X") { root.command("cut"); return accept; }
+            if e.modifiers.control && (e.text == "v" || e.text == "V") { root.command("paste"); return accept; }
             if e.modifiers.control && (e.text == "a" || e.text == "A") { root.command("select-all"); return accept; }
             reject
         }
@@ -365,6 +386,9 @@ export component AppWindow inherits Window {
                     tree: root.tree;
                     mode: root.sidebar-mode;
                     gungnir-label: root.gungnir-label;
+                    devices: root.devices;
+                    device-open(o) => { root.device-open(o); }
+                    device-eject(o) => { root.device-eject(o); }
                     open(uri) => { root.sidebar-open(uri); }
                     toggle-tree(i) => { root.tree-toggle(i); }
                     mode-changed(m) => { root.sidebar-mode = m; root.sidebar-mode-changed(m); }
@@ -394,6 +418,11 @@ export component AppWindow inherits Window {
                         command(n) => { root.activate-pane(0); root.command(n); }
                         rename-commit(i, n) => { root.rename-commit(0, i, n); key-handler.focus(); }
                         rename-cancel => { root.rename-cancel(); key-handler.focus(); }
+                        dragging-from-app: root.drag-active;
+                        drag-start(i) => { root.drag-active = true; root.drag-pane = 0; root.drag-index = i; }
+                        drag-end => { root.drag-active = false; }
+                        drop-on(i, c) => { root.dropped(root.drag-pane, root.drag-index, 0, i, c); }
+                        drag-data(i) => { root.drag-data(0, i) }
                     }
                     if root.dual-pane: Rectangle {
                         width: 1px;
@@ -419,6 +448,11 @@ export component AppWindow inherits Window {
                         command(n) => { root.activate-pane(1); root.command(n); }
                         rename-commit(i, n) => { root.rename-commit(1, i, n); key-handler.focus(); }
                         rename-cancel => { root.rename-cancel(); key-handler.focus(); }
+                        dragging-from-app: root.drag-active;
+                        drag-start(i) => { root.drag-active = true; root.drag-pane = 1; root.drag-index = i; }
+                        drag-end => { root.drag-active = false; }
+                        drop-on(i, c) => { root.dropped(root.drag-pane, root.drag-index, 1, i, c); }
+                        drag-data(i) => { root.drag-data(1, i) }
                     }
                 }
             }
@@ -448,6 +482,7 @@ export component AppWindow inherits Window {
             input <=> root.dialog-input;
             accept(t) => { root.dialog-accept(t); }
             cancel => { root.dialog-cancel(); }
+            choose(i) => { root.dialog-choose(i); }
         }
     }
 }

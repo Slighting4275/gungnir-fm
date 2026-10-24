@@ -20,6 +20,8 @@
 
 mod bridge;
 mod controller;
+mod desktop;
+mod drives;
 #[cfg(test)]
 mod controller_tests;
 mod rows;
@@ -91,6 +93,19 @@ fn wire(ui: &AppWindow, tx: &mpsc::Sender<Msg>) {
     on!(on_transfer_action, |id, a| Command::TransferAction { id: i64::from(id), action: a.to_string() });
     on!(on_dialog_accept, |t| Command::DialogAccept(t.to_string()));
     on!(on_dialog_cancel, || Command::DialogCancel);
+    // Drag payload: a plain-text tag naming the row (computed on the UI thread, trivial).
+    // `.into()` reaches Slint's data-transfer type through its public `From<SharedString>`.
+    ui.on_drag_data(|p, i| slint::SharedString::from(format!("gungnir-fm:{p}:{i}")).into());
+    on!(on_dialog_choose, |i| Command::DialogChoose(index(i)));
+    on!(on_device_open, |o| Command::DeviceOpen(o.to_string()));
+    on!(on_device_eject, |o| Command::DeviceEject(o.to_string()));
+    on!(on_dropped, |sp, si, dp, di, copy| Command::Drop {
+        src_pane: pane(sp),
+        src_index: index(si),
+        dst_pane: pane(dp),
+        dst_index: usize::try_from(di).ok(),
+        copy
+    });
     on!(on_rename_commit, |p, i, n| Command::RenameCommit { pane: pane(p), index: index(i), name: n.to_string() });
     on!(on_rename_cancel, || Command::RenameCancel);
 }
