@@ -45,34 +45,202 @@ pub fn is_previewable(category: Category, ext: Option<&str>) -> bool {
     }
     let Some(ext) = ext else { return false };
     let e = ext.to_ascii_lowercase();
+    is_video_ext(Some(e.as_str()))
+        || is_raw_sensor_ext(Some(e.as_str()))
+        || matches!(
+            e.as_str(),
+            // Universal & Web Raster
+            "png"
+                | "jpg"
+                | "jpeg"
+                | "jpe"
+                | "jif"
+                | "jfif"
+                | "jfi"
+                | "gif"
+                | "bmp"
+                | "dib"
+                | "tiff"
+                | "tif"
+                | "bigtiff"
+                | "webp"
+                | "ico"
+                | "cur"
+                | "icns"
+                // High-Efficiency & Modern Still Encodings
+                | "avif"
+                | "avis"
+                | "heic"
+                | "heif"
+                | "heifs"
+                | "jxl"
+                | "jp2"
+                | "j2k"
+                | "jpx"
+                | "jpm"
+                | "j2c"
+                | "jxr"
+                | "hdp"
+                | "wdp"
+                | "jxs"
+                | "flif"
+                | "fuif"
+                | "bpg"
+                | "qoi"
+                | "ff"
+                | "farbfeld"
+                // Vector & Procedural Graphics
+                | "svg"
+                | "svgz"
+                | "eps"
+                | "ps"
+                | "ai"
+                | "cdr"
+                | "wmf"
+                | "emf"
+                | "cgm"
+                | "dxf"
+                | "dwg"
+                | "gbr"
+                | "gerber"
+                | "xar"
+                | "sk1"
+                | "fla"
+                | "swf"
+                | "vml"
+                | "pgml"
+                // Professional HDR, VFX, 3D Textures & Compositing
+                | "exr"
+                | "hdr"
+                | "pic"
+                | "rgbe"
+                | "dpx"
+                | "cin"
+                | "dds"
+                | "ktx"
+                | "ktx2"
+                | "astc"
+                | "pvr"
+                | "pvrtc"
+                | "pkm"
+                | "vtf"
+                | "tga"
+                | "targa"
+                | "psd"
+                | "psb"
+                | "xcf"
+                | "cpt"
+                | "afphoto"
+                | "pdn"
+                | "kra"
+                | "ora"
+                | "iff"
+                | "ilbm"
+                | "lbm"
+                | "sgi"
+                | "rgb"
+                | "rgba"
+                | "bw"
+                // Scientific, Medical, Geospatial
+                | "fits"
+                | "fit"
+                | "fts"
+                | "dcm"
+                | "dicom"
+                | "geotiff"
+                | "nitf"
+                | "ntf"
+                | "sid"
+                | "mrsid"
+                | "ecw"
+                | "h5"
+                | "hdf5"
+                | "hdf"
+                | "nc"
+                | "netcdf"
+                | "svs"
+                | "ndpi"
+                | "ometiff"
+                | "dm3"
+                | "dm4"
+                | "mrc"
+                | "nii"
+                | "vtk"
+                // Legacy, Retro & Specialized Bitmaps
+                | "pcx"
+                | "pbm"
+                | "pgm"
+                | "ppm"
+                | "pam"
+                | "pnm"
+                | "xbm"
+                | "xpm"
+                | "xwd"
+                | "ras"
+                | "sun"
+                | "mac"
+                | "pnt"
+                | "gem"
+                | "wbmp"
+                | "pict"
+                | "pct"
+                | "cut"
+                | "art"
+                | "iwi"
+                | "blp"
+                | "tim"
+                | "tim2"
+                | "gxt"
+                // Animated & Multi-Picture Containers
+                | "apng"
+                | "mng"
+                | "jng"
+                | "mpo"
+                | "fli"
+                | "flc"
+                // 3D / Spatial / Splatting
+                | "splat"
+                | "spz"
+                | "ply"
+        )
+}
+
+/// Checks whether an extension corresponds to a RAW camera sensor file.
+#[must_use]
+pub fn is_raw_sensor_ext(ext: Option<&str>) -> bool {
+    let Some(ext) = ext else { return false };
     matches!(
-        e.as_str(),
-        "png"
-            | "jpg"
-            | "jpeg"
-            | "gif"
-            | "webp"
-            | "bmp"
-            | "ico"
-            | "tiff"
-            | "tif"
-            | "svg"
-            | "avif"
-            | "pnm"
-            | "tga"
-            | "mp4"
-            | "mkv"
-            | "webm"
-            | "mov"
-            | "avi"
-            | "flv"
-            | "wmv"
-            | "m4v"
-            | "mpg"
-            | "mpeg"
-            | "3gp"
-            | "ts"
-            | "ogv"
+        ext.to_ascii_lowercase().as_str(),
+        "dng"
+            | "crw"
+            | "cr2"
+            | "cr3"
+            | "nef"
+            | "nrw"
+            | "arw"
+            | "srf"
+            | "sr2"
+            | "raf"
+            | "orf"
+            | "om"
+            | "rw2"
+            | "pef"
+            | "kdc"
+            | "dcr"
+            | "dcs"
+            | "mos"
+            | "mef"
+            | "3fr"
+            | "fff"
+            | "iiq"
+            | "x3f"
+            | "erf"
+            | "rwl"
+            | "srw"
+            | "gpr"
+            | "mrw"
+            | "bay"
+            | "cap"
     )
 }
 
@@ -82,7 +250,78 @@ pub fn is_video_ext(ext: Option<&str>) -> bool {
     let Some(ext) = ext else { return false };
     matches!(
         ext.to_ascii_lowercase().as_str(),
-        "mp4" | "mkv" | "webm" | "mov" | "avi" | "flv" | "wmv" | "m4v" | "mpg" | "mpeg" | "3gp" | "ts" | "ogv"
+        // Universal, Web & Consumer Containers
+        "mp4"
+            | "m4v"
+            | "mkv"
+            | "webm"
+            | "mov"
+            | "qt"
+            | "avi"
+            | "wmv"
+            | "asf"
+            | "flv"
+            | "f4v"
+            | "ogv"
+            | "ogg"
+            | "3gp"
+            | "3g2"
+            | "divx"
+            | "xvid"
+            // Broadcast, Optical Disc & Transport Streams
+            | "ts"
+            | "m2ts"
+            | "mts"
+            | "m2t"
+            | "ps"
+            | "mpeg"
+            | "mpg"
+            | "mpe"
+            | "m1v"
+            | "m2v"
+            | "vob"
+            | "evo"
+            | "mxf"
+            | "gxf"
+            | "vvs"
+            | "dvr-ms"
+            | "wtv"
+            | "mod"
+            | "tod"
+            // Editing, Acquisition & Cinema Mezzanine
+            | "prores"
+            | "dnxhd"
+            | "dnxhr"
+            | "braw"
+            | "r3d"
+            | "ari"
+            | "arriraw"
+            | "crm"
+            | "xavc"
+            | "xavcs"
+            | "dv"
+            | "dif"
+            | "hdv"
+            // Retro, Interactive & Streaming Containers
+            | "rm"
+            | "rmvb"
+            | "bik"
+            | "bik2"
+            | "smk"
+            | "roq"
+            | "amv"
+            | "mtv"
+            | "nsv"
+            | "ivf"
+            | "y4m"
+            | "yuv"
+            | "dmb"
+            | "pva"
+            | "vqa"
+            | "vmd"
+            // 2026+ Next-Gen Video
+            | "av2"
+            | "av2s"
     )
 }
 
@@ -135,8 +374,10 @@ pub fn generate_thumbnail_in(
 
     let result = if is_video || is_video_ext(ext.as_deref()) {
         generate_video_thumbnail(source_path, &temp_target)
-    } else if ext.as_deref() == Some("svg") {
+    } else if ext.as_deref() == Some("svg") || ext.as_deref() == Some("svgz") {
         generate_svg_thumbnail(source_path, &temp_target)
+    } else if is_raw_sensor_ext(ext.as_deref()) {
+        generate_raw_thumbnail(source_path, &temp_target)
     } else {
         generate_image_thumbnail(source_path, &temp_target)
     };
@@ -202,9 +443,105 @@ fn generate_image_thumbnail(source: &Path, target: &Path) -> Result<(), String> 
             {
                 return Ok(());
             }
+
+            // Fallback to ffmpeg for specialized/video-like formats
+            if let Ok(status) = Command::new("ffmpeg")
+                .args(["-y", "-i"])
+                .arg(source)
+                .args([
+                    "-vf",
+                    "scale=512:512:force_original_aspect_ratio=decrease",
+                    "-frames:v",
+                    "1",
+                    "-update",
+                    "1",
+                    target_str,
+                ])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                && status.success()
+                && target.is_file()
+                && target.metadata().map(|m| m.len() > 0).unwrap_or(false)
+            {
+                return Ok(());
+            }
+
             Err(format!("image thumbnailing failed: {err}"))
         }
     }
+}
+
+fn generate_raw_thumbnail(source: &Path, target: &Path) -> Result<(), String> {
+    let target_str = target.to_str().unwrap_or("");
+    let target_png = format!("png:{target_str}");
+
+    // 1. Try exiftool to extract embedded JPEG preview (instant, handles CR2, CR3, NEF, ARW, DNG, RAF, etc.)
+    for tag in ["-PreviewImage", "-JpgFromRaw", "-ThumbnailImage", "-OtherImage"] {
+        if let Ok(out) = Command::new("exiftool")
+            .arg("-b")
+            .arg(tag)
+            .arg(source)
+            .output()
+            && out.status.success()
+            && !out.stdout.is_empty()
+            && let Ok(img) = image::load_from_memory(&out.stdout)
+        {
+            let thumb = img.thumbnail(512, 512);
+            if thumb.save_with_format(target, image::ImageFormat::Png).is_ok() && target.exists() {
+                return Ok(());
+            }
+        }
+    }
+
+    // 2. Try ImageMagick (which interfaces with libraw)
+    if let Ok(status) = Command::new("magick")
+        .arg(format!("{}[0]", source.display()))
+        .args(["-resize", "512x512", &target_png])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        && status.success()
+        && target.exists()
+    {
+        return Ok(());
+    }
+    if let Ok(status) = Command::new("convert")
+        .arg(format!("{}[0]", source.display()))
+        .args(["-resize", "512x512", &target_png])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        && status.success()
+        && target.exists()
+    {
+        return Ok(());
+    }
+
+    // 3. Try ffmpeg as final fallback
+    if let Ok(status) = Command::new("ffmpeg")
+        .args(["-y", "-i"])
+        .arg(source)
+        .args([
+            "-vf",
+            "scale=512:512:force_original_aspect_ratio=decrease",
+            "-frames:v",
+            "1",
+            "-update",
+            "1",
+            target_str,
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        && status.success()
+        && target.is_file()
+        && target.metadata().map(|m| m.len() > 0).unwrap_or(false)
+    {
+        return Ok(());
+    }
+
+    Err(format!("raw thumbnailing failed: {}", source.display()))
 }
 
 fn generate_svg_thumbnail(source: &Path, target: &Path) -> Result<(), String> {
@@ -212,7 +549,7 @@ fn generate_svg_thumbnail(source: &Path, target: &Path) -> Result<(), String> {
     let target_png = format!("png:{target_str}");
     if let Ok(status) = Command::new("magick")
         .arg(source)
-        .args(["-background", "none", "-resize", "256x256", &target_png])
+        .args(["-background", "none", "-resize", "512x512", &target_png])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -223,7 +560,7 @@ fn generate_svg_thumbnail(source: &Path, target: &Path) -> Result<(), String> {
     }
     if let Ok(status) = Command::new("convert")
         .arg(source)
-        .args(["-background", "none", "-resize", "256x256", &target_png])
+        .args(["-background", "none", "-resize", "512x512", &target_png])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -238,7 +575,7 @@ fn generate_svg_thumbnail(source: &Path, target: &Path) -> Result<(), String> {
         .arg(source)
         .args([
             "-vf",
-            "scale=256:256:force_original_aspect_ratio=decrease",
+            "scale=512:512:force_original_aspect_ratio=decrease",
             "-frames:v",
             "1",
             "-update",
@@ -349,12 +686,31 @@ mod tests {
         assert!(is_previewable(Category::Video, None));
         assert!(is_previewable(Category::File, Some("png")));
         assert!(is_previewable(Category::File, Some("MP4")));
+        assert!(is_previewable(Category::File, Some("heic")));
+        assert!(is_previewable(Category::File, Some("jxl")));
+        assert!(is_previewable(Category::File, Some("avif")));
+        assert!(is_previewable(Category::File, Some("cr3")));
+        assert!(is_previewable(Category::File, Some("nef")));
+        assert!(is_previewable(Category::File, Some("exr")));
+        assert!(is_previewable(Category::File, Some("dcm")));
+        assert!(is_previewable(Category::File, Some("fits")));
+        assert!(is_previewable(Category::File, Some("mxf")));
+        assert!(is_previewable(Category::File, Some("braw")));
+        assert!(is_previewable(Category::File, Some("av2")));
         assert!(!is_previewable(Category::File, Some("txt")));
         assert!(!is_previewable(Category::Folder, None));
 
         assert!(is_video_ext(Some("mp4")));
         assert!(is_video_ext(Some("MKV")));
+        assert!(is_video_ext(Some("mxf")));
+        assert!(is_video_ext(Some("braw")));
+        assert!(is_video_ext(Some("av2")));
         assert!(!is_video_ext(Some("png")));
+
+        assert!(is_raw_sensor_ext(Some("cr3")));
+        assert!(is_raw_sensor_ext(Some("nef")));
+        assert!(is_raw_sensor_ext(Some("dng")));
+        assert!(!is_raw_sensor_ext(Some("png")));
     }
 
     #[test]
@@ -413,6 +769,28 @@ mod tests {
 
             let slint_img = slint::Image::load_from_path(&thumb);
             assert!(slint_img.is_ok(), "slint must be able to load video thumbnail: {:?}", slint_img.err());
+        }
+
+        let _ = fs::remove_dir_all(&sandbox);
+    }
+
+    #[test]
+    fn test_svg_thumbnail_generation() {
+        let sandbox = std::env::temp_dir().join("gungnir-test-sandbox").join("svg_test");
+        let _ = fs::create_dir_all(&sandbox);
+        let cache_dir = sandbox.join("cache");
+
+        let svg_path = sandbox.join("vector.svg");
+        let svg_content = r#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><circle cx="50" cy="50" r="40" fill="purple"/></svg>"#;
+        if fs::write(&svg_path, svg_content).is_ok() {
+            let uri = "file:///tmp/vector.svg";
+            let res = generate_thumbnail_in(&cache_dir, &svg_path, uri, 99999, false);
+            if res.is_ok() {
+                let thumb = res.unwrap_or_else(|e| panic!("{e}"));
+                assert!(thumb.is_file(), "svg thumbnail file must exist");
+                let slint_img = slint::Image::load_from_path(&thumb);
+                assert!(slint_img.is_ok(), "slint must load svg rendered png");
+            }
         }
 
         let _ = fs::remove_dir_all(&sandbox);
