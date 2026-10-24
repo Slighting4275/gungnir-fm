@@ -171,7 +171,7 @@ fn generate_image_thumbnail(source: &Path, target: &Path) -> Result<(), String> 
     // Primary path: fast in-process image crate
     match image::open(source) {
         Ok(img) => {
-            let thumb = img.thumbnail(256, 256);
+            let thumb = img.thumbnail(512, 512);
             thumb
                 .save_with_format(target, image::ImageFormat::Png)
                 .map_err(|e| format!("failed to save thumbnail {}: {e}", target.display()))
@@ -182,7 +182,7 @@ fn generate_image_thumbnail(source: &Path, target: &Path) -> Result<(), String> 
             // Fallback to ImageMagick if installed
             if let Ok(status) = Command::new("magick")
                 .arg(source)
-                .args(["-resize", "256x256", &target_png])
+                .args(["-resize", "512x512", &target_png])
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .status()
@@ -193,7 +193,7 @@ fn generate_image_thumbnail(source: &Path, target: &Path) -> Result<(), String> 
             }
             if let Ok(status) = Command::new("convert")
                 .arg(source)
-                .args(["-resize", "256x256", &target_png])
+                .args(["-resize", "512x512", &target_png])
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .status()
@@ -275,7 +275,7 @@ fn generate_video_thumbnail(source: &Path, target: &Path) -> Result<(), String> 
         .arg(source)
         .arg("-o")
         .arg(target)
-        .args(["-s", "256", "-t", "10%"])
+        .args(["-s", "512", "-t", "10%"])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -293,7 +293,7 @@ fn generate_video_thumbnail(source: &Path, target: &Path) -> Result<(), String> 
         .arg(source)
         .args([
             "-vf",
-            "thumbnail,scale=256:256:force_original_aspect_ratio=decrease",
+            "thumbnail,scale=512:512:force_original_aspect_ratio=decrease",
             "-frames:v",
             "1",
             "-update",
@@ -317,7 +317,7 @@ fn generate_video_thumbnail(source: &Path, target: &Path) -> Result<(), String> 
         .arg(source)
         .args([
             "-vf",
-            "scale=256:256:force_original_aspect_ratio=decrease",
+            "scale=512:512:force_original_aspect_ratio=decrease",
             "-frames:v",
             "1",
             "-update",

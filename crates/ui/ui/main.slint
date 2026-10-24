@@ -253,7 +253,7 @@ export component AppWindow inherits Window {
             MenuSeparator { }
             MenuItem { title: "Quick Preview (Space)"; activated => { root.command("quick-preview"); } }
             MenuSeparator { }
-            MenuItem { title: "Zoom In"; shortcut: @keys(Control + "+"); activated => { root.zoom-level = Math.min(2.5, root.zoom-level + 0.25); root.zoom-changed(root.zoom-level); } }
+            MenuItem { title: "Zoom In"; shortcut: @keys(Control + "+"); activated => { root.zoom-level = Math.min(3.5, root.zoom-level + 0.25); root.zoom-changed(root.zoom-level); } }
             MenuItem { title: "Zoom Out"; shortcut: @keys(Control + "-"); activated => { root.zoom-level = Math.max(0.5, root.zoom-level - 0.25); root.zoom-changed(root.zoom-level); } }
             MenuItem { title: "Normal Size (100%)"; shortcut: @keys(Control + "0"); activated => { root.zoom-level = 1.0; root.zoom-changed(1.0); } }
             MenuSeparator { }
@@ -360,7 +360,7 @@ export component AppWindow inherits Window {
             if e.modifiers.control && (e.text == "v" || e.text == "V") { root.command("paste"); return accept; }
             if e.modifiers.control && (e.text == "a" || e.text == "A") { root.command("select-all"); return accept; }
             if e.modifiers.control && (e.text == "+" || e.text == "=") {
-                root.zoom-level = Math.min(2.5, root.zoom-level + 0.25);
+                root.zoom-level = Math.min(3.5, root.zoom-level + 0.25);
                 root.zoom-changed(root.zoom-level);
                 return accept;
             }

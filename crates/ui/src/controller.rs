@@ -2144,7 +2144,7 @@ impl Controller {
             Command::Run(name) => self.run_command(&name),
             Command::ViewMode(m) => self.view_mode = m,
             Command::Zoom(z) => {
-                self.zoom_level = z.clamp(0.5, 2.5);
+                self.zoom_level = z.clamp(0.5, 3.5);
                 self.trigger_save_session();
             }
             Command::SidebarOpen(uri) => {
