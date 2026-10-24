@@ -114,7 +114,7 @@ export component DialogOverlay inherits Rectangle {
             if root.kind == DialogKind.preview: VerticalLayout {
                 alignment: center;
                 spacing: 10px;
-                Image {
+                if root.preview-image.width > 0: Image {
                     source: root.preview-image;
                     max-width: 640px;
                     max-height: 400px;

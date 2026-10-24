@@ -1599,40 +1599,55 @@ impl Controller {
                 let Some(e) = t.entries.get(idx as usize) else { return };
                 let cat = format::category(e);
                 let ext = format::extension(&e.name);
-                if !crate::thumbnails::is_previewable(cat, ext.as_deref()) {
-                    if let Some(name) = t.entry_at(t.cursor).map(|e| e.name.clone()) {
-                        let mut s = t.selected.clone();
-                        if !s.remove(&name) {
-                            s.insert(name);
-                        }
-                        self.set_selection(p, s);
-                        self.move_cursor_keep(p, 1);
-                    }
-                    return;
-                }
+                let uri_str = e.uri.to_uri_string();
+                let local_path = e.uri.to_local_path();
                 let mtime_secs = e
                     .modified
                     .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                     .map(|d| i64::try_from(d.as_secs()).unwrap_or(0))
                     .unwrap_or(0);
-                let uri_str = e.uri.to_uri_string();
-                let local_path = e.uri.to_local_path();
                 let is_vid = matches!(cat, core_vfs::format::Category::Video) || crate::thumbnails::is_video_ext(ext.as_deref());
 
-                let thumb_path = crate::thumbnails::lookup_cached(&uri_str, mtime_secs)
-                    .or_else(|| {
-                        local_path.as_ref().and_then(|lp| {
-                            crate::thumbnails::generate_thumbnail(lp, &uri_str, mtime_secs, is_vid).ok()
+                let thumb_path = if crate::thumbnails::is_previewable(cat, ext.as_deref()) {
+                    crate::thumbnails::lookup_cached(&uri_str, mtime_secs)
+                        .or_else(|| {
+                            local_path.as_ref().and_then(|lp| {
+                                crate::thumbnails::generate_thumbnail(lp, &uri_str, mtime_secs, is_vid).ok()
+                            })
                         })
-                    })
-                    .or_else(|| if !is_vid { local_path.clone() } else { None });
+                        .or_else(|| if !is_vid { local_path.clone() } else { None })
+                } else {
+                    None
+                };
 
-                let detail = format!(
+                let mut detail = format!(
                     "{} • {} • modified {}",
                     format::type_label(e),
                     format::size(e.size),
                     backends::time::format_local(e.modified)
                 );
+
+                // For text, code, markup, and config files, append a clean preview snippet
+                if thumb_path.is_none()
+                    && matches!(cat, core_vfs::format::Category::Code)
+                    && let Some(ref lp) = local_path
+                    && let Ok(file) = std::fs::File::open(lp)
+                {
+                    use std::io::Read;
+                    let mut buf = vec![0u8; 1024];
+                    if let Ok(n) = file.take(1024).read(&mut buf)
+                        && let Ok(s) = std::str::from_utf8(&buf[..n])
+                    {
+                        let preview_lines: Vec<&str> = s.lines().take(12).collect();
+                        if !preview_lines.is_empty() {
+                            detail.push_str("\n\n---\n");
+                            detail.push_str(&preview_lines.join("\n"));
+                            if preview_lines.len() == 12 || n == 1024 {
+                                detail.push_str("\n...");
+                            }
+                        }
+                    }
+                }
 
                 self.dialog = Some(PendingDialog::Info);
                 self.ui.send(Update::Preview {

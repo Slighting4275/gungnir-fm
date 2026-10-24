@@ -32,6 +32,49 @@ Source repository & issue tracker: [https://gitlab.com/exalted6165/gungnir-fm](h
 - **Decoupled Text Typography**: Text label font sizes remain locked to crisp 11–13px system typography while thumbnail preview cards enlarge prominently.
 - **Disk Caching**: Asynchronous background generation cached under `~/.cache/gungnir-fm/thumbnails/` using source URI and modification timestamp keys.
 
+### 📚 Master Encyclopedia: Universal Non-Image & Non-Video Format Engine
+Gungnir FM provides native format detection, authoritative human-readable classification, Freedesktop MIME resolution, and Spacebar Quick Preview inspection across all 10 core technical domains:
+- **Part 1: Audio Formats, Codecs & Sound Containers**:
+  - *Lossless*: FLAC, ALAC, WAV, AIFF/AIF/AIFC, APE (Monkey's Audio), WavPack (`.wv`), TTA, Shorten (`.shn`), TAK, OptimFROG (`.ofr`, `.ofs`), DSD/DSF/DFF, DXD, MLP, WMA Lossless, BWF, RF64, Apple CAF, Sun/NeXT AU/SND, Wave64.
+  - *Lossy*: MP3, AAC, Opus, Ogg Vorbis, AC-3, E-AC-3, Dolby TrueHD, DTS, DTS-HD MA, DTS:X, WMA, Sony ATRAC (`.oma`, `.omg`), Musepack (`.mpc`), Speex, AMR/AMR-WB, GSM 06.10, G.711/G.722/G.726/G.729, iLBC, SILK, QDMC, VSELP.
+  - *Trackers & Chiptunes*: MIDI (`.mid`, `.midi`, `.smf`, `.rmi`, `.kar`), Soundtracker/ProTracker MOD, FastTracker 2 XM, Scream Tracker S3M, Impulse Tracker IT, MultiTracker MTM, Unreal UMX, Composer 669, Farandole FAR, Oktalyzer OKT, Commodore 64 SID, NES NSF/NSFE, SNES SPC700, VGM/VGZ, Genesis GYM, PC Engine HES, Game Boy GBS, MSX KSS, ZX Spectrum AY, Atari SAP.
+  - *DAW Sessions & Soundfonts*: Ableton ALS, Cubase CPR, FL Studio FLP, REAPER RPP, Pro Tools PTX/PTF, Studio One SONG, Logic Pro LOGICX, Reason REASON, Sonar CWB, Audition SESX, SoundFont SF2/SF3, SFZ, Kontakt NKI, GigaStudio GIG.
+- **Part 2: Documents, Office, Text, Layout & Typography**:
+  - *Text & Markup*: TXT, Markdown (`.md`), AsciiDoc (`.adoc`), Emacs Org-mode (`.org`), reStructuredText (`.rst`), TeX/LaTeX (`.tex`), RTF, NFO, FILE_ID.DIZ, LOG, Perl POD.
+  - *Paginated & Publishing*: PDF, PDF/A, PDF/X, PDF/E, PostScript (`.ps`), XPS, OpenXPS, DjVu (`.djvu`, `.djv`), EPUB, Mobipocket MOBI, Amazon Kindle AZW/AZW3/KF8, FictionBook FB2, Comic Book Archives (CBR, CBZ, CB7, CBT), Compiled HTML Help CHM, Microsoft Reader LIT, DVI.
+  - *Spreadsheets*: Excel (XLSX, XLS, XLSM, XLSB, XLTX, XLTM), OpenDocument ODS/OTS, Apple Numbers, CSV, TSV/TAB, DIF, SYLK, Lotus 1-2-3 (WK1/WK3/WK4), Quattro Pro (QPW/WB1/WB2).
+  - *Word Processing & Presentations*: Word (DOCX, DOC, DOCM, DOT, DOTX), OpenDocument ODT/OTT, Apple Pages, WordPerfect WPD, AbiWord ABW, PowerPoint (PPTX, PPT, PPTM, PPS, PPSX), OpenDocument ODP/OTP, Apple Keynote, OpenOffice SXI.
+  - *Typography*: TrueType (TTF, TTC), OpenType (OTF, OTC), WOFF, WOFF2, EOT, dfont, PostScript Type 1 PFB, PFM, AFM, X11 BDF/PCF, SFNT, Windows FNT/FON, BMF.
+- **Part 3: 3D Models, CAD, CAM, BIM & Spatial Data**:
+  - *Realtime 3D & Interchange*: GLTF, Binary GLB, Pixar USD/USDA/USDC, USDZ, OBJ, MTL, FBX, COLLADA DAE, 3DS, Blender BLEND, Cinema 4D C4D, 3ds Max MAX, Maya MA/MB, LightWave LWO/LWS, Modo LXO, DirectX X, Source Engine SMD/DMX, Quake MD2/MD3/MD5.
+  - *CAD, CAM & Solid Modeling*: STEP (`.step`, `.stp`), IGES (`.iges`, `.igs`), STL, 3MF, AMF, ACIS SAT/SAB, Parasolid X_T/X_B, Jupiter Tessellation JT, SolidWorks SLDPRT/SLDASM, CATIA CATPART/CATPRODUCT, Inventor IPT/IAM, Creo PRT/ASM, FreeCAD FCSTD, OpenSCAD SCAD, CNC G-code (`.gcode`, `.nc`).
+  - *BIM & Architecture*: IFC (ISO 16739), Revit RVT/RFA, Navisworks NWD/NWC/NWF, ArchiCAD PLN, BIM Collaboration Format BCF.
+  - *Point Clouds & Volumetrics*: PLY, Point Cloud Library PCD, ASPRS LAS, Lossless LASzip LAZ, ASTM E57, XYZ/PTS, OpenVDB (`.vdb`), Gaussian Splatting (`.splat`, `.spz`).
+- **Part 4: Archives, Compression, Packages & Virtual Disks**:
+  - *Archives*: ZIP/ZIPX, TAR, GZ, BZ2, XZ, Zstandard (`.zst`, `.zstd`), 7Z, RAR, CAB, ARJ, LHA/LZH, ALZ/EGG, Unix Z, LZ4, Brotli BR, CPIO, Unix AR, WinACE ACE, PAK, Doom WAD, SQX, ZOO, SEA ARC.
+  - *Disk Images & ROMs*: Optical ISO, Raw IMG, Apple DMG, Microsoft VHD/VHDX, VMware VMDK, VirtualBox VDI, QEMU QCOW/QCOW2, CUE, Alcohol MDF/MDS, Nero NRG, DiscJuggler CDI, Floppy DSK, Amiga ADF, Nintendo ROMs (NDS, GBA, NES, SFC/SMC, Z64/N64), MAME CHD, PSP CSO, Wii WBFS.
+  - *Packages*: DEB, RPM, Android APK/AAB, iOS IPA, Windows MSI/MSIX/APPX, macOS PKG, Flatpak (`.flatpak`, `.flatpakref`), AppImage, Ubuntu Snap, Gentoo ebuild.
+- **Part 5: Executables, Compiled Objects, Binaries & Runtimes**:
+  - *Native Binaries*: Linux/BSD ELF, Windows PE (`.exe`, `.dll`, `.sys`), Mach-O, COFF, a.out, DOS COM, compiled object files (`.o`), Shared Objects (`.so`), macOS dylib, static archives (`.a`, `.lib`).
+  - *Bytecode & Shaders*: WebAssembly WASM/WAT, Java CLASS/JAR/WAR/EAR, Python PYC/PYO, Android Dalvik DEX/ODEX/VDEX, Erlang BEAM, Lua LUAC, .NET CIL/MSIL, SPIR-V SPV, DirectX DXBC/DXIL, SourcePawn SMX, Flash ABC.
+- **Part 6: Data Serialization, Configuration & Protocols**:
+  - *Structured Configs*: JSON, JSONC, JSON5, JSON-LD, YAML, TOML, XML, INI, Java properties, CONF/CFG, shell ENV, Apple PLIST, HashiCorp HCL, KDL, Rusty Object Notation RON.
+  - *Binary Serialization*: Protocol Buffers (`.proto`, `.pb`), FlatBuffers FBS, MessagePack, BSON, Apache Avro, CBOR, ASN.1, Apache Thrift, Cap'n Proto, Jackson Smile, Amazon Ion.
+  - *Web & APIs*: HTML, XHTML, CSS, SCSS/SASS, LESS, JavaScript (JS, MJS, CJS), TypeScript (TS, MTS, CTS), React JSX/TSX, GraphQL (`.graphql`, `.gql`), WSDL, RSS, Atom.
+- **Part 7: Databases, Big Data, Storage Engines & GIS**:
+  - *Relational & Embedded*: SQL dumps, SQLite (`.sqlite`, `.sqlite3`, `.db`), WAL/SHM, Access MDB/ACCDB, dBase DBF, SQL Server MDF/LDF, MySQL InnoDB IBD/FRM, Firebird FDB, InterBase GDB, raw DAT.
+  - *Columnar & Scientific*: Apache Parquet, Apache ORC, Arrow Feather, Arrow IPC, HDF5, NetCDF, Zarr, CERN ROOT, Stata DTA, SPSS SAV/POR, R RDATA/RDS, NumPy NPY/NPZ.
+  - *GIS Spatial*: GeoJSON, KML/KMZ, ESRI Shapefiles (`.shp`, `.shx`), GPX, OGC GeoPackage GPKG, GML, OpenStreetMap OSM/PBF, DEM elevation rasters.
+- **Part 8: Machine Learning, AI Weights & Computational Tensors**:
+  - *Weights & Checkpoints*: Safetensors, GGUF, GGML, ONNX, PyTorch PT/PTH, training CKPT, TensorFlow Lite TFLITE, Keras H5/KERAS, Apple Core ML MLMODEL/MLPACKAGE, TensorRT ENGINE/PLAN, MyriadX BLOB.
+  - *Vector Search & Embeddings*: Lance columnar data (`.lance`), FAISS index, Spotify Annoy, USearch, HNSW graphs, WebDataset training shards.
+- **Part 9: Cryptography, Security, Identity & Telemetry**:
+  - *PKI & Vaults*: PEM, DER, X.509 CRT/CER, private keys (`.key`), PKCS #12 P12/PFX, Java KeyStore JKS/BKS, CSR, CRL, SSH/PGP PUB, PGP/GPG ASC/GPG, age encryption, KeePass KDBX.
+  - *Observability & Forensics*: libpcap PCAP, PCAPNG, CAP, HTTP Archive HAR, Windows Event Log EVTX, Syslog streams, Windows ETL, Google pprof, OpenTelemetry OTLP.
+- **Part 10: 2026 Active Standards & Future Formats**:
+  - *Post-Quantum Cryptography*: FIPS 203 ML-KEM key containers (`.mlkem`, `.kem`), FIPS 204 ML-DSA and FIPS 205 SLH-DSA signature/key blobs (`.mldsa`, `.slhdsa`).
+  - *Advanced AI & Runtimes*: GGUF v3/v4 MoE/FP4/MXFP8 containers, Safetensors 2.0 streaming sharded formats, LanceDB v2 columnar engine, WebAssembly Interface Types (`.wit`), C2PA provenance manifest assertions (`.c2pa`).
+
 ### 🖥️ Universal Display Server & Window Manager Compatibility
 Gungnir FM runs natively without crashes, panics, or missing window mappings across 48 Linux and UNIX display targets:
 - **Display Servers & Protocols**: Wayland, XLibre, X.Org Server, XFree86, Phoenix X Server, Arcan, Mir (legacy standalone), Y Window System, TinyX / KDrive, XWayland, Xephyr, Xvfb (Virtual Framebuffer), Xvnc / TigerVNC, nxagent (X2Go / NX), Xdummy, DirectFB / Linux Framebuffer (`/dev/fb*` & direct DRM/KMS `/dev/dri/card*`), kmscon, Twin.

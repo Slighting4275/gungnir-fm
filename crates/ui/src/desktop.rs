@@ -205,7 +205,9 @@ impl DesktopIndex {
         if is_dir {
             return "inode/directory".into();
         }
-        self.globs.lookup(name).unwrap_or_else(|| "application/octet-stream".into())
+        self.globs
+            .lookup(name)
+            .unwrap_or_else(|| builtin_mime(name).into())
     }
 
     /// Applications for `mime`, best first: the default, added associations, then every
@@ -291,6 +293,115 @@ impl Globs {
             rest_lower = ext_lower;
         }
         None
+    }
+}
+
+/// Built-in fallback MIME resolver for standard encyclopedia formats when system mime-info is missing.
+fn builtin_mime(name: &str) -> &'static str {
+    let Some((_, ext)) = name.rsplit_once('.') else {
+        return "application/octet-stream";
+    };
+    match ext.to_ascii_lowercase().as_str() {
+        // Audio
+        "flac" => "audio/flac",
+        "wav" => "audio/wav",
+        "mp3" => "audio/mpeg",
+        "ogg" | "oga" => "audio/ogg",
+        "opus" => "audio/opus",
+        "m4a" | "aac" => "audio/mp4",
+        "aiff" | "aif" | "aifc" => "audio/x-aiff",
+        "ape" => "audio/x-ape",
+        "wv" => "audio/x-wavpack",
+        "mid" | "midi" | "smf" | "kar" => "audio/midi",
+        "mod" => "audio/x-mod",
+        "xm" => "audio/x-xm",
+        "s3m" => "audio/x-s3m",
+        "it" => "audio/x-it",
+
+        // Text & Code
+        "txt" | "log" | "nfo" | "diz" => "text/plain",
+        "md" | "markdown" => "text/markdown",
+        "html" | "htm" => "text/html",
+        "xhtml" => "application/xhtml+xml",
+        "css" => "text/css",
+        "scss" | "sass" => "text/x-scss",
+        "less" => "text/x-less",
+        "js" | "mjs" | "cjs" => "application/javascript",
+        "ts" | "mts" | "cts" => "application/typescript",
+        "json" | "jsonc" | "json5" => "application/json",
+        "jsonld" => "application/ld+json",
+        "yaml" | "yml" => "application/yaml",
+        "toml" => "application/toml",
+        "xml" => "application/xml",
+        "ini" | "conf" | "cfg" => "text/x-ini",
+        "sh" | "bash" | "zsh" | "fish" => "application/x-shellscript",
+        "rs" => "text/x-rust",
+        "c" | "h" => "text/x-c",
+        "cpp" | "hpp" | "cc" | "cxx" => "text/x-c++",
+        "py" | "pyw" => "text/x-python",
+        "go" => "text/x-go",
+        "lua" => "text/x-lua",
+        "sql" => "application/sql",
+        "csv" => "text/csv",
+        "tsv" | "tab" => "text/tab-separated-values",
+
+        // Documents & Office
+        "pdf" | "pdfa" | "pdfx" | "pdfe" => "application/pdf",
+        "epub" => "application/epub+zip",
+        "mobi" | "azw" | "azw3" => "application/x-mobipocket-ebook",
+        "djvu" | "djv" => "image/vnd.djvu",
+        "rtf" => "application/rtf",
+        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "doc" => "application/msword",
+        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "xls" => "application/vnd.ms-excel",
+        "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "ppt" => "application/vnd.ms-powerpoint",
+        "odt" => "application/vnd.oasis.opendocument.text",
+        "ods" => "application/vnd.oasis.opendocument.spreadsheet",
+        "odp" => "application/vnd.oasis.opendocument.presentation",
+
+        // Fonts
+        "ttf" | "ttc" => "font/ttf",
+        "otf" | "otc" => "font/otf",
+        "woff" => "font/woff",
+        "woff2" => "font/woff2",
+
+        // 3D & Models
+        "gltf" => "model/gltf+json",
+        "glb" => "model/gltf-binary",
+        "usd" | "usda" | "usdc" | "usdz" => "model/vnd.usdz+zip",
+        "obj" => "model/obj",
+        "stl" => "model/stl",
+        "step" | "stp" => "model/step",
+        "blend" => "application/x-blender",
+
+        // Archives
+        "zip" | "zipx" => "application/zip",
+        "tar" => "application/x-tar",
+        "gz" | "gzip" => "application/gzip",
+        "bz2" => "application/x-bzip2",
+        "xz" => "application/x-xz",
+        "zst" | "zstd" => "application/zstd",
+        "7z" => "application/x-7z-compressed",
+        "rar" => "application/vnd.rar",
+        "iso" => "application/x-iso9660-image",
+        "deb" => "application/vnd.debian.binary-package",
+        "rpm" => "application/x-rpm",
+        "apk" => "application/vnd.android.package-archive",
+
+        // Databases & Modern AI / 2026+ Specs
+        "sqlite" | "sqlite3" | "db" => "application/vnd.sqlite3",
+        "parquet" => "application/vnd.apache.parquet",
+        "arrow" | "feather" => "application/vnd.apache.arrow.file",
+        "wasm" => "application/wasm",
+        "wit" => "text/x-wit",
+        "safetensors" => "application/x-safetensors",
+        "gguf" => "application/x-gguf",
+        "c2pa" => "application/x-c2pa-manifest",
+        "pem" | "crt" | "cer" => "application/x-x509-ca-cert",
+        "pcap" | "pcapng" | "cap" => "application/vnd.tcpdump.pcap",
+        _ => "application/octet-stream",
     }
 }
 
@@ -494,5 +605,17 @@ mod tests {
         // (text/plain) supplies the list: its default first, then EditorBeta again.
         assert_eq!(names("text/x-rust"), ["EditorAlpha", "EditorBeta"]);
         assert_eq!(idx.apps_for("application/gzip")[0].id, "sub-nested.desktop");
+
+        // Built-in encyclopedia MIME fallbacks when globs2 is not available
+        assert_eq!(builtin_mime("audio.flac"), "audio/flac");
+        assert_eq!(builtin_mime("voice.opus"), "audio/opus");
+        assert_eq!(builtin_mime("document.pdf"), "application/pdf");
+        assert_eq!(builtin_mime("model.gltf"), "model/gltf+json");
+        assert_eq!(builtin_mime("archive.zst"), "application/zstd");
+        assert_eq!(builtin_mime("runtime.wasm"), "application/wasm");
+        assert_eq!(builtin_mime("analytics.parquet"), "application/vnd.apache.parquet");
+        assert_eq!(builtin_mime("weights.safetensors"), "application/x-safetensors");
+        assert_eq!(builtin_mime("llm.gguf"), "application/x-gguf");
+        assert_eq!(builtin_mime("manifest.c2pa"), "application/x-c2pa-manifest");
     }
 }

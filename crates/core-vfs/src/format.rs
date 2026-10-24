@@ -49,14 +49,14 @@ pub fn category(e: &FileEntry) -> Category {
         // RAW Sensor Formats
         | "dng" | "crw" | "cr2" | "cr3" | "nef" | "nrw" | "arw" | "srf" | "sr2" | "raf"
         | "orf" | "om" | "rw2" | "pef" | "kdc" | "dcr" | "dcs" | "mos" | "mef" | "3fr"
-        | "fff" | "iiq" | "x3f" | "erf" | "rwl" | "srw" | "gpr" | "mrw" | "bay" | "cap"
+        | "fff" | "iiq" | "x3f" | "erf" | "rwl" | "srw" | "gpr" | "mrw" | "bay"
         // Professional HDR, VFX, 3D Textures & Compositing
         | "exr" | "hdr" | "pic" | "rgbe" | "dpx" | "cin" | "dds" | "ktx" | "ktx2" | "astc"
         | "pvr" | "pvrtc" | "pkm" | "vtf" | "tga" | "targa" | "psd" | "psb" | "xcf" | "cpt"
         | "afphoto" | "pdn" | "kra" | "ora" | "iff" | "ilbm" | "lbm" | "sgi" | "rgb" | "rgba" | "bw"
         // Scientific, Medical, Geospatial
-        | "fits" | "fit" | "fts" | "dcm" | "dicom" | "geotiff" | "nitf" | "ntf" | "sid" | "mrsid"
-        | "ecw" | "h5" | "hdf5" | "hdf" | "nc" | "netcdf" | "svs" | "ndpi" | "ometiff" | "dm3" | "dm4"
+        | "fits" | "fit" | "fts" | "dcm" | "dicom" | "geotiff" | "nitf" | "ntf" | "mrsid"
+        | "ecw" | "h5" | "hdf5" | "hdf" | "netcdf" | "svs" | "ndpi" | "ometiff" | "dm3" | "dm4"
         | "mrc" | "nii" | "vtk"
         // Legacy, Retro & Specialized Bitmaps
         | "pcx" | "pbm" | "pgm" | "ppm" | "pam" | "pnm" | "xbm" | "xpm" | "xwd" | "ras" | "sun"
@@ -67,33 +67,91 @@ pub fn category(e: &FileEntry) -> Category {
         // 3D / Spatial / Splatting
         | "splat" | "spz" | "ply" => Category::Image,
 
-        // Audio Formats
-        "flac" | "wav" | "mp3" | "ogg" | "opus" | "m4a" | "aac" | "aiff" | "alac" | "mid" | "midi" => Category::Audio,
+        // Audio Formats (Lossless, Lossy, Trackers, Chiptunes, Soundfonts)
+        "flac" | "alac" | "wav" | "aiff" | "aif" | "aifc" | "ape" | "wv" | "tta" | "shn"
+        | "tak" | "ofr" | "ofs" | "dsd" | "dsf" | "dff" | "dxd" | "mlp" | "wma" | "bwf"
+        | "rf64" | "caf" | "au" | "snd" | "w64" | "mp3" | "aac" | "m4a" | "opus" | "ogg"
+        | "oga" | "ac3" | "a52" | "eac3" | "truehd" | "dts" | "dtshd" | "dtsx" | "oma"
+        | "omg" | "aa3" | "mpc" | "mpp" | "mp+" | "spx" | "amr" | "awb" | "gsm" | "g711"
+        | "alaw" | "ulaw" | "g722" | "g726" | "g729" | "ilbc" | "silk" | "qdm" | "qdm2"
+        | "vselp" | "voc" | "qcp" | "mid" | "midi" | "smf" | "rmi" | "rmid" | "kar"
+        | "mod" | "xm" | "s3m" | "it" | "mtm" | "umx" | "669" | "far" | "okt" | "sid"
+        | "nsf" | "nsfe" | "spc" | "vgm" | "vgz" | "gym" | "hes" | "gbs" | "kss" | "ay"
+        | "sap" | "sf2" | "sf3" | "sfz" | "nki" | "gig" => Category::Audio,
 
         // Universal, Web & Consumer Containers
         "mkv" | "mp4" | "m4v" | "webm" | "mov" | "qt" | "avi" | "wmv" | "asf" | "flv" | "f4v"
         | "ogv" | "3gp" | "3g2" | "divx" | "xvid"
         // Broadcast, Optical Disc & Transport Streams
-        | "m2ts" | "mts" | "m2t" | "mpeg" | "mpg" | "mpe" | "m1v" | "m2v"
-        | "vob" | "evo" | "mxf" | "gxf" | "vvs" | "dvr-ms" | "wtv" | "mod" | "tod"
+        | "m2ts" | "m2t" | "mpeg" | "mpg" | "mpe" | "m1v" | "m2v"
+        | "vob" | "evo" | "mxf" | "gxf" | "vvs" | "dvr-ms" | "wtv" | "tod"
         // Editing, Acquisition & Cinema Mezzanine
         | "prores" | "dnxhd" | "dnxhr" | "braw" | "r3d" | "ari" | "arriraw" | "crm"
-        | "xavc" | "xavcs" | "dv" | "dif" | "hdv"
+        | "xavc" | "xavcs" | "dv" | "hdv"
         // Retro, Interactive & Streaming Containers
         | "rm" | "rmvb" | "bik" | "bik2" | "smk" | "roq" | "amv" | "mtv" | "nsv" | "ivf"
         | "y4m" | "yuv" | "dmb" | "pva" | "vqa" | "vmd"
         // 2026+ Next-Gen Video
         | "av2" | "av2s" => Category::Video,
-        "zip" | "tar" | "gz" | "xz" | "zst" | "bz2" | "7z" | "rar" | "tgz" | "lz4" | "iso" | "deb" | "rpm" => {
-            Category::Archive
-        }
-        "rs" | "zig" | "c" | "h" | "cpp" | "hpp" | "py" | "ts" | "tsx" | "js" | "json" | "toml" | "yaml" | "yml"
-        | "sh" | "slint" | "go" | "lua" | "md" | "txt" | "conf" | "ini" | "log" | "css" | "html" | "xml" | "csv"
-        | "lock" => Category::Code,
-        "pdf" | "odt" | "ods" | "odp" | "doc" | "docx" | "xls" | "xlsx" | "ppt" | "pptx" | "epub" | "rtf" => {
-            Category::Document
-        }
-        "appimage" | "bin" | "run" | "exe" => Category::Executable,
+
+        // Compressed Archives, Disk Images, Software Packages & Virtual Disks
+        "zip" | "zipx" | "tar" | "gz" | "gzip" | "bz2" | "xz" | "zst" | "zstd" | "7z"
+        | "rar" | "cab" | "arj" | "lha" | "lzh" | "alz" | "egg" | "z" | "lz4" | "br"
+        | "brotli" | "cpio" | "ar" | "ace" | "pak" | "wad" | "sqx" | "zoo" | "arc"
+        | "iso" | "img" | "dmg" | "vhd" | "vhdx" | "vmdk" | "vdi" | "qcow" | "qcow2"
+        | "mds" | "nrg" | "cdi" | "dsk" | "adf" | "chd" | "cso" | "wbfs"
+        | "deb" | "rpm" | "apk" | "aab" | "ipa" | "msi" | "msix" | "appx" | "pkg"
+        | "flatpak" | "flatpakref" | "snap" | "tgz" | "tbz2" | "txz" | "tzst"
+        | "cbr" | "cbz" | "cb7" | "cbt" | "kmz" | "webdataset" | "npz" => Category::Archive,
+
+        // Native Binaries, Compiled Libraries, Bytecode & Game ROMs
+        "exe" | "dll" | "so" | "dylib" | "bin" | "run" | "appimage" | "elf" | "macho"
+        | "coff" | "aout" | "com" | "o" | "sys" | "wasm" | "class" | "dex"
+        | "odex" | "vdex" | "beam" | "luac" | "cil" | "msil" | "spv" | "dxbc" | "dxil"
+        | "smx" | "abc" | "pyc" | "pyo" | "nds" | "gba" | "nes" | "sfc" | "smc"
+        | "z64" | "n64" | "v64" => Category::Executable,
+
+        // Documents, Office, Spreadsheets, Presentations, Fonts, 3D Models, CAD, Databases, AI Weights & Certificates
+        "pdf" | "pdfa" | "pdfx" | "pdfe" | "djvu" | "djv" | "epub" | "mobi" | "azw" | "azw3"
+        | "kf8" | "fb2" | "chm" | "lit" | "dvi" | "rtf" | "doc" | "docx" | "docm" | "dot"
+        | "dotx" | "dotm" | "odt" | "ott" | "pages" | "wpd" | "abw" | "sxw" | "stw"
+        | "xls" | "xlsx" | "xlsm" | "xlsb" | "xltx" | "xltm" | "ods" | "ots" | "numbers"
+        | "dif" | "slk" | "sylk" | "wk1" | "wk3" | "wk4" | "wks" | "qpw" | "wb1" | "wb2"
+        | "ppt" | "pptx" | "pptm" | "pps" | "ppsx" | "odp" | "otp" | "keynote"
+        | "sxi" | "ttf" | "otf" | "woff" | "woff2" | "eot" | "ttc" | "otc" | "dfont"
+        | "pfb" | "pfm" | "afm" | "bdf" | "pcf" | "sfnt" | "fnt" | "fon" | "bmf"
+        | "gltf" | "glb" | "usd" | "usda" | "usdc" | "usdz" | "obj" | "fbx" | "dae"
+        | "3ds" | "blend" | "c4d" | "max" | "ma" | "mb" | "lwo" | "lws" | "lxo" | "x"
+        | "smd" | "dmx" | "md2" | "md3" | "md5" | "step" | "stp" | "iges" | "igs"
+        | "stl" | "3mf" | "amf" | "sat" | "sab" | "x_t" | "x_b" | "jt" | "sldprt"
+        | "sldasm" | "catpart" | "catproduct" | "ipt" | "iam" | "prt" | "asm" | "fcstd"
+        | "ifc" | "rvt" | "rfa" | "nwd" | "nwc" | "nwf" | "pln" | "bcf" | "pcd"
+        | "las" | "e57" | "vdb" | "openvdb" | "sqlite" | "sqlite3" | "db" | "wal"
+        | "shm" | "mdb" | "accdb" | "dbf" | "mdf" | "ldf" | "ibd" | "frm" | "fdb"
+        | "gdb" | "dat" | "parquet" | "orc" | "feather" | "arrow" | "zarr" | "root"
+        | "dta" | "sav" | "por" | "rdata" | "rds" | "npy" | "shp" | "shx" | "gpkg"
+        | "dem" | "safetensors" | "gguf" | "ggml" | "onnx" | "pt" | "pth" | "ckpt"
+        | "tflite" | "keras" | "mlmodel" | "mlpackage" | "engine" | "plan" | "blob"
+        | "lance" | "faiss" | "ann" | "annoy" | "usearch" | "hnsw" | "der" | "crt"
+        | "cer" | "p12" | "pfx" | "jks" | "bks" | "crl" | "gpg" | "pgp" | "age"
+        | "kdbx" | "keepass" | "pcap" | "pcapng" | "cap" | "evtx" | "etl" | "pprof"
+        | "otlp" | "als" | "cpr" | "flp" | "rpp" | "ptx" | "ptf" | "song" | "logicx"
+        | "reason" | "cwb" | "sesx" => Category::Document,
+
+        // Code, Markup, Configs, Serializations, Protocols, Scripts & Cryptographic Keys
+        "rs" | "zig" | "c" | "h" | "cpp" | "hpp" | "cc" | "cxx" | "py" | "pyw" | "ts"
+        | "tsx" | "js" | "mjs" | "cjs" | "jsx" | "go" | "lua" | "sh" | "bash" | "zsh"
+        | "fish" | "slint" | "json" | "jsonc" | "json5" | "jsonld" | "toml" | "yaml"
+        | "yml" | "xml" | "ini" | "conf" | "cfg" | "properties" | "env" | "plist"
+        | "hcl" | "kdl" | "ron" | "proto" | "pb" | "fbs" | "msgpack" | "bson" | "avro"
+        | "cbor" | "asn1" | "asn" | "thrift" | "capnp" | "smile" | "ion" | "html"
+        | "htm" | "xhtml" | "css" | "scss" | "sass" | "less" | "graphql" | "gql"
+        | "wsdl" | "rss" | "atom" | "sql" | "geojson" | "kml" | "gpx" | "gml" | "osm"
+        | "txt" | "md" | "markdown" | "adoc" | "asciidoc" | "org" | "rst" | "tex"
+        | "latex" | "nfo" | "diz" | "log" | "pod" | "csv" | "tsv" | "tab" | "scad"
+        | "gcode" | "nc" | "xyz" | "pts" | "cue" | "ebuild" | "wat" | "mtl" | "pem"
+        | "key" | "csr" | "pub" | "asc" | "har" | "syslog" | "mlkem" | "kem" | "mldsa"
+        | "slhdsa" | "wit" | "c2pa" | "lock" => Category::Code,
         _ => Category::File,
     });
     match by_ext {
@@ -182,7 +240,6 @@ pub fn type_label(e: &FileEntry) -> String {
         "gpr" => "GoPro Protune Raw",
         "mrw" => "Minolta Raw image",
         "bay" => "Casio Raw image",
-        "cap" => "Capture One Raw",
 
         // Professional HDR, VFX, 3D Textures & Compositing
         "exr" => "OpenEXR HDR image",
@@ -211,9 +268,9 @@ pub fn type_label(e: &FileEntry) -> String {
         "dcm" | "dicom" => "DICOM medical image",
         "geotiff" => "GeoTIFF raster",
         "nitf" | "ntf" => "NITF imagery",
-        "sid" | "mrsid" => "MrSID geospatial image",
+        "mrsid" => "MrSID geospatial image",
         "ecw" => "ECW wavelet image",
-        "h5" | "hdf5" | "hdf" | "nc" | "netcdf" => "Scientific dataset",
+        "h5" | "hdf5" | "hdf" | "netcdf" => "Scientific dataset",
         "svs" => "Aperio pathology image",
         "ndpi" => "Hamamatsu pathology image",
         "ometiff" => "OME-TIFF microscopy image",
@@ -267,7 +324,7 @@ pub fn type_label(e: &FileEntry) -> String {
         "divx" | "xvid" => "DivX / Xvid video",
 
         // Broadcast, Optical Disc & Transport Streams
-        "ts" | "m2ts" | "mts" | "m2t" => "MPEG transport stream",
+        "m2ts" | "m2t" => "MPEG transport stream",
         "mpeg" | "mpg" | "mpe" | "m1v" | "m2v" => "MPEG program stream",
         "vob" => "DVD Video Object",
         "evo" => "HD DVD Video Object",
@@ -275,7 +332,7 @@ pub fn type_label(e: &FileEntry) -> String {
         "gxf" => "General Exchange Format",
         "vvs" => "Variable Video Stream",
         "dvr-ms" | "wtv" => "Recorded TV show",
-        "mod" | "tod" => "Camcorder video stream",
+        "tod" => "Camcorder video stream",
 
         // Editing, Acquisition & Cinema Mezzanine
         "prores" => "Apple ProRes video",
@@ -285,7 +342,7 @@ pub fn type_label(e: &FileEntry) -> String {
         "ari" | "arriraw" => "ARRIRAW video",
         "crm" => "Canon Cinema RAW Light",
         "xavc" | "xavcs" => "Sony XAVC video",
-        "dv" | "dif" => "Digital Video stream",
+        "dv" => "Digital Video stream",
         "hdv" => "HDV video stream",
 
         // Retro, Interactive & Streaming Containers
@@ -305,22 +362,435 @@ pub fn type_label(e: &FileEntry) -> String {
         // 2026+ Next-Gen Video
         "av2" | "av2s" => "AOMedia Video 2 (AV2)",
 
-        // Code and Documents
+        // PART 1: Audio Formats, Codecs, Trackers & DAW Sessions
+        "flac" => "FLAC lossless audio",
+        "alac" => "Apple Lossless audio",
+        "wav" => "Waveform audio (WAV)",
+        "aiff" | "aif" | "aifc" => "Audio Interchange format (AIFF)",
+        "ape" => "Monkey's Audio",
+        "wv" => "WavPack lossless audio",
+        "tta" => "True Audio lossless",
+        "shn" => "Shorten lossless audio",
+        "tak" => "Tom's Lossless Audio (TAK)",
+        "ofr" | "ofs" => "OptimFROG lossless audio",
+        "dsd" | "dsf" | "dff" => "Direct Stream Digital (DSD)",
+        "dxd" => "Digital eXtreme Definition",
+        "mlp" => "Meridian Lossless Packing",
+        "wma" => "Windows Media Audio",
+        "bwf" => "Broadcast Wave audio",
+        "rf64" => "RIFF 64-bit audio",
+        "caf" => "Apple Core Audio",
+        "au" | "snd" => "Sun / NeXT audio",
+        "w64" => "Sound Foundry Wave64",
+        "mp3" => "MP3 audio",
+        "aac" => "Advanced Audio Coding (AAC)",
+        "m4a" => "MPEG-4 audio (M4A)",
+        "opus" => "Opus interactive audio",
+        "ogg" | "oga" => "Ogg Vorbis audio",
+        "ac3" | "a52" => "Dolby Digital AC-3",
+        "eac3" => "Dolby Digital Plus (E-AC-3)",
+        "truehd" => "Dolby TrueHD audio",
+        "dts" => "DTS Coherent Acoustics",
+        "dtshd" => "DTS-HD Master Audio",
+        "dtsx" => "DTS:X spatial audio",
+        "oma" | "omg" | "aa3" => "Sony ATRAC audio",
+        "mpc" | "mpp" | "mp+" => "Musepack audio",
+        "spx" => "Speex speech audio",
+        "amr" => "AMR narrowband audio",
+        "awb" => "AMR wideband audio",
+        "gsm" => "GSM 06.10 speech audio",
+        "g711" | "alaw" | "ulaw" => "G.711 PCM telephony audio",
+        "g722" | "g726" | "g729" => "ITU-T telecommunication audio",
+        "ilbc" => "internet Low Bitrate Codec (iLBC)",
+        "silk" => "Skype SILK speech audio",
+        "qdm" | "qdm2" => "QDesign Music Codec (QDMC)",
+        "vselp" => "VSELP speech audio",
+        "voc" => "Creative Voice audio",
+        "qcp" => "Qualcomm PureVoice audio",
+        "mid" | "midi" | "smf" => "Standard MIDI sequence",
+        "rmi" | "rmid" => "RIFF MIDI sequence",
+        "kar" => "Karaoke MIDI sequence",
+        "mod" => "ProTracker / Soundtracker module",
+        "xm" => "FastTracker 2 extended module",
+        "s3m" => "Scream Tracker 3 module",
+        "it" => "Impulse Tracker module",
+        "mtm" => "MultiTracker module",
+        "umx" => "Unreal audio package",
+        "669" => "Composer 669 module",
+        "far" => "Farandole Composer module",
+        "okt" => "Oktalyzer Amiga tracker",
+        "sid" => "Commodore 64 SID chiptune",
+        "nsf" | "nsfe" => "NES Sound Format",
+        "spc" => "SNES SPC700 sound format",
+        "vgm" | "vgz" => "Video Game Music log",
+        "gym" => "Sega Genesis YM2612 audio",
+        "hes" => "PC Engine HES audio",
+        "gbs" => "Game Boy Sound audio",
+        "kss" => "MSX sound chip dump",
+        "ay" => "ZX Spectrum AY sound",
+        "sap" => "Atari POKEY sound",
+        "als" => "Ableton Live set",
+        "cpr" => "Steinberg Cubase project",
+        "flp" => "FL Studio project",
+        "rpp" => "REAPER project",
+        "ptx" | "ptf" => "Pro Tools session",
+        "song" => "Studio One song",
+        "logicx" => "Apple Logic Pro project",
+        "reason" => "Reason Studios project",
+        "cwb" => "Cakewalk Sonar bundle",
+        "sesx" => "Adobe Audition multitrack session",
+        "sf2" | "sf3" => "SoundFont sample bank",
+        "sfz" => "SFZ multisample instrument",
+        "nki" => "Kontakt instrument",
+        "gig" => "GigaStudio sample bank",
+
+        // PART 2: Documents, Office, Text, Layout & Typography
+        "txt" => "Plain text document",
+        "md" | "markdown" => "Markdown document",
+        "adoc" | "asciidoc" => "AsciiDoc document",
+        "org" => "Emacs Org-mode document",
+        "rst" => "reStructuredText document",
+        "tex" | "latex" => "LaTeX document source",
+        "rtf" => "Rich Text Format (RTF)",
+        "nfo" => "NFO release metadata",
+        "diz" => "Description in Zip (DIZ)",
+        "log" => "Application / system log",
+        "pod" => "Perl Plain Old Documentation",
+        "pdf" => "PDF document",
+        "pdfa" => "PDF/A archival document",
+        "pdfx" => "PDF/X prepress document",
+        "pdfe" => "PDF/E engineering document",
+        "xps" => "XML Paper Specification",
+        "oxps" => "Open XML Paper Specification",
+        "djvu" | "djv" => "DjVu scanned document",
+        "epub" => "EPUB electronic book",
+        "mobi" => "Mobipocket eBook",
+        "azw" | "azw3" | "kf8" => "Amazon Kindle eBook",
+        "fb2" => "FictionBook eBook",
+        "cbr" => "Comic book archive (RAR)",
+        "cbz" => "Comic book archive (ZIP)",
+        "cb7" => "Comic book archive (7z)",
+        "cbt" => "Comic book archive (TAR)",
+        "chm" => "Compiled HTML Help (CHM)",
+        "lit" => "Microsoft Reader eBook",
+        "dvi" => "TeX Device Independent format",
+        "xlsx" => "Excel spreadsheet",
+        "xls" => "Excel 97-2003 spreadsheet",
+        "xlsm" => "Excel macro spreadsheet",
+        "xlsb" => "Excel binary spreadsheet",
+        "xltx" | "xltm" => "Excel template",
+        "ods" => "OpenDocument spreadsheet",
+        "ots" => "OpenDocument spreadsheet template",
+        "numbers" => "Apple Numbers spreadsheet",
+        "csv" => "Comma-Separated Values (CSV)",
+        "tsv" | "tab" => "Tab-Separated Values (TSV)",
+        "dif" => "Data Interchange Format",
+        "slk" | "sylk" => "Symbolic Link spreadsheet",
+        "wk1" | "wk3" | "wk4" | "wks" => "Lotus 1-2-3 spreadsheet",
+        "qpw" | "wb1" | "wb2" => "Quattro Pro spreadsheet",
+        "docx" => "Word document",
+        "doc" => "Word 97-2003 document",
+        "docm" => "Word macro document",
+        "dot" | "dotx" | "dotm" => "Word document template",
+        "odt" => "OpenDocument text",
+        "ott" => "OpenDocument text template",
+        "pages" => "Apple Pages document",
+        "wpd" => "WordPerfect document",
+        "abw" => "AbiWord document",
+        "sxw" | "stw" => "OpenOffice text document",
+        "pptx" => "PowerPoint presentation",
+        "ppt" => "PowerPoint 97-2003 presentation",
+        "pptm" => "PowerPoint macro presentation",
+        "pps" | "ppsx" => "PowerPoint slide show",
+        "odp" | "otp" => "OpenDocument presentation",
+        "keynote" => "Apple Keynote presentation",
+        "sxi" => "OpenOffice presentation",
+        "ttf" => "TrueType font",
+        "otf" => "OpenType font",
+        "woff" => "Web Open Font 1.0 (WOFF)",
+        "woff2" => "Web Open Font 2.0 (WOFF2)",
+        "eot" => "Embedded OpenType font",
+        "ttc" => "TrueType font collection",
+        "otc" => "OpenType font collection",
+        "dfont" => "macOS Data Fork font",
+        "pfb" => "PostScript Type 1 binary font",
+        "pfm" => "Printer Font Metrics",
+        "afm" => "Adobe Font Metrics",
+        "bdf" => "Bitmap Distribution Format font",
+        "pcf" => "Portable Compiled Font (X11)",
+        "sfnt" => "Spline font format",
+        "fnt" | "fon" => "Windows bitmap font",
+        "bmf" => "ByteMap font",
+
+        // PART 3: 3D Models, CAD, CAM, BIM & Spatial Data
+        "gltf" => "GL Transmission Format (GLTF)",
+        "glb" => "Binary GLTF 3D model",
+        "usd" | "usda" | "usdc" => "Universal Scene Description (USD)",
+        "usdz" => "USDZ packaged 3D asset",
+        "obj" => "Wavefront 3D object",
+        "mtl" => "Material Template Library",
+        "fbx" => "Autodesk Filmbox 3D asset",
+        "dae" => "COLLADA 3D asset",
+        "3ds" => "Autodesk 3D Studio mesh",
+        "blend" => "Blender 3D project",
+        "c4d" => "Cinema 4D project",
+        "max" => "Autodesk 3ds Max scene",
+        "ma" | "mb" => "Autodesk Maya scene",
+        "lwo" | "lws" => "LightWave 3D model / scene",
+        "lxo" => "Foundry Modo 3D asset",
+        "x" => "DirectX 3D mesh",
+        "smd" | "dmx" => "Source Engine model data",
+        "md2" | "md3" | "md5" => "id Software Quake mesh",
+        "step" | "stp" => "STEP 3D CAD model",
+        "iges" | "igs" => "IGES CAD model",
+        "stl" => "Stereolithography 3D mesh",
+        "3mf" => "3D Manufacturing Format",
+        "amf" => "Additive Manufacturing file",
+        "sat" | "sab" => "ACIS solid model",
+        "x_t" | "x_b" => "Parasolid model part",
+        "jt" => "Jupiter Tessellation CAD model",
+        "sldprt" | "sldasm" => "SolidWorks part / assembly",
+        "catpart" | "catproduct" => "CATIA part / assembly",
+        "ipt" | "iam" => "Autodesk Inventor part / assembly",
+        "prt" | "asm" => "PTC Creo parametric model",
+        "fcstd" => "FreeCAD project",
+        "scad" => "OpenSCAD geometry script",
+        "gcode" | "nc" => "CNC / 3D printer G-code",
+        "ifc" => "Industry Foundation Classes (BIM)",
+        "rvt" => "Autodesk Revit project",
+        "rfa" => "Autodesk Revit family",
+        "nwd" | "nwc" | "nwf" => "Autodesk Navisworks review",
+        "pln" => "Graphisoft ArchiCAD project",
+        "bcf" => "BIM Collaboration Format",
+        "pcd" => "Point Cloud Data (PCL)",
+        "las" => "ASPRS LiDAR point exchange",
+        "laz" => "Lossless LASzip LiDAR data",
+        "e57" => "ASTM E2807 3D point cloud",
+        "xyz" | "pts" => "ASCII coordinate point cloud",
+        "vdb" | "openvdb" => "OpenVDB sparse volume",
+
+        // PART 4: Archives, Compression, Packages & Virtual Disks
+        "zip" | "zipx" => "ZIP compressed archive",
+        "tar" => "Tape Archive (TAR)",
+        "gz" | "gzip" => "Gzip compressed archive",
+        "bz2" => "Bzip2 compressed archive",
+        "xz" => "XZ compressed archive",
+        "zst" | "zstd" => "Zstandard compressed archive",
+        "7z" => "7-Zip compressed archive",
+        "rar" => "RAR compressed archive",
+        "cab" => "Microsoft Cabinet archive",
+        "arj" => "ARJ compressed archive",
+        "lha" | "lzh" => "LHA / LZH compressed archive",
+        "alz" | "egg" => "ESTsoft compressed archive",
+        "z" => "Unix compress LZW archive",
+        "lz4" => "LZ4 compressed frame",
+        "br" | "brotli" => "Brotli compressed archive",
+        "cpio" => "CPIO archive",
+        "ar" => "Unix archive library",
+        "ace" => "WinACE compressed archive",
+        "pak" => "Video game asset package",
+        "wad" => "Doom WAD resource package",
+        "sqx" => "Sequential Quick X-archive",
+        "zoo" => "Zoo compressed archive",
+        "arc" => "SEA ARC compressed archive",
+        "iso" => "Optical disc ISO image",
+        "img" => "Raw disk image",
+        "dmg" => "Apple Disk Image",
+        "vhd" => "Virtual Hard Disk",
+        "vhdx" => "Virtual Hard Disk v2",
+        "vmdk" => "VMware Virtual Disk",
+        "vdi" => "VirtualBox Disk Image",
+        "qcow" | "qcow2" => "QEMU Copy-On-Write disk",
+        "cue" => "CUE sheet track metadata",
+        "mds" => "Alcohol 120% disc image",
+        "nrg" => "Nero Burning ROM disc image",
+        "cdi" => "DiscJuggler disc image",
+        "dsk" => "Generic floppy disk image",
+        "adf" => "Amiga Disk File image",
+        "nds" => "Nintendo DS ROM",
+        "gba" => "Game Boy Advance ROM",
+        "nes" => "NES ROM image",
+        "sfc" | "smc" => "Super Nintendo ROM",
+        "z64" | "n64" | "v64" => "Nintendo 64 ROM",
+        "chd" => "Compressed Hunks of Data (MAME)",
+        "cso" => "Compressed ISO disc image",
+        "wbfs" => "Wii Backup File System image",
+        "deb" => "Debian software package",
+        "rpm" => "Red Hat package",
+        "apk" => "Android / Alpine package",
+        "aab" => "Android App Bundle",
+        "ipa" => "iOS App Store package",
+        "msi" => "Windows Installer package",
+        "msix" | "appx" => "Windows App package",
+        "pkg" => "macOS / BSD package",
+        "flatpak" | "flatpakref" => "Flatpak package",
+        "appimage" => "AppImage portable executable",
+        "snap" => "Ubuntu Snap package",
+        "ebuild" => "Gentoo Portage ebuild",
+
+        // PART 5: Executables, Compiled Objects, Binaries & Runtimes
+        "elf" => "ELF executable / binary",
+        "exe" => "Windows executable (PE)",
+        "dll" => "Dynamic Link Library (DLL)",
+        "sys" => "Windows device driver",
+        "macho" => "Mach-O binary",
+        "coff" => "Common Object File (COFF)",
+        "aout" => "Assembler output (a.out)",
+        "com" => "DOS COM executable",
+        "o" => "Compiled object file",
+        "so" => "Shared Object library",
+        "dylib" => "Mach-O dynamic library",
+        "a" | "lib" => "Static library archive",
+        "wasm" => "WebAssembly module",
+        "wat" => "WebAssembly text format",
+        "class" => "Java compiled bytecode",
+        "jar" => "Java Archive",
+        "war" | "ear" => "Java Enterprise archive",
+        "pyc" | "pyo" => "Python compiled bytecode",
+        "dex" | "odex" | "vdex" => "Dalvik executable bytecode",
+        "beam" => "Erlang BEAM bytecode",
+        "luac" => "Lua compiled bytecode",
+        "cil" | "msil" => ".NET Common Intermediate Language",
+        "spv" => "SPIR-V shader module",
+        "dxbc" | "dxil" => "DirectX shader bytecode",
+        "smx" => "SourcePawn compiled plugin",
+        "abc" => "ActionScript Byte Code",
+
+        // PART 6: Data Serialization, Configuration & Protocols
+        "json" => "JSON data document",
+        "jsonc" => "JSON with comments",
+        "json5" => "JSON5 document",
+        "jsonld" => "JSON-LD linked data",
+        "yaml" | "yml" => "YAML data document",
+        "toml" => "TOML configuration",
+        "xml" => "XML document",
+        "ini" => "INI configuration",
+        "properties" => "Java properties file",
+        "conf" | "cfg" => "Application configuration",
+        "env" => "Environment variables file",
+        "plist" => "Apple Property List",
+        "hcl" => "HashiCorp Configuration (HCL)",
+        "kdl" => "KDL document language",
+        "ron" => "Rusty Object Notation (RON)",
+        "proto" | "pb" => "Protocol Buffers schema / message",
+        "fbs" => "FlatBuffers schema / binary",
+        "msgpack" => "MessagePack binary object",
+        "bson" => "Binary JSON (BSON)",
+        "avro" => "Apache Avro data serialization",
+        "cbor" => "CBOR binary object",
+        "asn1" | "asn" => "ASN.1 schema / payload",
+        "thrift" => "Apache Thrift RPC payload",
+        "capnp" => "Cap'n Proto serialization",
+        "smile" => "Jackson Smile binary JSON",
+        "ion" => "Amazon Ion serialization",
+        "html" | "htm" => "HTML document",
+        "xhtml" => "XHTML document",
+        "css" => "CSS stylesheet",
+        "scss" | "sass" => "SASS / SCSS stylesheet",
+        "less" => "LESS stylesheet",
+        "js" | "mjs" | "cjs" => "JavaScript source",
+        "ts" | "mts" | "cts" => "TypeScript source",
+        "tsx" | "jsx" => "React JSX / TSX source",
+        "graphql" | "gql" => "GraphQL schema / query",
+        "wsdl" => "Web Services Description (WSDL)",
+        "rss" => "RSS web feed",
+        "atom" => "Atom syndication feed",
+
+        // PART 7: Databases, Big Data, Storage Engines & GIS
+        "sql" => "SQL database script",
+        "sqlite" | "sqlite3" | "db" => "SQLite database",
+        "wal" | "shm" => "SQLite auxiliary log / shared memory",
+        "mdb" | "accdb" => "Microsoft Access database",
+        "dbf" => "dBase table database",
+        "mdf" | "ldf" => "SQL Server database / log",
+        "ibd" | "frm" => "MySQL / MariaDB tablespace",
+        "fdb" => "Firebird database",
+        "gdb" => "InterBase database",
+        "dat" => "Data record file",
+        "parquet" => "Apache Parquet columnar data",
+        "orc" => "Optimized Row Columnar (ORC) data",
+        "feather" => "Apache Arrow Feather storage",
+        "arrow" => "Apache Arrow IPC data",
+        "zarr" => "Zarr chunked array storage",
+        "root" => "CERN ROOT data file",
+        "dta" => "Stata statistical dataset",
+        "sav" | "por" => "SPSS statistical data",
+        "rdata" | "rds" => "R serialized dataset",
+        "npy" => "NumPy N-dimensional array",
+        "npz" => "NumPy zipped array archive",
+        "geojson" => "GeoJSON spatial data",
+        "kml" => "Keyhole Markup Language (KML)",
+        "kmz" => "Keyhole Markup Language (KMZ)",
+        "shp" => "ESRI Shapefile geometry",
+        "shx" => "ESRI Shapefile spatial index",
+        "gpx" => "GPS Exchange Format (GPX)",
+        "gpkg" => "OGC GeoPackage spatial database",
+        "gml" => "Geography Markup Language",
+        "osm" => "OpenStreetMap XML data",
+        "dem" => "Digital Elevation Model",
+
+        // PART 8: Machine Learning, AI Weights & Computational Tensors
+        "safetensors" => "Safetensors neural model weights",
+        "gguf" => "GGUF quantized model weights",
+        "ggml" => "GGML tensor weights",
+        "onnx" => "ONNX neural network model",
+        "pt" | "pth" => "PyTorch model weights / state",
+        "ckpt" => "Model training checkpoint",
+        "tflite" => "TensorFlow Lite model",
+        "keras" => "Keras neural network model",
+        "mlmodel" | "mlpackage" => "Apple Core ML model",
+        "engine" | "plan" => "TensorRT execution plan",
+        "blob" => "MyriadX neural blob",
+        "lance" => "Lance columnar vector data",
+        "faiss" => "FAISS vector similarity index",
+        "ann" | "annoy" => "Spotify Annoy vector index",
+        "usearch" => "USearch vector index",
+        "hnsw" => "HNSW graph vector index",
+        "webdataset" => "WebDataset training container",
+
+        // PART 9: Cryptography, Security, Identity & Telemetry
+        "pem" => "PEM cryptographic certificate / key",
+        "der" => "DER encoded binary certificate",
+        "crt" | "cer" => "X.509 digital certificate",
+        "key" => "Cryptographic private key",
+        "p12" | "pfx" => "PKCS #12 personal identity exchange",
+        "jks" => "Java KeyStore",
+        "bks" => "Bouncy Castle KeyStore",
+        "csr" => "Certificate Signing Request (CSR)",
+        "crl" => "Certificate Revocation List (CRL)",
+        "pub" => "Cryptographic public key",
+        "asc" => "PGP ASCII armored key / signature",
+        "gpg" | "pgp" => "GnuPG / PGP encrypted payload",
+        "age" => "age encrypted file",
+        "kdbx" | "keepass" => "KeePass password database",
+        "pcap" => "libpcap packet capture",
+        "pcapng" => "PCAP Next Generation capture",
+        "cap" => "Network packet capture",
+        "har" => "HTTP Archive (HAR) log",
+        "evtx" => "Windows Event Log",
+        "syslog" => "Syslog telemetry stream",
+        "etl" => "Windows Event Trace Log",
+        "pprof" => "Google pprof performance profile",
+        "otlp" => "OpenTelemetry telemetry payload",
+
+        // PART 10: 2026 Active Standards & Future Non-Image/Video File Formats
+        "mlkem" | "kem" => "FIPS 203 ML-KEM post-quantum key",
+        "mldsa" | "slhdsa" => "FIPS 204/205 post-quantum signature/key",
+        "wit" => "WebAssembly Interface Type (WIT)",
+        "c2pa" => "C2PA provenance manifest assertion",
+
+        // Source Code Languages & Developer Files
         "rs" => "Rust source",
         "zig" => "Zig source",
+        "c" => "C source",
+        "h" => "C header",
+        "cpp" | "hpp" | "cc" | "cxx" => "C++ source",
+        "py" | "pyw" => "Python source",
+        "go" => "Go source",
+        "lua" => "Lua script",
+        "sh" | "bash" | "zsh" | "fish" => "Shell script",
         "slint" => "Slint markup",
-        "md" => "Markdown",
-        "txt" | "log" => "Plain text",
-        "toml" | "yaml" | "yml" | "ini" | "conf" | "json" => "Config",
-        "sh" => "Shell script",
-        "pdf" => "PDF document",
-        "flac" => "FLAC audio",
-        "wav" => "WAV audio",
-        "mp3" => "MP3 audio",
-        "opus" | "ogg" => "Ogg audio",
-        "zip" => "Zip archive",
-        "tar" | "gz" | "xz" | "zst" | "tgz" | "bz2" => "Tar archive",
-        "iso" => "Disk image",
+        "lock" => "Lockfile",
         _ => "",
     };
     if known.is_empty() { format!("{} file", ext.to_ascii_uppercase()) } else { known.into() }
@@ -416,7 +886,58 @@ mod tests {
         assert_eq!(category(&entry("cinema.braw", FileKind::File, 0o644)), Category::Video);
         assert_eq!(category(&entry("stream.mxf", FileKind::File, 0o644)), Category::Video);
         assert_eq!(category(&entry("nextgen.av2", FileKind::File, 0o644)), Category::Video);
+        assert_eq!(category(&entry("track.opus", FileKind::File, 0o644)), Category::Audio);
+        assert_eq!(category(&entry("music.flac", FileKind::File, 0o644)), Category::Audio);
+        assert_eq!(category(&entry("chiptune.sid", FileKind::File, 0o644)), Category::Audio);
+        assert_eq!(category(&entry("tracker.xm", FileKind::File, 0o644)), Category::Audio);
+        assert_eq!(category(&entry("manual.pdf", FileKind::File, 0o644)), Category::Document);
+        assert_eq!(category(&entry("sheet.xlsx", FileKind::File, 0o644)), Category::Document);
+        assert_eq!(category(&entry("book.epub", FileKind::File, 0o644)), Category::Document);
+        assert_eq!(category(&entry("font.woff2", FileKind::File, 0o644)), Category::Document);
+        assert_eq!(category(&entry("scene.gltf", FileKind::File, 0o644)), Category::Document);
+        assert_eq!(category(&entry("part.step", FileKind::File, 0o644)), Category::Document);
+        assert_eq!(category(&entry("mesh.stl", FileKind::File, 0o644)), Category::Document);
+        assert_eq!(category(&entry("arch.ifc", FileKind::File, 0o644)), Category::Document);
+        assert_eq!(category(&entry("backup.zst", FileKind::File, 0o644)), Category::Archive);
+        assert_eq!(category(&entry("disk.qcow2", FileKind::File, 0o644)), Category::Archive);
+        assert_eq!(category(&entry("pkg.deb", FileKind::File, 0o644)), Category::Archive);
+        assert_eq!(category(&entry("module.wasm", FileKind::File, 0o644)), Category::Executable);
+        assert_eq!(category(&entry("class.class", FileKind::File, 0o644)), Category::Executable);
+        assert_eq!(category(&entry("lib.so", FileKind::File, 0o644)), Category::Executable);
+        assert_eq!(category(&entry("config.kdl", FileKind::File, 0o644)), Category::Code);
+        assert_eq!(category(&entry("schema.proto", FileKind::File, 0o644)), Category::Code);
+        assert_eq!(category(&entry("wire.msgpack", FileKind::File, 0o644)), Category::Code);
+        assert_eq!(category(&entry("script.ts", FileKind::File, 0o644)), Category::Code);
+        assert_eq!(category(&entry("data.parquet", FileKind::File, 0o644)), Category::Document);
+        assert_eq!(category(&entry("app.sqlite", FileKind::File, 0o644)), Category::Document);
+        assert_eq!(category(&entry("stream.arrow", FileKind::File, 0o644)), Category::Document);
+        assert_eq!(category(&entry("model.safetensors", FileKind::File, 0o644)), Category::Document);
+        assert_eq!(category(&entry("weights.gguf", FileKind::File, 0o644)), Category::Document);
+        assert_eq!(category(&entry("vectors.lance", FileKind::File, 0o644)), Category::Document);
+        assert_eq!(category(&entry("cert.pem", FileKind::File, 0o644)), Category::Code);
+        assert_eq!(category(&entry("vault.kdbx", FileKind::File, 0o644)), Category::Document);
+        assert_eq!(category(&entry("dump.pcapng", FileKind::File, 0o644)), Category::Document);
+        assert_eq!(category(&entry("pqc.mlkem", FileKind::File, 0o644)), Category::Code);
+        assert_eq!(category(&entry("contract.wit", FileKind::File, 0o644)), Category::Code);
+        assert_eq!(category(&entry("manifest.c2pa", FileKind::File, 0o644)), Category::Code);
+
         assert_eq!(type_label(&entry("main.rs", FileKind::File, 0o644)), "Rust source");
+        assert_eq!(type_label(&entry("song.flac", FileKind::File, 0o644)), "FLAC lossless audio");
+        assert_eq!(type_label(&entry("voice.opus", FileKind::File, 0o644)), "Opus interactive audio");
+        assert_eq!(type_label(&entry("c64.sid", FileKind::File, 0o644)), "Commodore 64 SID chiptune");
+        assert_eq!(type_label(&entry("doc.pdf", FileKind::File, 0o644)), "PDF document");
+        assert_eq!(type_label(&entry("sheet.xlsx", FileKind::File, 0o644)), "Excel spreadsheet");
+        assert_eq!(type_label(&entry("cad.step", FileKind::File, 0o644)), "STEP 3D CAD model");
+        assert_eq!(type_label(&entry("archive.zst", FileKind::File, 0o644)), "Zstandard compressed archive");
+        assert_eq!(type_label(&entry("app.wasm", FileKind::File, 0o644)), "WebAssembly module");
+        assert_eq!(type_label(&entry("data.json", FileKind::File, 0o644)), "JSON data document");
+        assert_eq!(type_label(&entry("config.kdl", FileKind::File, 0o644)), "KDL document language");
+        assert_eq!(type_label(&entry("analytics.parquet", FileKind::File, 0o644)), "Apache Parquet columnar data");
+        assert_eq!(type_label(&entry("db.sqlite3", FileKind::File, 0o644)), "SQLite database");
+        assert_eq!(type_label(&entry("weights.safetensors", FileKind::File, 0o644)), "Safetensors neural model weights");
+        assert_eq!(type_label(&entry("llm.gguf", FileKind::File, 0o644)), "GGUF quantized model weights");
+        assert_eq!(type_label(&entry("pqc.mlkem", FileKind::File, 0o644)), "FIPS 203 ML-KEM post-quantum key");
+        assert_eq!(type_label(&entry("provenance.c2pa", FileKind::File, 0o644)), "C2PA provenance manifest assertion");
         assert_eq!(type_label(&entry("photo.cr3", FileKind::File, 0o644)), "Canon Raw image");
         assert_eq!(type_label(&entry("render.exr", FileKind::File, 0o644)), "OpenEXR HDR image");
         assert_eq!(type_label(&entry("cinema.braw", FileKind::File, 0o644)), "Blackmagic RAW video");
