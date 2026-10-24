@@ -3,10 +3,12 @@
 //! `Update` is `Send` plain data built on worker threads; the UI thread only moves
 //! it into models (`VecModel::set_vec` / `extend` / `set_row_data`).
 
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
+use crate::rows::{to_file_row, RowItem};
 use crate::{
     AppWindow, Crumb, DialogKind, FileRow, KeyValue, MountItem, PaneInfo, PlaceItem, StatusInfo, TabInfo, TransferRow,
     TreeRow,
@@ -36,6 +38,7 @@ pub struct DialogView {
     pub message: String,
     pub rows: Vec<(String, String)>,
     pub input: String,
+    pub preview_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,12 +55,23 @@ pub enum Update {
     /// Replace every row of a pane.
     Rows {
         pane: usize,
-        rows: Vec<FileRow>,
+        rows: Vec<RowItem>,
     },
     /// Append streamed rows.
     AppendRows {
         pane: usize,
-        rows: Vec<FileRow>,
+        rows: Vec<RowItem>,
+    },
+    /// Loaded thumbnails ready to be shown.
+    ThumbnailsReady {
+        pane: usize,
+        items: Vec<(String, PathBuf)>,
+    },
+    /// Display full quick-preview modal.
+    Preview {
+        title: String,
+        detail: String,
+        image_path: Option<PathBuf>,
     },
     /// Flip the selected flag of single rows.
     Selection {
@@ -137,8 +151,42 @@ fn model<T: Clone + 'static>(v: Vec<T>) -> ModelRc<T> {
 
 pub fn apply(ui: &AppWindow, u: Update) {
     match u {
-        Update::Rows { pane, rows } => with_vec_model(&files_model(ui, pane), |m| m.set_vec(rows)),
-        Update::AppendRows { pane, rows } => with_vec_model(&files_model(ui, pane), |m| m.extend(rows)),
+        Update::Rows { pane, rows } => {
+            let file_rows: Vec<FileRow> = rows.iter().map(to_file_row).collect();
+            with_vec_model(&files_model(ui, pane), |m| m.set_vec(file_rows));
+        }
+        Update::AppendRows { pane, rows } => {
+            let file_rows: Vec<FileRow> = rows.iter().map(to_file_row).collect();
+            with_vec_model(&files_model(ui, pane), |m| m.extend(file_rows));
+        }
+        Update::ThumbnailsReady { pane, items } => {
+            with_vec_model(&files_model(ui, pane), |m| {
+                for (name, path) in items {
+                    if let Ok(img) = slint::Image::load_from_path(&path) {
+                        for i in 0..m.row_count() {
+                            if let Some(mut r) = m.row_data(i)
+                                && r.name.as_str() == name
+                            {
+                                r.thumbnail = img;
+                                r.has_thumbnail = true;
+                                m.set_row_data(i, r);
+                                break;
+                            }
+                        }
+                    }
+                }
+            });
+        }
+        Update::Preview { title, detail, image_path } => {
+            let img = image_path.and_then(|p| slint::Image::load_from_path(&p).ok()).unwrap_or_default();
+            ui.set_preview_image(img);
+            ui.set_preview_detail(SharedString::from(detail));
+            ui.set_dialog_title(SharedString::from(title));
+            ui.set_dialog_message(SharedString::new());
+            ui.set_dialog_rows(model(Vec::new()));
+            ui.set_dialog_input(SharedString::new());
+            ui.set_dialog_kind(DialogKind::Preview);
+        }
         Update::Selection { pane, changes } => with_vec_model(&files_model(ui, pane), |m| {
             for (i, sel) in changes {
                 if let Some(mut r) = m.row_data(i)
@@ -199,6 +247,9 @@ pub fn apply(ui: &AppWindow, u: Update) {
             ui.set_view_mode(f.view_mode);
         }
         Update::Dialog(d) => {
+            let img = d.preview_path.and_then(|p| slint::Image::load_from_path(&p).ok()).unwrap_or_default();
+            ui.set_preview_image(img);
+            ui.set_preview_detail(SharedString::new());
             ui.set_dialog_title(d.title.into());
             ui.set_dialog_message(d.message.into());
             ui.set_dialog_rows(model(
@@ -207,7 +258,11 @@ pub fn apply(ui: &AppWindow, u: Update) {
             ui.set_dialog_input(SharedString::from(d.input));
             ui.set_dialog_kind(d.kind);
         }
-        Update::CloseDialog => ui.set_dialog_kind(DialogKind::None),
+        Update::CloseDialog => {
+            ui.set_preview_image(slint::Image::default());
+            ui.set_preview_detail(SharedString::new());
+            ui.set_dialog_kind(DialogKind::None);
+        }
         Update::Rename { pane, index } => {
             ui.set_renaming_pane(pane);
             ui.set_renaming_index(index);

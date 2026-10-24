@@ -23,8 +23,8 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
 use crate::bridge::{DialogView, Flags, PaneView, UiSink, Update};
-use crate::rows;
-use crate::{Crumb, DialogKind, FileRow, MountItem, PlaceItem, StatusInfo, TabInfo, TransferRow, TreeRow};
+use crate::rows::{self, RowItem};
+use crate::{Crumb, DialogKind, MountItem, PlaceItem, StatusInfo, TabInfo, TransferRow, TreeRow};
 
 /// Commands from the UI (one per Slint callback).
 #[derive(Debug, Clone)]
@@ -86,7 +86,12 @@ pub enum Event {
         view_gen: u64,
         order: Option<Vec<u32>>,
         visible: Vec<u32>,
-        rows: Vec<FileRow>,
+        rows: Vec<RowItem>,
+    },
+    ThumbnailsReady {
+        pane: usize,
+        tab: u64,
+        items: Vec<(String, PathBuf)>,
     },
     DirChanged {
         pane: usize,
@@ -208,7 +213,7 @@ impl Tab {
     fn title(&self) -> String {
         match self.location.file_name() {
             Some(n) => n.to_owned(),
-            None if self.location.scheme() == Scheme::Gungnir => self.location.crumbs()[0].0.clone(),
+            None if !self.location.crumbs().is_empty() => self.location.crumbs()[0].0.clone(),
             None => "/".into(),
         }
     }
@@ -256,6 +261,7 @@ struct Transfer {
 
 enum PendingDialog {
     NewFolder { pane: usize },
+    ConnectServer { pane: usize },
     Delete { pane: usize, uris: Vec<VfsUri> },
     /// "Open With": the files and the candidate applications shown as rows.
     OpenWith { files: Vec<PathBuf>, apps: Vec<crate::desktop::App> },
@@ -311,6 +317,7 @@ pub(crate) fn crumb_views(u: &VfsUri, home: &VfsUri) -> Vec<Crumb> {
                 (i, Scheme::File) if i == skip && skip > 0 => ("Home".to_owned(), 1),
                 (0, Scheme::File) => (String::new(), 2),
                 (0, Scheme::Gungnir) => (uri.authority().to_owned(), 3),
+                (0, Scheme::Sftp | Scheme::Smb) => (uri.authority().to_owned(), 2),
                 _ => (label, 0),
             };
             let label = if icon == 3 && label.is_empty() { "gungnir".to_owned() } else { label };
@@ -658,6 +665,8 @@ impl Controller {
                 BackendKind::Posix => 0,
                 BackendKind::GungnirMock => 1,
                 BackendKind::GungnirLive => 2,
+                BackendKind::Sftp => 3,
+                BackendKind::Smb => 4,
             },
             message: message.into(),
             message_is_error: is_err,
@@ -779,6 +788,7 @@ impl Controller {
             message: message.into(),
             rows,
             input: String::new(),
+            preview_path: None,
         }));
     }
 
@@ -1007,7 +1017,7 @@ impl Controller {
         view_gen: u64,
         order: Option<Vec<u32>>,
         visible: Vec<u32>,
-        rows: Vec<FileRow>,
+        rows: Vec<RowItem>,
     ) {
         let Some(ti) = self.tab_index(pane, tab) else { return };
         let active = self.is_active_tab(pane, tab);
@@ -1035,6 +1045,58 @@ impl Controller {
         if pane == self.active_pane {
             self.push_status();
         }
+        self.trigger_thumbnails(pane, tab);
+    }
+
+    fn trigger_thumbnails(&self, pane: usize, tab: u64) {
+        let Some(ti) = self.tab_index(pane, tab) else { return };
+        let t = &self.panes[pane].tabs[ti];
+        let mut candidates: Vec<(String, PathBuf, String, i64, bool)> = Vec::new();
+        for &idx in &t.visible {
+            if let Some(e) = t.entries.get(idx as usize) {
+                let cat = format::category(e);
+                let ext = format::extension(&e.name);
+                if crate::thumbnails::is_previewable(cat, ext.as_deref()) {
+                    let mtime_secs = e
+                        .modified
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| i64::try_from(d.as_secs()).unwrap_or(0))
+                        .unwrap_or(0);
+                    let uri_str = e.uri.to_uri_string();
+                    if crate::thumbnails::lookup_cached(&uri_str, mtime_secs).is_none()
+                        && let Some(local) = e.uri.to_local_path()
+                    {
+                        let is_vid = matches!(cat, core_vfs::format::Category::Video)
+                            || crate::thumbnails::is_video_ext(ext.as_deref());
+                        candidates.push((e.name.clone(), local, uri_str, mtime_secs, is_vid));
+                    }
+                }
+            }
+        }
+
+        if candidates.is_empty() {
+            return;
+        }
+
+        let tx = self.tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut batch = Vec::new();
+            for (name, path, uri, mtime, is_vid) in candidates {
+                if let Ok(thumb) = crate::thumbnails::generate_thumbnail(&path, &uri, mtime, is_vid) {
+                    batch.push((name, thumb));
+                    if batch.len() >= 16 {
+                        let _ = tx.blocking_send(Msg::Ev(Event::ThumbnailsReady {
+                            pane,
+                            tab,
+                            items: std::mem::take(&mut batch),
+                        }));
+                    }
+                }
+            }
+            if !batch.is_empty() {
+                let _ = tx.blocking_send(Msg::Ev(Event::ThumbnailsReady { pane, tab, items: batch }));
+            }
+        });
     }
 
     fn start_watch(&mut self, pane: usize, tab: u64) {
@@ -1216,10 +1278,10 @@ impl Controller {
         let path = match e.uri.scheme() {
             Scheme::File => e.uri.to_local_path(),
             Scheme::Gungnir if e.uri.authority().is_empty() => Some(PathBuf::from(e.uri.path())),
-            Scheme::Gungnir => None,
+            Scheme::Gungnir | Scheme::Sftp | Scheme::Smb => None,
         };
         let Some(path) = path else {
-            self.say(format!("{} lives on a Gungnir node and cannot be opened locally yet", e.name), true);
+            self.say(format!("{} lives on a remote/cluster node and cannot be opened locally yet", e.name), true);
             return;
         };
         let tx = self.tx.clone();
@@ -1416,6 +1478,7 @@ impl Controller {
                     message: format!("in {loc}"),
                     rows: Vec::new(),
                     input: "New Folder".into(),
+                    preview_path: None,
                 }));
             }
             "trash" => {
@@ -1444,6 +1507,127 @@ impl Controller {
                 }
             }
             "properties" => self.properties(p),
+            "connect-server" => {
+                self.dialog = Some(PendingDialog::ConnectServer { pane: p });
+                self.ui.send(Update::Dialog(DialogView {
+                    kind: DialogKind::ConnectServer,
+                    title: "Connect to Server".into(),
+                    message: "Enter an SFTP/SSH (sftp://host/path) or SMB/CIFS (smb://host/share) address:".into(),
+                    rows: Vec::new(),
+                    input: "sftp://".into(),
+                    preview_path: None,
+                }));
+            }
+            "check-hash" => {
+                let t = self.panes[p].tab();
+                let Some(e) = t.entry_at(t.cursor) else { return };
+                let Some(local_path) = e.uri.to_local_path() else {
+                    self.say("Checksum verification is supported on local files", true);
+                    return;
+                };
+                let name = e.name.clone();
+                let tx = self.tx.clone();
+                tokio::task::spawn_blocking(move || {
+                    let is_checksum_file = local_path
+                        .extension()
+                        .and_then(|s| s.to_str())
+                        .is_some_and(|s| matches!(s.to_ascii_lowercase().as_str(), "sha256" | "md5" | "sha512" | "sha1"));
+
+                    if is_checksum_file
+                        && let Ok(results) = crate::hash::verify_checksum_file(&local_path)
+                        && !results.is_empty()
+                    {
+                        let rows = results
+                            .into_iter()
+                            .map(|(file, ok)| {
+                                (file, if ok { "VERIFIED OK".to_string() } else { "FAILED / NOT FOUND".to_string() })
+                            })
+                            .collect();
+                        let _ = tx.blocking_send(Msg::Ev(Event::Info {
+                            title: format!("Verified Checksums · {name}"),
+                            kind: DialogKind::Inspect,
+                            result: Ok(rows),
+                        }));
+                        return;
+                    }
+
+                    match crate::hash::compute_hashes(&local_path) {
+                        Ok(hashes) => {
+                            let rows = vec![
+                                ("MD5".to_string(), hashes.md5),
+                                ("SHA-1".to_string(), hashes.sha1),
+                                ("SHA-256".to_string(), hashes.sha256),
+                                ("SHA-512".to_string(), hashes.sha512),
+                            ];
+                            let _ = tx.blocking_send(Msg::Ev(Event::Info {
+                                title: format!("Checksums · {name}"),
+                                kind: DialogKind::Hash,
+                                result: Ok(rows),
+                            }));
+                        }
+                        Err(err) => {
+                            let _ = tx.blocking_send(Msg::Ev(Event::Info {
+                                title: "Hash Error".to_string(),
+                                kind: DialogKind::Error,
+                                result: Err(core_vfs::error::VfsError::from_io("hash", &err, &name)),
+                            }));
+                        }
+                    }
+                });
+            }
+            "quick-preview" => {
+                if self.dialog.is_some() {
+                    self.dialog = None;
+                    self.ui.send(Update::CloseDialog);
+                    return;
+                }
+                let t = self.panes[p].tab();
+                let Some(&idx) = t.visible.get(t.cursor) else { return };
+                let Some(e) = t.entries.get(idx as usize) else { return };
+                let cat = format::category(e);
+                let ext = format::extension(&e.name);
+                if !crate::thumbnails::is_previewable(cat, ext.as_deref()) {
+                    if let Some(name) = t.entry_at(t.cursor).map(|e| e.name.clone()) {
+                        let mut s = t.selected.clone();
+                        if !s.remove(&name) {
+                            s.insert(name);
+                        }
+                        self.set_selection(p, s);
+                        self.move_cursor_keep(p, 1);
+                    }
+                    return;
+                }
+                let mtime_secs = e
+                    .modified
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| i64::try_from(d.as_secs()).unwrap_or(0))
+                    .unwrap_or(0);
+                let uri_str = e.uri.to_uri_string();
+                let local_path = e.uri.to_local_path();
+                let is_vid = matches!(cat, core_vfs::format::Category::Video) || crate::thumbnails::is_video_ext(ext.as_deref());
+
+                let thumb_path = crate::thumbnails::lookup_cached(&uri_str, mtime_secs)
+                    .or_else(|| {
+                        local_path.as_ref().and_then(|lp| {
+                            crate::thumbnails::generate_thumbnail(lp, &uri_str, mtime_secs, is_vid).ok()
+                        })
+                    })
+                    .or_else(|| if !is_vid { local_path.clone() } else { None });
+
+                let detail = format!(
+                    "{} • {} • modified {}",
+                    format::type_label(e),
+                    format::size(e.size),
+                    backends::time::format_local(e.modified)
+                );
+
+                self.dialog = Some(PendingDialog::Info);
+                self.ui.send(Update::Preview {
+                    title: e.name.clone(),
+                    detail,
+                    image_path: thumb_path,
+                });
+            }
             "inspect" => {
                 let t = self.panes[p].tab();
                 let uri = t.entry_at(t.cursor).map_or_else(|| t.location.clone(), |e| e.uri.clone());
@@ -1621,14 +1805,27 @@ impl Controller {
             message: "This cannot be undone.".into(),
             rows,
             input: String::new(),
+            preview_path: None,
         }));
     }
 
     fn properties(&mut self, pane: usize) {
         let t = self.panes[pane].tab();
         let targets = t.targets();
+        let mut preview_path = None;
         let rows = if let [e] = targets.as_slice() {
-            vec![
+            let cat = format::category(e);
+            let ext = format::extension(&e.name);
+            if crate::thumbnails::is_previewable(cat, ext.as_deref()) {
+                let mtime_secs = e
+                    .modified
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| i64::try_from(d.as_secs()).unwrap_or(0))
+                    .unwrap_or(0);
+                let uri_str = e.uri.to_uri_string();
+                preview_path = crate::thumbnails::lookup_cached(&uri_str, mtime_secs).or_else(|| e.uri.to_local_path());
+            }
+            let mut r = vec![
                 ("Name".to_owned(), e.name.clone()),
                 ("Location".to_owned(), e.uri.parent().map(|p| p.display()).unwrap_or_default()),
                 ("Type".to_owned(), format::type_label(e)),
@@ -1652,7 +1849,15 @@ impl Controller {
                 ),
                 ("Backend".to_owned(), t.backend.map(|b| b.badge().to_owned()).unwrap_or_default()),
                 ("URI".to_owned(), e.uri.to_uri_string()),
-            ]
+            ];
+            if let Some(local_path) = e.uri.to_local_path()
+                && !e.is_navigable()
+                && e.size <= 256 * 1024 * 1024
+                && let Ok(hashes) = crate::hash::compute_hashes(&local_path)
+            {
+                r.push(("SHA-256".to_owned(), hashes.sha256));
+            }
+            r
         } else if targets.is_empty() {
             vec![
                 ("Location".to_owned(), t.location.display()),
@@ -1673,7 +1878,15 @@ impl Controller {
                 ("Location".to_owned(), t.location.display()),
             ]
         };
-        self.info_dialog(DialogKind::Properties, "Properties", "", rows);
+        self.dialog = Some(PendingDialog::Info);
+        self.ui.send(Update::Dialog(DialogView {
+            kind: DialogKind::Properties,
+            title: "Properties".into(),
+            message: String::new(),
+            rows,
+            input: String::new(),
+            preview_path,
+        }));
     }
 
     fn new_tab(&mut self, pane: usize, at: Option<VfsUri>) {
@@ -1973,7 +2186,7 @@ impl Controller {
                 let path = match e.uri.scheme() {
                     Scheme::File => e.uri.to_local_path(),
                     Scheme::Gungnir if e.uri.authority().is_empty() => Some(PathBuf::from(e.uri.path())),
-                    Scheme::Gungnir => None,
+                    Scheme::Gungnir | Scheme::Sftp | Scheme::Smb => None,
                 }?;
                 Some((path, e.is_navigable()))
             })
@@ -2145,6 +2358,15 @@ impl Controller {
                     Ok(format!("Created {name}"))
                 });
             }
+            PendingDialog::ConnectServer { pane } => {
+                let target = text.trim().to_owned();
+                if !target.is_empty() {
+                    match self.resolve_input(pane, &target) {
+                        Ok(u) => self.navigate_to(pane, u),
+                        Err(e) => self.say(e.to_string(), true),
+                    }
+                }
+            }
             PendingDialog::Delete { pane, uris } => {
                 let dir = self.panes[pane].tab().location.clone();
                 let Some(first) = uris.first() else { return };
@@ -2167,6 +2389,11 @@ impl Controller {
             }
             Event::Prepared { pane, tab, view_gen, order, visible, rows } => {
                 self.on_prepared(pane, tab, view_gen, order, visible, rows)
+            }
+            Event::ThumbnailsReady { pane, tab, items } => {
+                if self.is_active_tab(pane, tab) && !items.is_empty() {
+                    self.ui.send(Update::ThumbnailsReady { pane, items });
+                }
             }
             Event::DirChanged { pane, tab, removed } => {
                 let Some(ti) = self.tab_index(pane, tab) else { return };
@@ -2304,6 +2531,7 @@ impl Controller {
                     message: mime,
                     rows,
                     input: String::new(),
+                    preview_path: None,
                 }));
             }
             Event::Tick => {

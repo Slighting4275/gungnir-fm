@@ -112,6 +112,8 @@ pub enum BackendKind {
     Posix,
     GungnirMock,
     GungnirLive,
+    Sftp,
+    Smb,
 }
 
 impl BackendKind {
@@ -121,6 +123,8 @@ impl BackendKind {
             BackendKind::Posix => "POSIX",
             BackendKind::GungnirMock => "GUNGNIR-VFS · MOCK",
             BackendKind::GungnirLive => "GUNGNIR-VFS",
+            BackendKind::Sftp => "SFTP / SSH",
+            BackendKind::Smb => "SMB / CIFS",
         }
     }
 }

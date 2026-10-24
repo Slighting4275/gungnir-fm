@@ -65,6 +65,10 @@ fn local_path(uri: &VfsUri) -> VfsResult<PathBuf> {
             "gungnird serves this machine only; node {:?} needs a newer Gungnir",
             uri.authority()
         ))),
+        Scheme::Sftp | Scheme::Smb => Err(VfsError::Unsupported(format!(
+            "remote uri {} is not handled by gungnird",
+            uri.display()
+        ))),
     }
 }
 

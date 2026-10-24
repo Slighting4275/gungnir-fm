@@ -16,6 +16,9 @@ export enum DialogKind {
     error,
     // A list of clickable choices (Open With).
     choose,
+    preview,
+    hash,
+    connect-server,
 }
 
 component DialogButton inherits Rectangle {
@@ -57,6 +60,8 @@ export component DialogOverlay inherits Rectangle {
         { key: "metadata::emblems", value: "[important, viking]" },
     ];
     in-out property <string> input;
+    in property <image> preview-image;
+    in property <string> preview-detail;
     callback accept(text: string);
     callback cancel();
     callback choose(index: int);
@@ -75,7 +80,7 @@ export component DialogOverlay inherits Rectangle {
     }
 
     card := Rectangle {
-        width: min(parent.width - 48px, root.kind == DialogKind.properties || root.kind == DialogKind.inspect ? 620px : 440px);
+        width: min(parent.width - 48px, root.kind == DialogKind.preview ? 680px : root.kind == DialogKind.properties || root.kind == DialogKind.inspect || root.kind == DialogKind.hash ? 640px : 440px);
         height: layout.preferred-height;
         x: (parent.width - self.width) / 2;
         y: max(24px, (parent.height - self.height) / 2.4);
@@ -94,8 +99,8 @@ export component DialogOverlay inherits Rectangle {
                 spacing: 10px;
                 Glyph {
                     y: (parent.height - self.height) / 2;
-                    name: root.kind == DialogKind.inspect ? "spear" : root.kind == DialogKind.confirm-delete ? "trash" : root.kind == DialogKind.new-folder ? "folder" : "document";
-                    tint: root.kind == DialogKind.inspect ? Theme.gold : root.kind == DialogKind.error || root.kind == DialogKind.confirm-delete ? Theme.bad : Theme.accent;
+                    name: root.kind == DialogKind.hash ? "edit" : root.kind == DialogKind.connect-server ? "desktop" : root.kind == DialogKind.preview ? "image" : root.kind == DialogKind.inspect ? "spear" : root.kind == DialogKind.confirm-delete ? "trash" : root.kind == DialogKind.new-folder ? "folder" : "document";
+                    tint: root.kind == DialogKind.hash ? Theme.accent : root.kind == DialogKind.preview ? Theme.accent : root.kind == DialogKind.inspect ? Theme.gold : root.kind == DialogKind.error || root.kind == DialogKind.confirm-delete ? Theme.bad : Theme.accent;
                 }
                 Text {
                     text: root.title;
@@ -106,6 +111,34 @@ export component DialogOverlay inherits Rectangle {
                     horizontal-stretch: 1;
                 }
             }
+            if root.kind == DialogKind.preview: VerticalLayout {
+                alignment: center;
+                spacing: 10px;
+                Image {
+                    source: root.preview-image;
+                    max-width: 640px;
+                    max-height: 400px;
+                    image-fit: contain;
+                    horizontal-alignment: center;
+                }
+                if root.preview-detail != "": Text {
+                    text: root.preview-detail;
+                    color: Theme.text-dim;
+                    font-size: Theme.font-size;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                }
+            }
+            if root.kind == DialogKind.properties && root.preview-image.width > 0: HorizontalLayout {
+                alignment: center;
+                padding-bottom: 6px;
+                Image {
+                    source: root.preview-image;
+                    max-width: 220px;
+                    max-height: 140px;
+                    image-fit: contain;
+                }
+            }
             if root.message != "": Text {
                 text: root.message;
                 color: root.kind == DialogKind.error ? Theme.bad.brighter(20%) : Theme.text-dim;
@@ -113,10 +146,10 @@ export component DialogOverlay inherits Rectangle {
                 wrap: word-wrap;
             }
             field := LineEdit {
-                visible: root.kind == DialogKind.new-folder;
-                height: root.kind == DialogKind.new-folder ? 32px : 0px;
+                visible: root.kind == DialogKind.new-folder || root.kind == DialogKind.connect-server || root.kind == DialogKind.hash;
+                height: (root.kind == DialogKind.new-folder || root.kind == DialogKind.connect-server || root.kind == DialogKind.hash) ? 32px : 0px;
                 text <=> root.input;
-                placeholder-text: "Folder name";
+                placeholder-text: root.kind == DialogKind.new-folder ? "Folder name" : root.kind == DialogKind.connect-server ? "sftp://user@host/path or smb://host/share" : "Paste expected hash to verify…";
                 accepted(t) => { root.accept(t); }
                 key-pressed(e) => {
                     if e.text == Key.Escape {
@@ -124,6 +157,26 @@ export component DialogOverlay inherits Rectangle {
                         return EventResult.accept;
                     }
                     EventResult.reject
+                }
+            }
+            if root.kind == DialogKind.hash: VerticalLayout {
+                spacing: 6px;
+                Rectangle {
+                    height: 28px;
+                    border-radius: Theme.radius-small;
+                    background: root.input == "" ? transparent : (root.input.to-lowercase() == root.rows[0].value.to-lowercase() || root.input.to-lowercase() == root.rows[1].value.to-lowercase() || root.input.to-lowercase() == root.rows[2].value.to-lowercase() || root.input.to-lowercase() == root.rows[3].value.to-lowercase()) ? #166534 : #991b1b;
+                    HorizontalLayout {
+                        padding-left: 8px;
+                        padding-right: 8px;
+                        alignment: start;
+                        Text {
+                            y: (parent.height - self.height) / 2;
+                            text: root.input == "" ? "Paste an expected hash in the box above to verify against computed checksums." : (root.input.to-lowercase() == root.rows[0].value.to-lowercase() || root.input.to-lowercase() == root.rows[1].value.to-lowercase() || root.input.to-lowercase() == root.rows[2].value.to-lowercase() || root.input.to-lowercase() == root.rows[3].value.to-lowercase()) ? "✓ VERIFIED MATCH: Hash matches file contents!" : "✗ MISMATCH: Hash does not match any computed checksum.";
+                            color: root.input == "" ? Theme.text-dim : #ffffff;
+                            font-size: Theme.font-size;
+                            font-weight: root.input == "" ? 400 : 600;
+                        }
+                    }
                 }
             }
             if root.kind == DialogKind.choose: Rectangle {
@@ -189,16 +242,16 @@ export component DialogOverlay inherits Rectangle {
             HorizontalLayout {
                 alignment: end;
                 spacing: 8px;
-                if root.kind == DialogKind.new-folder || root.kind == DialogKind.confirm-delete: DialogButton {
+                if root.kind == DialogKind.new-folder || root.kind == DialogKind.confirm-delete || root.kind == DialogKind.connect-server: DialogButton {
                     label: "Cancel";
                     clicked => { root.cancel(); }
                 }
                 DialogButton {
-                    label: root.kind == DialogKind.new-folder ? "Create" : root.kind == DialogKind.confirm-delete ? "Delete" : "Close";
+                    label: root.kind == DialogKind.new-folder ? "Create" : root.kind == DialogKind.connect-server ? "Connect" : root.kind == DialogKind.confirm-delete ? "Delete" : "Close";
                     primary: true;
                     danger: root.kind == DialogKind.confirm-delete;
                     clicked => {
-                        if root.kind == DialogKind.new-folder || root.kind == DialogKind.confirm-delete {
+                        if root.kind == DialogKind.new-folder || root.kind == DialogKind.confirm-delete || root.kind == DialogKind.connect-server {
                             root.accept(root.input);
                         } else {
                             root.cancel();

@@ -256,6 +256,26 @@ impl ActionRegistry {
                 multiselection: false,
                 command: "sh -c 'printf \"%s\" \"$1\" | (wl-copy 2>/dev/null || xclip -selection clipboard 2>/dev/null || true)' -- %f".into(),
             },
+            CustomAction {
+                id: "compute_sha256".into(),
+                name: "Calculate SHA-256 Checksum".into(),
+                icon: "document-properties".into(),
+                target: ActionTarget::File,
+                mime_types: Vec::new(),
+                extensions: Vec::new(),
+                multiselection: false,
+                command: "sh -c 'sha256sum \"$1\" | (wl-copy 2>/dev/null || xclip -selection clipboard 2>/dev/null || true)' -- %f".into(),
+            },
+            CustomAction {
+                id: "verify_checksums".into(),
+                name: "Verify Checksum File".into(),
+                icon: "dialog-password".into(),
+                target: ActionTarget::File,
+                mime_types: Vec::new(),
+                extensions: vec!["sha256".into(), "md5".into(), "sha512".into(), "sha1".into()],
+                multiselection: false,
+                command: "sh -c 'cd \"$(dirname \"$1\")\" && (sha256sum -c \"$1\" 2>&1 || md5sum -c \"$1\" 2>&1)' -- %f".into(),
+            },
         ]
     }
 

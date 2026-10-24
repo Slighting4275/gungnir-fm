@@ -356,3 +356,35 @@ fn session_persistence_and_safe_recovery() {
 
     let _ = std::fs::remove_dir_all(&d);
 }
+
+#[test]
+fn test_remote_connect_dialog_and_crumbs() {
+    backends::remote::set_remote_test_mode(true);
+    let h = start("/", "/", MockConfig::default());
+
+    // Trigger connect-server command
+    h.send(Command::Run("connect-server".into()));
+    let dialog_updates = h.until(Duration::from_millis(500), |u| {
+        matches!(u, Update::Dialog(d) if matches!(d.kind, crate::DialogKind::ConnectServer))
+    });
+    assert!(!dialog_updates.is_empty(), "connect-server dialog should open");
+
+    // Accept SFTP URI
+    h.send(Command::DialogAccept("sftp://user@host.internal/srv/data".into()));
+    let close_updates = h.until(Duration::from_millis(500), |u| matches!(u, Update::CloseDialog));
+    assert!(!close_updates.is_empty(), "dialog should close on connect");
+
+    // Check crumbs formatting for remote URIs
+    let sftp_uri = VfsUri::parse("sftp://user@host.internal/srv/data").unwrap_or_else(|e| panic!("{e}"));
+    let home = VfsUri::parse("/home/user").unwrap_or_else(|e| panic!("{e}"));
+    let crumbs = crate::controller::crumb_views(&sftp_uri, &home);
+    assert_eq!(crumbs[0].label.as_str(), "user@host.internal");
+    assert_eq!(crumbs[0].icon, 2);
+
+    let smb_uri = VfsUri::parse("smb://nas.local/share/docs").unwrap_or_else(|e| panic!("{e}"));
+    let smb_crumbs = crate::controller::crumb_views(&smb_uri, &home);
+    assert_eq!(smb_crumbs[0].label.as_str(), "nas.local");
+    assert_eq!(smb_crumbs[0].icon, 2);
+
+    backends::remote::set_remote_test_mode(false);
+}

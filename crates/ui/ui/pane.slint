@@ -322,6 +322,7 @@ export component Pane inherits Rectangle {
                     MenuItem { title: "Delete Permanently…"; activated => { root.command("delete"); } }
                     MenuSeparator { }
                     MenuItem { title: "Properties"; activated => { root.command("properties"); } }
+                    MenuItem { title: "Check File Hash…"; activated => { root.command("check-hash"); } }
                     MenuItem { title: "Gungnir VFS Inspect"; activated => { root.command("inspect"); } }
                     if root.custom-actions.length > 0: MenuSeparator { }
                     for act in root.custom-actions: MenuItem {
@@ -405,7 +406,14 @@ export component Pane inherits Rectangle {
                                 horizontal-stretch: 1;
                                 spacing: 8px;
                                 padding-right: 8px;
-                                FileIcon {
+                                if f.has-thumbnail: Image {
+                                    y: (parent.height - self.height) / 2;
+                                    width: 18px;
+                                    height: 18px;
+                                    source: f.thumbnail;
+                                    image-fit: contain;
+                                }
+                                if !f.has-thumbnail: FileIcon {
                                     y: (parent.height - self.height) / 2;
                                     category: f.icon;
                                 }
@@ -539,7 +547,16 @@ export component Pane inherits Rectangle {
                                     alignment: start;
                                     HorizontalLayout {
                                         alignment: center;
-                                        FileIcon { category: cell.f.icon; large: true; }
+                                        if cell.f.has-thumbnail: Image {
+                                            width: 48px;
+                                            height: 48px;
+                                            source: cell.f.thumbnail;
+                                            image-fit: contain;
+                                        }
+                                        if !cell.f.has-thumbnail: FileIcon {
+                                            category: cell.f.icon;
+                                            large: true;
+                                        }
                                     }
                                     Text {
                                         text: cell.f.name;

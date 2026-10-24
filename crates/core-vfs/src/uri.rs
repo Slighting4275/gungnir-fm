@@ -18,6 +18,8 @@ use crate::error::{VfsError, VfsResult};
 pub enum Scheme {
     File,
     Gungnir,
+    Sftp,
+    Smb,
 }
 
 impl Scheme {
@@ -26,6 +28,8 @@ impl Scheme {
         match self {
             Scheme::File => "file",
             Scheme::Gungnir => "gungnir",
+            Scheme::Sftp => "sftp",
+            Scheme::Smb => "smb",
         }
     }
 }
@@ -54,6 +58,8 @@ impl VfsUri {
         let scheme = match scheme.to_ascii_lowercase().as_str() {
             "file" => Scheme::File,
             "gungnir" => Scheme::Gungnir,
+            "sftp" | "ssh" => Scheme::Sftp,
+            "smb" | "cifs" => Scheme::Smb,
             other => return Err(VfsError::InvalidUri(format!("unsupported scheme {other}://"))),
         };
         let (authority, path) = match rest.find('/') {
@@ -70,6 +76,12 @@ impl VfsUri {
                 return Err(VfsError::InvalidUri(format!("file:// host {authority} is not this machine")));
             }
             Scheme::Gungnir => authority.to_ascii_lowercase(),
+            Scheme::Sftp | Scheme::Smb => {
+                if authority.is_empty() {
+                    return Err(VfsError::InvalidUri(format!("{}:// missing host or share", scheme.as_str())));
+                }
+                authority
+            }
         };
         Ok(Self { scheme, authority, path: normalize(&percent_decode(path)?)? })
     }
@@ -168,6 +180,8 @@ impl VfsUri {
             Scheme::File => "/".to_owned(),
             Scheme::Gungnir if self.authority.is_empty() => "gungnir://".to_owned(),
             Scheme::Gungnir => format!("gungnir://{}", self.authority),
+            Scheme::Sftp => format!("sftp://{}", self.authority),
+            Scheme::Smb => format!("smb://{}", self.authority),
         };
         let mut cur = Self { path: "/".into(), ..self.clone() };
         let mut out = vec![(root_label, cur.clone())];
@@ -184,6 +198,8 @@ impl VfsUri {
         match self.scheme {
             Scheme::File => self.path.clone(),
             Scheme::Gungnir => format!("gungnir://{}{}", self.authority, self.path),
+            Scheme::Sftp => format!("sftp://{}{}", self.authority, self.path),
+            Scheme::Smb => format!("smb://{}{}", self.authority, self.path),
         }
     }
 
@@ -295,8 +311,30 @@ mod tests {
     }
 
     #[test]
+    fn sftp_and_smb_uris() {
+        let s = u("sftp://user@example.com/srv/data");
+        assert_eq!(s.scheme(), Scheme::Sftp);
+        assert_eq!(s.authority(), "user@example.com");
+        assert_eq!(s.path(), "/srv/data");
+        assert_eq!(s.display(), "sftp://user@example.com/srv/data");
+
+        let ssh = u("ssh://server/home/remote");
+        assert_eq!(ssh.scheme(), Scheme::Sftp);
+        assert_eq!(ssh.authority(), "server");
+
+        let m = u("smb://nas.local/share/docs");
+        assert_eq!(m.scheme(), Scheme::Smb);
+        assert_eq!(m.authority(), "nas.local");
+        assert_eq!(m.path(), "/share/docs");
+        assert_eq!(m.display(), "smb://nas.local/share/docs");
+
+        let cifs = u("cifs://winserver/public");
+        assert_eq!(cifs.scheme(), Scheme::Smb);
+    }
+
+    #[test]
     fn rejects_bad_input() {
-        for bad in ["relative/x", "smb://host/share", "file://evil/etc", "gungnir://a/%zz", "gungnir://u@h/x"] {
+        for bad in ["relative/x", "ftp://host/share", "file://evil/etc", "gungnir://a/%zz", "gungnir://u@h/x"] {
             assert!(VfsUri::parse(bad).is_err(), "{bad}");
         }
     }

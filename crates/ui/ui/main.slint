@@ -70,25 +70,25 @@ export component AppWindow inherits Window {
         can-back: false, can-forward: false, cursor: 0,
     };
     in-out property <[FileRow]> left-files: [
-        { name: "release_v1", size-text: "", type-text: "Folder", modified-text: "2026-10-12 21:40", perms-text: "drwxr-xr-x", status-text: "", status: 0, icon: 0, is-dir: true, hidden: false, selected: false },
-        { name: "assets", size-text: "", type-text: "Folder", modified-text: "2026-10-20 03:12", perms-text: "drwxr-xr-x", status-text: "", status: 0, icon: 0, is-dir: true, hidden: false, selected: false },
-        { name: "track_01.flac", size-text: "48.2 MB", type-text: "FLAC audio", modified-text: "2026-10-12 21:44", perms-text: "-rw-r--r--", status-text: "tagged", status: 6, icon: 3, is-dir: false, hidden: false, selected: true },
-        { name: "track_02.flac", size-text: "52.0 MB", type-text: "FLAC audio", modified-text: "2026-10-12 21:51", perms-text: "-rw-r--r--", status-text: "", status: 0, icon: 3, is-dir: false, hidden: false, selected: true },
-        { name: "track_03.flac", size-text: "44.1 MB", type-text: "FLAC audio", modified-text: "2026-10-12 22:03", perms-text: "-rw-r--r--", status-text: "", status: 0, icon: 3, is-dir: false, hidden: false, selected: true },
-        { name: "cover.jpg", size-text: "1.2 MB", type-text: "JPEG image", modified-text: "2026-10-11 18:20", perms-text: "-rw-r--r--", status-text: "", status: 0, icon: 2, is-dir: false, hidden: false, selected: false },
-        { name: "notes.md", size-text: "4.8 kB", type-text: "Markdown", modified-text: "2026-10-22 09:15", perms-text: "-rw-r--r--", status-text: "", status: 0, icon: 6, is-dir: false, hidden: false, selected: false },
-        { name: "build.sh", size-text: "1.1 kB", type-text: "Shell script", modified-text: "2026-10-22 09:30", perms-text: "-rwxr-xr-x", status-text: "", status: 0, icon: 8, is-dir: false, hidden: false, selected: false },
-        { name: "demo_video.mkv", size-text: "4.3 GB", type-text: "Matroska video", modified-text: "2026-10-23 23:59", perms-text: "-rw-r--r--", status-text: "", status: 0, icon: 4, is-dir: false, hidden: false, selected: false },
-        { name: "archive_alpha.tar.zst", size-text: "2.8 GB", type-text: "Tar archive", modified-text: "2026-10-21 04:10", perms-text: "-rw-r--r--", status-text: "", status: 0, icon: 5, is-dir: false, hidden: false, selected: false },
-        { name: "sample_document.pdf", size-text: "612.0 kB", type-text: "PDF document", modified-text: "2026-10-19 16:45", perms-text: "-rw-r--r--", status-text: "", status: 0, icon: 7, is-dir: false, hidden: false, selected: false },
+        { name: "release_v1", size-text: "", type-text: "Folder", modified-text: "2026-10-12 21:40", perms-text: "drwxr-xr-x", status-text: "", status: 0, icon: 0, is-dir: true, hidden: false, selected: false, thumbnail: @image-url(""), has-thumbnail: false },
+        { name: "assets", size-text: "", type-text: "Folder", modified-text: "2026-10-20 03:12", perms-text: "drwxr-xr-x", status-text: "", status: 0, icon: 0, is-dir: true, hidden: false, selected: false, thumbnail: @image-url(""), has-thumbnail: false },
+        { name: "track_01.flac", size-text: "48.2 MB", type-text: "FLAC audio", modified-text: "2026-10-12 21:44", perms-text: "-rw-r--r--", status-text: "tagged", status: 6, icon: 3, is-dir: false, hidden: false, selected: true, thumbnail: @image-url(""), has-thumbnail: false },
+        { name: "track_02.flac", size-text: "52.0 MB", type-text: "FLAC audio", modified-text: "2026-10-12 21:51", perms-text: "-rw-r--r--", status-text: "", status: 0, icon: 3, is-dir: false, hidden: false, selected: true, thumbnail: @image-url(""), has-thumbnail: false },
+        { name: "track_03.flac", size-text: "44.1 MB", type-text: "FLAC audio", modified-text: "2026-10-12 22:03", perms-text: "-rw-r--r--", status-text: "", status: 0, icon: 3, is-dir: false, hidden: false, selected: true, thumbnail: @image-url(""), has-thumbnail: false },
+        { name: "cover.jpg", size-text: "1.2 MB", type-text: "JPEG image", modified-text: "2026-10-11 18:20", perms-text: "-rw-r--r--", status-text: "", status: 0, icon: 2, is-dir: false, hidden: false, selected: false, thumbnail: @image-url(""), has-thumbnail: false },
+        { name: "notes.md", size-text: "4.8 kB", type-text: "Markdown", modified-text: "2026-10-22 09:15", perms-text: "-rw-r--r--", status-text: "", status: 0, icon: 6, is-dir: false, hidden: false, selected: false, thumbnail: @image-url(""), has-thumbnail: false },
+        { name: "build.sh", size-text: "1.1 kB", type-text: "Shell script", modified-text: "2026-10-22 09:30", perms-text: "-rwxr-xr-x", status-text: "", status: 0, icon: 8, is-dir: false, hidden: false, selected: false, thumbnail: @image-url(""), has-thumbnail: false },
+        { name: "demo_video.mkv", size-text: "4.3 GB", type-text: "Matroska video", modified-text: "2026-10-23 23:59", perms-text: "-rw-r--r--", status-text: "", status: 0, icon: 4, is-dir: false, hidden: false, selected: false, thumbnail: @image-url(""), has-thumbnail: false },
+        { name: "archive_alpha.tar.zst", size-text: "2.8 GB", type-text: "Tar archive", modified-text: "2026-10-21 04:10", perms-text: "-rw-r--r--", status-text: "", status: 0, icon: 5, is-dir: false, hidden: false, selected: false, thumbnail: @image-url(""), has-thumbnail: false },
+        { name: "sample_document.pdf", size-text: "612.0 kB", type-text: "PDF document", modified-text: "2026-10-19 16:45", perms-text: "-rw-r--r--", status-text: "", status: 0, icon: 7, is-dir: false, hidden: false, selected: false, thumbnail: @image-url(""), has-thumbnail: false },
     ];
     in-out property <[FileRow]> right-files: [
-        { name: "runes", size-text: "", type-text: "Folder", modified-text: "2026-08-02 11:10", perms-text: "drwxr-xr-x", status-text: "synced", status: 1, icon: 0, is-dir: true, hidden: false, selected: false },
-        { name: "sagas", size-text: "", type-text: "Folder", modified-text: "2026-08-02 11:12", perms-text: "drwxr-xr-x", status-text: "remote", status: 4, icon: 0, is-dir: true, hidden: false, selected: false },
-        { name: "stress-50k", size-text: "", type-text: "Folder", modified-text: "2026-09-14 07:55", perms-text: "drwxr-xr-x", status-text: "synced", status: 1, icon: 0, is-dir: true, hidden: false, selected: false },
-        { name: "mead-hall.png", size-text: "2.4 MB", type-text: "PNG image", modified-text: "2026-07-30 20:01", perms-text: "-rw-r--r--", status-text: "cached", status: 3, icon: 2, is-dir: false, hidden: false, selected: false },
-        { name: "README.md", size-text: "4.8 kB", type-text: "Markdown", modified-text: "2026-10-01 10:00", perms-text: "-rw-r--r--", status-text: "conflict", status: 5, icon: 6, is-dir: false, hidden: false, selected: false },
-        { name: "yggdrasil.svg", size-text: "88.1 kB", type-text: "SVG image", modified-text: "2026-06-21 12:00", perms-text: "-rw-r--r--", status-text: "syncing", status: 2, icon: 2, is-dir: false, hidden: false, selected: false },
+        { name: "runes", size-text: "", type-text: "Folder", modified-text: "2026-08-02 11:10", perms-text: "drwxr-xr-x", status-text: "synced", status: 1, icon: 0, is-dir: true, hidden: false, selected: false, thumbnail: @image-url(""), has-thumbnail: false },
+        { name: "sagas", size-text: "", type-text: "Folder", modified-text: "2026-08-02 11:12", perms-text: "drwxr-xr-x", status-text: "remote", status: 4, icon: 0, is-dir: true, hidden: false, selected: false, thumbnail: @image-url(""), has-thumbnail: false },
+        { name: "stress-50k", size-text: "", type-text: "Folder", modified-text: "2026-09-14 07:55", perms-text: "drwxr-xr-x", status-text: "synced", status: 1, icon: 0, is-dir: true, hidden: false, selected: false, thumbnail: @image-url(""), has-thumbnail: false },
+        { name: "mead-hall.png", size-text: "2.4 MB", type-text: "PNG image", modified-text: "2026-07-30 20:01", perms-text: "-rw-r--r--", status-text: "cached", status: 3, icon: 2, is-dir: false, hidden: false, selected: false, thumbnail: @image-url(""), has-thumbnail: false },
+        { name: "README.md", size-text: "4.8 kB", type-text: "Markdown", modified-text: "2026-10-01 10:00", perms-text: "-rw-r--r--", status-text: "conflict", status: 5, icon: 6, is-dir: false, hidden: false, selected: false, thumbnail: @image-url(""), has-thumbnail: false },
+        { name: "yggdrasil.svg", size-text: "88.1 kB", type-text: "SVG image", modified-text: "2026-06-21 12:00", perms-text: "-rw-r--r--", status-text: "syncing", status: 2, icon: 2, is-dir: false, hidden: false, selected: false, thumbnail: @image-url(""), has-thumbnail: false },
     ];
     in-out property <[PlaceItem]> places: [
         { label: "Home", uri: "/home/user", icon: 0, active: false },
@@ -134,6 +134,8 @@ export component AppWindow inherits Window {
     in-out property <string> dialog-message;
     in-out property <[KeyValue]> dialog-rows;
     in-out property <string> dialog-input;
+    in-out property <image> preview-image;
+    in-out property <string> preview-detail;
 
     // ---- Callbacks to the Rust controller -----------------------------------------
     callback navigate(pane: int, location: string);
@@ -200,7 +202,7 @@ export component AppWindow inherits Window {
     }
 
     changed dialog-kind => {
-        if root.dialog-kind == DialogKind.new-folder {
+        if root.dialog-kind == DialogKind.new-folder || root.dialog-kind == DialogKind.connect-server || root.dialog-kind == DialogKind.hash {
             dialog.focus-input();
         } else if root.dialog-kind == DialogKind.none {
             key-handler.focus();
@@ -218,6 +220,7 @@ export component AppWindow inherits Window {
             MenuItem { title: "Close Tab"; shortcut: @keys(Control + W); activated => { root.tab-close(root.active-pane, root.active-info.active-tab); } }
             MenuSeparator { }
             MenuItem { title: "New Folder…"; shortcut: @keys(F7); activated => { root.command("new-folder"); } }
+            MenuItem { title: "Check File Hash…"; activated => { root.command("check-hash"); } }
             MenuItem { title: "Properties"; shortcut: @keys(Alt + Return); activated => { root.command("properties"); } }
             MenuSeparator { }
             MenuItem { title: "Quit"; shortcut: @keys(Control + Q); activated => { root.command("quit"); } }
@@ -244,6 +247,8 @@ export component AppWindow inherits Window {
             MenuItem { title: "Detailed Columns"; shortcut: @keys(Control + "2"); activated => { root.view-mode = 1; root.view-mode-changed(1); } }
             MenuItem { title: "Grid"; shortcut: @keys(Control + "3"); activated => { root.view-mode = 2; root.view-mode-changed(2); } }
             MenuSeparator { }
+            MenuItem { title: "Quick Preview (Space)"; activated => { root.command("quick-preview"); } }
+            MenuSeparator { }
             MenuItem { title: "Dual Pane"; shortcut: @keys(F3); checkable: true; checked <=> root.dual-pane; activated => { root.command("toggle-dual"); } }
             MenuItem { title: "Sidebar"; shortcut: @keys(F9); checkable: true; checked <=> root.sidebar-visible; activated => { root.command("toggle-sidebar"); } }
             MenuItem { title: "Hidden Files"; shortcut: @keys(Control + H); checkable: true; checked <=> root.show-hidden; activated => { root.command("toggle-hidden"); } }
@@ -261,6 +266,7 @@ export component AppWindow inherits Window {
             MenuItem { title: "Home"; shortcut: @keys(Alt + Home); activated => { root.nav(root.active-pane, "home"); } }
             MenuSeparator { }
             MenuItem { title: "Location…"; shortcut: @keys(Control + L); activated => { root.focus-path-bar(); } }
+            MenuItem { title: "Connect to Server…"; shortcut: @keys(Control + K); activated => { root.command("connect-server"); } }
         }
         Menu {
             title: "Gungnir";
@@ -517,6 +523,8 @@ export component AppWindow inherits Window {
             message: root.dialog-message;
             rows: root.dialog-rows;
             input <=> root.dialog-input;
+            preview-image: root.preview-image;
+            preview-detail: root.preview-detail;
             accept(t) => { root.dialog-accept(t); }
             cancel => { root.dialog-cancel(); }
             choose(i) => { root.dialog-choose(i); }

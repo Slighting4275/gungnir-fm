@@ -23,15 +23,17 @@ mod bridge;
 mod controller;
 mod desktop;
 mod drives;
+mod hash;
 #[cfg(test)]
 mod controller_tests;
 mod rows;
 mod session;
+mod thumbnails;
 
 use std::sync::Arc;
 
 use backends::gungnir::proto::socket_path_from_env;
-use backends::{GungnirVfsBackend, LocalPosixBackend, MockGungnirBackend};
+use backends::{GungnirVfsBackend, LocalPosixBackend, MockGungnirBackend, RemoteVfsBackend};
 use core_vfs::{VfsRegistry, VfsUri};
 use slint::ComponentHandle;
 use tokio::sync::mpsc;
@@ -129,6 +131,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Pick the Gungnir backend before the window exists (bounded: 500 ms handshake).
     let mut registry = VfsRegistry::new();
     registry.register(Arc::new(LocalPosixBackend::new()));
+    registry.register(Arc::new(RemoteVfsBackend::sftp()));
+    registry.register(Arc::new(RemoteVfsBackend::smb()));
     let mode = match mode.as_str() {
         "auto" | "live" | "mock" | "off" | "live-or-off" => mode,
         other => {

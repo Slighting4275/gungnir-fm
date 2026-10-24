@@ -10,8 +10,10 @@
 pub mod gungnir;
 pub mod local;
 pub mod mock;
+pub mod remote;
 pub mod time;
 
 pub use gungnir::GungnirVfsBackend;
 pub use local::LocalPosixBackend;
 pub use mock::MockGungnirBackend;
+pub use remote::RemoteVfsBackend;
