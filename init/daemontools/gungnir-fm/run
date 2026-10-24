@@ -1,0 +1,4 @@
+#!/bin/sh
+# daemontools / daemontools-encore run script for Gungnir FM
+exec 2>&1
+exec gungnir-fm --foreground

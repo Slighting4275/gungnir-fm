@@ -1,0 +1,16 @@
+[Unit]
+Description=Gungnir FM (Dual-Pane Linux File Manager Daemon)
+Documentation=https://gitlab.com/exalted6165/gungnir-fm
+After=default.target
+
+[Service]
+Type=notify
+ExecStart=%h/.local/bin/gungnir-fm --foreground
+Restart=on-failure
+RestartSec=2s
+StandardOutput=journal
+StandardError=journal
+NotifyAccess=all
+
+[Install]
+WantedBy=default.target

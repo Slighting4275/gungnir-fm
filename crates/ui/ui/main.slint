@@ -7,7 +7,7 @@
 import { LineEdit } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { FileRow, PaneInfo, TabInfo, Crumb, PlaceItem, MountItem, TreeRow, TransferRow, StatusInfo, KeyValue, DeviceItem, CustomActionItem } from "types.slint";
-import { Glyph, ToolButton } from "widgets.slint";
+import { Glyph, ToolButton, ZoomControl } from "widgets.slint";
 import { PathBar } from "pathbar.slint";
 import { Sidebar } from "sidebar.slint";
 import { Pane } from "pane.slint";
@@ -27,8 +27,8 @@ export component AppWindow inherits Window {
     icon: @image-url("../assets/gungnir-fm.svg");
     preferred-width: 1320px;
     preferred-height: 820px;
-    min-width: 760px;
-    min-height: 440px;
+    min-width: 480px;
+    min-height: 320px;
     background: Theme.window;
     default-font-size: Theme.font-size;
 
@@ -429,6 +429,15 @@ export component AppWindow inherits Window {
                     ToolButton { y: (parent.height - self.height) / 2; glyph: "details"; checked: root.view-mode == 1; clicked => { root.view-mode = 1; root.view-mode-changed(1); } }
                     ToolButton { y: (parent.height - self.height) / 2; glyph: "grid"; checked: root.view-mode == 2; clicked => { root.view-mode = 2; root.view-mode-changed(2); } }
                     Separator { y: (parent.height - self.height) / 2; }
+                    ZoomControl {
+                        y: (parent.height - self.height) / 2;
+                        value: root.zoom-level;
+                        changed(v) => {
+                            root.zoom-level = v;
+                            root.zoom-changed(v);
+                        }
+                    }
+                    Separator { y: (parent.height - self.height) / 2; }
                     ToolButton { y: (parent.height - self.height) / 2; glyph: "split"; checked: root.dual-pane; clicked => { root.dual-pane = !root.dual-pane; root.command("toggle-dual"); } }
                     ToolButton { y: (parent.height - self.height) / 2; glyph: "sidebar"; checked: root.sidebar-visible; clicked => { root.sidebar-visible = !root.sidebar-visible; root.command("toggle-sidebar"); } }
                 }
@@ -538,8 +547,6 @@ export component AppWindow inherits Window {
                 info: root.status;
                 active-transfers: root.active-transfers;
                 drawer-open: root.transfers-open;
-                zoom-level: root.zoom-level;
-                zoom-changed(z) => { root.zoom-level = z; root.zoom-changed(z); }
                 toggle-drawer => { root.transfers-open = !root.transfers-open; }
             }
         }

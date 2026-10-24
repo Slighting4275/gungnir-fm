@@ -24,6 +24,7 @@ mod controller;
 mod desktop;
 mod drives;
 mod hash;
+mod init;
 #[cfg(test)]
 mod controller_tests;
 mod rows;
@@ -35,6 +36,7 @@ use std::sync::Arc;
 use backends::gungnir::proto::socket_path_from_env;
 use backends::{GungnirVfsBackend, LocalPosixBackend, MockGungnirBackend, RemoteVfsBackend};
 use core_vfs::{VfsRegistry, VfsUri};
+use init::InitConfig;
 use slint::ComponentHandle;
 use tokio::sync::mpsc;
 
@@ -117,7 +119,144 @@ fn wire(ui: &AppWindow, tx: &mpsc::Sender<Msg>) {
     on!(on_rename_cancel, || Command::RenameCancel);
 }
 
+fn setup_display_environment() {
+    // Provide standard ICCCM WM_CLASS ("gungnir-fm", "gungnir-fm") for X11 window managers and compositors
+    // (dwm, i3, bspwm, xmonad, awesome, qtile, leftwm, herbstluftwm, spectrwm, ratpoison, stumpwm, cwm,
+    // twm, mwm, openbox, fluxbox, blackbox, icewm, jwm, window maker, afterstep, fvwm, pekwm, kwin, mutter, compiz, etc.)
+    if std::env::var_os("RESOURCE_NAME").is_none() {
+        // SAFETY: Called synchronously at main entry before worker threads are spawned.
+        unsafe { std::env::set_var("RESOURCE_NAME", "gungnir-fm"); }
+    }
+    if std::env::var_os("XCLIENT_NAME").is_none() {
+        // SAFETY: Called synchronously at main entry before worker threads are spawned.
+        unsafe { std::env::set_var("XCLIENT_NAME", "gungnir-fm"); }
+    }
+
+    // DirectFB / Linux Framebuffer (fbdev / direct DRM/KMS) & kmscon support:
+    // If neither X11 nor Wayland is running, attempt linuxkms backend if DRM/KMS or framebuffer is present.
+    if std::env::var_os("DISPLAY").is_none()
+        && std::env::var_os("WAYLAND_DISPLAY").is_none()
+        && std::env::var_os("SLINT_BACKEND").is_none()
+    {
+        let has_drm = (0..8).any(|i| std::path::Path::new(&format!("/dev/dri/card{i}")).exists());
+        let has_fb = (0..8).any(|i| std::path::Path::new(&format!("/dev/fb{i}")).exists());
+        if has_drm || has_fb {
+            // SAFETY: Called synchronously at main entry before worker threads are spawned.
+            unsafe { std::env::set_var("SLINT_BACKEND", "linuxkms"); }
+        }
+    }
+}
+
+fn create_app_window() -> Result<AppWindow, Box<dyn std::error::Error>> {
+    match AppWindow::new() {
+        Ok(ui) => Ok(ui),
+        Err(err) => {
+            // Virtual/headless X servers (Xvfb, Xdummy, TinyX/KDrive, nxagent/X2Go, software Xephyr)
+            // often lack hardware GLX/OpenGL support. Fallback to Slint's software renderer.
+            let is_software = std::env::var("SLINT_BACKEND").map(|v| v == "winit-software").unwrap_or(false);
+            if !is_software {
+                eprintln!("gungnir-fm: default display backend initialization failed ({err}), falling back to software renderer (SLINT_BACKEND=winit-software)");
+                // SAFETY: Called on main thread to switch rendering backend.
+                unsafe { std::env::set_var("SLINT_BACKEND", "winit-software"); }
+                match AppWindow::new() {
+                    Ok(ui) => Ok(ui),
+                    Err(fallback_err) => {
+                        Err(format!(
+                            "gungnir-fm: failed to initialize display window.\n\
+                             Neither hardware nor software display rendering could be started.\n\
+                             Primary error: {err}\n\
+                             Fallback error: {fallback_err}\n\
+                             Ensure a valid display server (Wayland, X11, or DRM/KMS framebuffer) is accessible."
+                        ).into())
+                    }
+                }
+            } else {
+                Err(Box::new(err))
+            }
+        }
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let raw_args: Vec<String> = std::env::args().skip(1).collect();
+    let mut init_cfg = InitConfig::default();
+    let mut positional_args: Vec<String> = Vec::new();
+
+    let mut i = 0;
+    while i < raw_args.len() {
+        let a = &raw_args[i];
+        match a.as_str() {
+            "--help" | "-h" => {
+                println!(
+                    "Gungnir FM {} - Fast dual-pane Linux file manager\n\n\
+                     USAGE:\n    \
+                         gungnir-fm [OPTIONS] [LEFT_PATH] [RIGHT_PATH]\n\n\
+                     ARGUMENTS:\n    \
+                         [LEFT_PATH]     Initial path or URI for the primary (left) pane\n    \
+                         [RIGHT_PATH]    Initial path or URI for the secondary (right) pane\n\n\
+                     OPTIONS:\n    \
+                         -h, --help       Print this help message\n    \
+                         -V, --version    Print version information\n    \
+                         -f, --foreground Run in foreground (default for process supervisors)\n    \
+                         -d, --daemon     Fork into background (daemonize for classic SysV/BSD)\n    \
+                         --pidfile PATH   Write process PID to file\n    \
+                         --ready-fd FD    Write ready notification byte to inherited file descriptor\n\n\
+                     DISPLAY TARGETS:\n    \
+                         Natively supports Wayland, X11 (X.Org, XLibre, XFree86, Phoenix X,\n    \
+                         TinyX/KDrive, Xephyr, Xvfb, Xvnc, nxagent, Xdummy), direct Linux\n    \
+                         Framebuffer / DRM/KMS, Arcan, Mir, and all standard Linux window\n    \
+                         managers and compositors (i3, dwm, bspwm, awesome, xmonad, openbox,\n    \
+                         kwin, mutter, etc.).\n\n\
+                     INIT SYSTEMS & SUPERVISORS:\n    \
+                         Natively compatible with systemd, OpenRC, runit, s6, dinit, SysVinit,\n    \
+                         BSD rc.subr, GNU Shepherd, BusyBox/Toybox init, Finit, procd, sinit,\n    \
+                         nosh, daemontools, perp, anopa, cinit, initng, Upstart, OpenLaunchD,\n    \
+                         Epoch, minit, simpleinit-msb.\n\n\
+                     ENVIRONMENT:\n    \
+                         GUNGNIR_FM_BACKEND  Backend selection: auto, live, mock, off, live-or-off\n    \
+                         GUNGNIR_SOCKET      Custom gungnird UNIX socket path\n    \
+                         SLINT_BACKEND       Slint backend: winit, winit-software, linuxkms\n    \
+                         GUNGNIR_FM_TRACE=1  Log listing timings to stderr",
+                    env!("CARGO_PKG_VERSION")
+                );
+                return Ok(());
+            }
+            "--version" | "-V" => {
+                println!("gungnir-fm {}", env!("CARGO_PKG_VERSION"));
+                return Ok(());
+            }
+            "-f" | "--foreground" => {
+                init_cfg.daemon = false;
+            }
+            "-d" | "--daemon" => {
+                init_cfg.daemon = true;
+            }
+            "--pidfile" => {
+                i += 1;
+                if i < raw_args.len() {
+                    init_cfg.pidfile = Some(std::path::PathBuf::from(&raw_args[i]));
+                }
+            }
+            "--ready-fd" => {
+                i += 1;
+                if i < raw_args.len() {
+                    init_cfg.ready_fd = raw_args[i].parse::<i32>().ok();
+                }
+            }
+            other => {
+                if !other.starts_with('-') {
+                    positional_args.push(other.to_string());
+                }
+            }
+        }
+        i += 1;
+    }
+
+    init::daemonize_if_requested(&init_cfg)?;
+    let _pidfile_guard = init::create_pidfile(init_cfg.pidfile.as_deref())?;
+
+    setup_display_environment();
+
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(4)
         .thread_name("gungnir-fm-worker")
@@ -175,7 +314,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let args = positional_args;
     // Arguments may be URIs, absolute paths, or paths relative to the working directory.
     let arg_uri = |i: usize| {
         let a = args.get(i)?;
@@ -221,7 +360,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         trace: std::env::var_os("GUNGNIR_FM_TRACE").is_some(),
     };
 
-    let ui = AppWindow::new()?;
+    let ui = create_app_window()?;
     if let Some(ref s) = saved_session {
         if s.window.width >= 200 && s.window.height >= 200 {
             ui.window().set_size(slint::LogicalSize::new(s.window.width as f32, s.window.height as f32));
@@ -235,6 +374,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     wire(&ui, &tx);
     let controller = Controller::new(registry, sink, tx.clone(), cfg);
     rt.spawn(controller.run(rx));
+
+    init::notify_ready(&init_cfg);
 
     // Graceful exit hooks (SIGINT, SIGTERM)
     let sig_tx = tx.clone();

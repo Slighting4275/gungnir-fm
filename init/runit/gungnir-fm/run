@@ -1,0 +1,5 @@
+#!/bin/sh
+# runit service script for Gungnir FM
+# Compatible with Void Linux, Artix, and runit-based systems
+exec 2>&1
+exec chpst -u "${USER:-root}" gungnir-fm --foreground

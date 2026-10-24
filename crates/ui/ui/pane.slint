@@ -199,10 +199,10 @@ export component Pane inherits Rectangle {
     property <length> modified-w: root.show-modified ? 132px : 0px;
     property <length> perms-w: root.show-perms ? 96px : 0px;
     property <length> status-w: 92px;
-    property <length> grid-cell-w: Math.max(72px, 108px * root.zoom-level);
-    property <length> grid-cell-h: Math.max(68px, 96px * root.zoom-level);
-    property <length> thumb-size: Math.max(32px, 48px * root.zoom-level);
-    property <length> icon-size: Math.max(24px, 40px * root.zoom-level);
+    property <length> thumb-size: Math.max(56px, 128px * root.zoom-level);
+    property <length> icon-size: Math.max(40px, 80px * root.zoom-level);
+    property <length> grid-cell-w: root.thumb-size + 24px;
+    property <length> grid-cell-h: root.thumb-size + 44px;
     property <int> grid-cols: Math.max(1, Math.floor(list-area.width / root.grid-cell-w));
     property <int> cursor: root.info.cursor;
 
@@ -553,22 +553,25 @@ export component Pane inherits Rectangle {
                                     double-clicked => { root.row-activated(cell.idx); }
                                 }
                                 VerticalLayout {
-                                    padding: 5px;
-                                    spacing: 5px;
+                                    padding: 4px;
+                                    spacing: 4px;
                                     alignment: start;
-                                    HorizontalLayout {
-                                        alignment: center;
-                                        Image {
-                                            visible: cell.f.has-thumbnail;
-                                            width: cell.f.has-thumbnail ? root.thumb-size : 0px;
-                                            height: cell.f.has-thumbnail ? root.thumb-size : 0px;
+                                    Rectangle {
+                                        height: root.thumb-size;
+                                        width: parent.width;
+                                        clip: true;
+                                        if cell.f.has-thumbnail: Image {
+                                            width: 100%;
+                                            height: 100%;
                                             source: cell.f.thumbnail;
                                             image-fit: contain;
+                                            horizontal-alignment: center;
                                         }
-                                        FileIcon {
-                                            visible: !cell.f.has-thumbnail;
-                                            width: !cell.f.has-thumbnail ? root.icon-size : 0px;
-                                            height: !cell.f.has-thumbnail ? root.icon-size : 0px;
+                                        if !cell.f.has-thumbnail: FileIcon {
+                                            x: (parent.width - self.width) / 2;
+                                            y: (parent.height - self.height) / 2;
+                                            width: root.icon-size;
+                                            height: root.icon-size;
                                             category: cell.f.icon;
                                             large: true;
                                         }
@@ -580,7 +583,7 @@ export component Pane inherits Rectangle {
                                         horizontal-alignment: center;
                                         wrap: word-wrap;
                                         overflow: elide;
-                                        max-height: 28px * Math.max(1.0, Math.min(1.8, root.zoom-level));
+                                        max-height: 32px;
                                     }
                                 }
                                 if cell.f.status != 0: Dot {

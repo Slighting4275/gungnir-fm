@@ -205,8 +205,8 @@ export component ZoomControl inherits Rectangle {
     in property <float> step: 0.25;
     callback changed(float);
 
-    height: 22px;
-    width: 142px;
+    height: 24px;
+    width: 154px;
 
     function clamp-val(v: float) -> float {
         return Math.max(root.minimum, Math.min(root.maximum, v));
@@ -236,8 +236,8 @@ export component ZoomControl inherits Rectangle {
 
         // Step down [-]
         Rectangle {
-            width: 20px;
-            height: 20px;
+            width: 22px;
+            height: 22px;
             border-radius: Theme.radius-small;
             background: minus-touch.has-hover ? Theme.hover : transparent;
             Glyph {
@@ -254,8 +254,8 @@ export component ZoomControl inherits Rectangle {
 
         // Interactive Slider Track
         track := Rectangle {
-            width: 58px;
-            height: 16px;
+            width: 66px;
+            height: 18px;
 
             // Track background bar
             Rectangle {
@@ -280,9 +280,9 @@ export component ZoomControl inherits Rectangle {
             thumb := Rectangle {
                 x: (parent.width - self.width) * ((root.value - root.minimum) / (root.maximum - root.minimum));
                 y: (parent.height - self.height) / 2;
-                width: 12px;
-                height: 12px;
-                border-radius: 6px;
+                width: 14px;
+                height: 14px;
+                border-radius: 7px;
                 background: slider-touch.has-hover || slider-touch.pressed ? Theme.accent : Theme.text-dim;
                 border-width: 1px;
                 border-color: Theme.border-strong;
@@ -293,13 +293,13 @@ export component ZoomControl inherits Rectangle {
                 mouse-cursor: pointer;
                 pointer-event(e) => {
                     if e.kind == PointerEventKind.down && e.button == PointerEventButton.left {
-                        let ratio = Math.max(0.0, Math.min(1.0, self.mouse-x / parent.width));
+                        let ratio = Math.max(0.0, Math.min(1.0, self.mouse-x / self.width));
                         root.set-val(root.minimum + ratio * (root.maximum - root.minimum));
                     }
                 }
                 moved => {
                     if self.pressed {
-                        let ratio = Math.max(0.0, Math.min(1.0, self.mouse-x / parent.width));
+                        let ratio = Math.max(0.0, Math.min(1.0, self.mouse-x / self.width));
                         root.set-val(root.minimum + ratio * (root.maximum - root.minimum));
                     }
                 }
@@ -311,8 +311,8 @@ export component ZoomControl inherits Rectangle {
 
         // Step up [+]
         Rectangle {
-            width: 20px;
-            height: 20px;
+            width: 22px;
+            height: 22px;
             border-radius: Theme.radius-small;
             background: plus-touch.has-hover ? Theme.hover : transparent;
             Glyph {
@@ -329,8 +329,8 @@ export component ZoomControl inherits Rectangle {
 
         // Percentage pill & reset button (e.g. "100%")
         Rectangle {
-            width: 36px;
-            height: 18px;
+            width: 38px;
+            height: 20px;
             border-radius: Theme.radius-small;
             background: pct-touch.has-hover ? Theme.hover : transparent;
             Text {

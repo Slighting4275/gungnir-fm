@@ -1,0 +1,8 @@
+# dinit service configuration for Gungnir FM
+# Compatible with Chimera Linux, Artix Linux, and dinit supervisors
+type = process
+command = /usr/local/bin/gungnir-fm --foreground --ready-fd 3
+ready-notification = pipefd:3
+restart = true
+smooth-recovery = true
+logfile = /var/log/dinit/gungnir-fm.log

@@ -1,0 +1,47 @@
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          gungnir-fm
+# Required-Start:    $local_fs $remote_fs $network
+# Required-Stop:     $local_fs $remote_fs $network
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: Gungnir FM daemon
+# Description:       Gungnir FM file manager background daemon
+### END INIT INFO
+
+DESC="Gungnir FM"
+NAME="gungnir-fm"
+DAEMON="/usr/local/bin/$NAME"
+DAEMON_ARGS="--foreground"
+PIDFILE="/run/$NAME.pid"
+SCRIPTNAME="/etc/init.d/$NAME"
+
+[ -x "$DAEMON" ] || exit 0
+
+case "$1" in
+  start)
+    echo "Starting $DESC: $NAME"
+    start-stop-daemon --start --quiet --background --make-pidfile \
+      --pidfile "$PIDFILE" --exec "$DAEMON" -- $DAEMON_ARGS
+    ;;
+  stop)
+    echo "Stopping $DESC: $NAME"
+    start-stop-daemon --stop --quiet --pidfile "$PIDFILE" --retry 5
+    rm -f "$PIDFILE"
+    ;;
+  status)
+    start-stop-daemon --status --pidfile "$PIDFILE"
+    exit $?
+    ;;
+  restart|force-reload)
+    "$0" stop
+    sleep 1
+    "$0" start
+    ;;
+  *)
+    echo "Usage: $SCRIPTNAME {start|stop|status|restart|force-reload}" >&2
+    exit 3
+    ;;
+esac
+
+exit 0

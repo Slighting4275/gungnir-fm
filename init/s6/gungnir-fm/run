@@ -1,0 +1,5 @@
+#!/bin/sh
+# s6 / s6-rc run script for Gungnir FM
+# Uses notification-fd (fd 3) for readiness notification
+exec 2>&1
+exec gungnir-fm --foreground --ready-fd 3

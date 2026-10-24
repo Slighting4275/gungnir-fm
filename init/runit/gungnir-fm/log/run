@@ -1,0 +1,3 @@
+#!/bin/sh
+# runit logger script for Gungnir FM (svlogd)
+exec svlogd -tt /var/log/gungnir-fm

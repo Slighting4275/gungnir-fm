@@ -1,0 +1,24 @@
+#!/bin/sh
+#
+# PROVIDE: gungnir_fm
+# REQUIRE: LOGIN cleanvar
+# KEYWORD: shutdown
+#
+# Add the following lines to /etc/rc.conf to enable gungnir-fm:
+# gungnir_fm_enable="YES"
+# gungnir_fm_flags="--daemon --pidfile /var/run/gungnir_fm.pid"
+#
+
+. /etc/rc.subr
+
+name="gungnir_fm"
+rcvar="gungnir_fm_enable"
+
+command="/usr/local/bin/gungnir-fm"
+pidfile="/var/run/${name}.pid"
+command_args="--daemon --pidfile ${pidfile}"
+
+load_rc_config $name
+: ${gungnir_fm_enable:="NO"}
+
+run_rc_command "$1"

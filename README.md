@@ -21,8 +21,49 @@ Source repository & issue tracker: [https://gitlab.com/exalted6165/gungnir-fm](h
   - **Images**: PNG, JPG/JPEG, WebP, GIF, BMP, ICO, SVG, and AVIF via the `image` crate with ImageMagick fallback.
   - **Videos**: MP4, MKV, WebM, MOV, AVI, FLV, WMV, M4V, TS, MPG/MPEG frame extraction via `ffmpegthumbnailer` or `ffmpeg`.
 - **Integrated Previews**: Visible across List View, Grid View, the Properties dialog, and the Quick Preview overlay (`Spacebar`).
-- **Nemo-Style Preview Zoom Slider**: Interactive zoom slider anchored in the status bar with stepping buttons (`[-]` / `[+]`), percentage pill with click-to-reset, and smooth scaling from 50% to 250% that dynamically rescales thumbnails and reflows grid columns.
+- **Toolbar Zoom Slider**: Interactive zoom slider located directly in the top toolbar alongside view modes. Features stepping buttons (`[-]` / `[+]`), interactive track drag, and a percentage pill with click-to-reset.
+- **Proportional Scaling**: Smoothly scales previews from 50% to 250% (56px up to 320px). Grid view features dedicated bounding boxes with centered contain-fitting and automated column reflow.
 - **Disk Caching**: Asynchronous background generation cached under `~/.cache/gungnir-fm/thumbnails/` using source URI and modification timestamp keys.
+
+### 🖥️ Universal Display Server & Window Manager Compatibility
+Gungnir FM runs natively without crashes, panics, or missing window mappings across 48 Linux and UNIX display targets:
+- **Display Servers & Protocols**: Wayland, XLibre, X.Org Server, XFree86, Phoenix X Server, Arcan, Mir (legacy standalone), Y Window System, TinyX / KDrive, XWayland, Xephyr, Xvfb (Virtual Framebuffer), Xvnc / TigerVNC, nxagent (X2Go / NX), Xdummy, DirectFB / Linux Framebuffer (`/dev/fb*` & direct DRM/KMS `/dev/dri/card*`), kmscon, Twin.
+- **Tiling & Dynamic Window Managers**: i3wm, dwm, bspwm, AwesomeWM, xmonad, Qtile (X11 backend), LeftWM, Herbstluftwm, Spectrwm, Ratpoison, StumpWM, cwm (Calm Window Manager). Window min-size is relaxed to 480×320 for split-column tiling without clipping.
+- **Floating, Stacking & Desktop Environments**: Openbox, Fluxbox, Blackbox, IceWM, JWM, Window Maker, AfterStep, FVWM, PekWM, twm, mwm, KWin (KDE Plasma), Mutter (GNOME), Compiz, Metacity, Xfwm4 (Xfce), Marco (MATE), Enlightenment (E16 / E26 X11 engine).
+- **ICCCM & EWMH Compliance**: Automatic `RESOURCE_NAME` and `XCLIENT_NAME` setup guarantees standardized `WM_CLASS = "gungnir-fm"` and `_NET_WM_ICON` across all WMs.
+- **Automated Software Rendering Fallback**: On headless or virtual X servers lacking hardware GLX (e.g. Xvfb, Xdummy, TinyX, nxagent), Gungnir FM catches initialization errors and automatically switches to `SLINT_BACKEND=winit-software`.
+
+### ⚙️ Native Cross-Init System & Supervisor Specification
+Gungnir FM is built to run natively across all 24 Linux and BSD init systems and process supervisors without requiring or assuming `systemd` or `libsystemd`:
+1. **systemd** (`init/systemd/gungnir-fm.service`)
+2. **OpenRC** (`init/openrc/gungnir-fm`)
+3. **runit** (`init/runit/gungnir-fm/run`)
+4. **s6 & s6-rc** (`init/s6/gungnir-fm/`)
+5. **dinit** (`init/dinit/gungnir-fm`)
+6. **SysVinit / inittab** (`init/sysvinit/gungnir-fm`)
+7. **BSD Init / rc.subr** (`init/bsd/gungnir_fm`)
+8. **GNU Shepherd** (`init/shepherd/gungnir-fm.scm`)
+9. **BusyBox init** (`init/busybox/rc.gungnir-fm`)
+10. **Toybox init** (`init/busybox/rc.gungnir-fm`)
+11. **Finit** (`init/finit/gungnir-fm.conf`)
+12. **procd (OpenWrt)** (`init/procd/gungnir-fm.init`)
+13. **sinit (suckless init)**
+14. **nosh** (`init/daemontools/gungnir-fm/run`)
+15. **daemontools** (`init/daemontools/gungnir-fm/run`)
+16. **daemontools-encore** (`init/daemontools/gungnir-fm/run`)
+17. **perp** (`init/daemontools/gungnir-fm/run`)
+18. **anopa** (`init/s6/gungnir-fm/`)
+19. **cinit**
+20. **initng**
+21. **Upstart** (`init/upstart/gungnir-fm.conf`)
+22. **OpenLaunchD** (`init/launchd/org.gungnir.fm.plist`)
+23. **Epoch**
+24. **minit** & **simpleinit-msb**
+
+- **Foreground by Default**: Complies with modern process supervisors; writes stream logs to stdout/stderr.
+- **Agnostic Readiness Notification**: Built-in support for pipe file descriptors (`--ready-fd <FD>` or `$S6_NOTIFICATION_FD`) and raw datagram sockets (`$NOTIFY_SOCKET`) without linking against `libsystemd`.
+- **Legacy Daemonization**: Clean `-d / --daemon` and `--pidfile <PATH>` options for traditional SysVinit and BSD `rc.subr` scripts.
+- **POSIX /bin/sh Shell Scripts**: All deployment, installation, and build scripts strictly adhere to POSIX `/bin/sh` syntax.
 
 ### 🔒 File Hashing & Interactive Checksum Verification
 - **Streaming Multi-Hash Engine**: Computes MD5, SHA-1, SHA-256, and SHA-512 concurrently in a single streaming pass over 64 KB buffers without loading entire files into memory.
