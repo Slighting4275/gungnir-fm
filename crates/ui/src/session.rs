@@ -119,7 +119,7 @@ pub fn save_atomic(path: &Path, state: &SessionState) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let tmp_path = path.with_extension("json.tmp");
+    let tmp_path = path.with_extension(format!("tmp-{}", std::process::id()));
     let json_bytes = serde_json::to_vec_pretty(state)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
@@ -180,9 +180,9 @@ pub struct SessionSaver {
 
 impl SessionSaver {
     #[must_use]
-    pub fn spawn(path: PathBuf) -> (Self, tokio::task::JoinHandle<()>) {
+    pub fn spawn(path: PathBuf) -> (Self, Option<tokio::task::JoinHandle<()>>) {
         let (tx, mut rx) = tokio::sync::mpsc::channel::<SessionSaveMsg>(64);
-        let handle = tokio::spawn(async move {
+        let task = async move {
             let mut pending_state: Option<SessionState> = None;
             let mut debounce_timer = Box::pin(tokio::time::sleep(Duration::MAX));
             let mut timer_active = false;
@@ -219,7 +219,9 @@ impl SessionSaver {
                     }
                 }
             }
-        });
+        };
+
+        let handle = tokio::runtime::Handle::try_current().ok().map(|h| h.spawn(task));
         (Self { tx }, handle)
     }
 
@@ -321,5 +323,29 @@ mod tests {
         let nonexistent = "/path/that/definitely/does/not/exist_1234567";
         let resolved = resolve_path_with_fallback(nonexistent, &home);
         assert_eq!(resolved, home);
+    }
+
+    #[tokio::test]
+    async fn test_session_saver_debounce_and_flush() {
+        let sandbox = TestSandbox::new("saver-test");
+        let session_file = sandbox.0.join("session.json");
+
+        let (saver, _handle) = SessionSaver::spawn(session_file.clone());
+        let state = SessionState {
+            window: WindowState::default(),
+            split_view: false,
+            active_pane: 0,
+            primary_pane_tabs: PaneTabsState::new(vec!["/home/user".into()], 0),
+            secondary_pane_tabs: None,
+            show_hidden: false,
+            sidebar_visible: true,
+        };
+
+        saver.update(state.clone());
+        saver.flush().await;
+
+        assert!(session_file.exists());
+        let loaded = load(&session_file).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(state, loaded);
     }
 }

@@ -122,6 +122,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .thread_name("gungnir-fm-worker")
         .enable_all()
         .build()?;
+    let _guard = rt.enter();
 
     let home_path = std::env::var("HOME").unwrap_or_else(|_| "/".into());
     let home = VfsUri::parse(&home_path)
@@ -221,7 +222,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let ui = AppWindow::new()?;
     if let Some(ref s) = saved_session {
-        ui.window().set_size(slint::LogicalSize::new(s.window.width as f32, s.window.height as f32));
+        if s.window.width >= 200 && s.window.height >= 200 {
+            ui.window().set_size(slint::LogicalSize::new(s.window.width as f32, s.window.height as f32));
+        }
         if s.window.maximized {
             ui.window().set_maximized(true);
         }
@@ -255,7 +258,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     ui.run()?;
-    let _ = tx.blocking_send(Msg::Ui(Command::Quit));
+    let _ = tx.try_send(Msg::Ui(Command::Quit));
     drop(ui);
     rt.shutdown_timeout(std::time::Duration::from_millis(500));
     Ok(())

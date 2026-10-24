@@ -398,10 +398,6 @@ impl Controller {
             (panes, 0, false, false, true)
         };
 
-        let session_saver = cfg.session_file.as_ref().map(|path| {
-            let (saver, _handle) = crate::session::SessionSaver::spawn(path.clone());
-            saver
-        });
         let actions = crate::actions::ActionRegistry::load_or_default(cfg.actions_dir.as_deref());
 
         Self {
@@ -432,7 +428,7 @@ impl Controller {
             clipboard: None,
             bus: None,
             devices: Vec::new(),
-            session_saver,
+            session_saver: None,
             actions,
         }
     }
@@ -442,6 +438,13 @@ impl Controller {
         self.start();
         while let Some(m) = rx.recv().await {
             match m {
+                Msg::Ui(Command::Quit) => {
+                    if let Some(ref saver) = self.session_saver {
+                        saver.flush().await;
+                    }
+                    self.ui.send(Update::Quit);
+                    break;
+                }
                 Msg::Ui(c) => self.command(c),
                 Msg::Ev(e) => self.event(e),
             }
@@ -449,6 +452,10 @@ impl Controller {
     }
 
     fn start(&mut self) {
+        if let Some(ref path) = self.cfg.session_file {
+            let (saver, _handle) = crate::session::SessionSaver::spawn(path.clone());
+            self.session_saver = Some(saver);
+        }
         self.push_flags();
         self.ui.send(Update::Mounts { items: Vec::new(), label: self.cfg.gungnir_label.clone() });
         for p in 0..2 {
