@@ -3,7 +3,7 @@
 
 import { Theme } from "theme.slint";
 import { StatusInfo, TransferRow } from "types.slint";
-import { Badge, Bar, Glyph, ToolButton } from "widgets.slint";
+import { Badge, Bar, Glyph, ToolButton, ZoomControl } from "widgets.slint";
 
 export component StatusBar inherits Rectangle {
     in property <StatusInfo> info: {
@@ -17,7 +17,9 @@ export component StatusBar inherits Rectangle {
     };
     in property <int> active-transfers: 2;
     in property <bool> drawer-open: false;
+    in-out property <float> zoom-level: 1.0;
     callback toggle-drawer();
+    callback zoom-changed(float);
 
     height: 28px;
     background: Theme.base;
@@ -60,6 +62,14 @@ export component StatusBar inherits Rectangle {
             y: (parent.height - self.height) / 2;
             text: root.info.backend;
             tint: root.info.backend-kind == 0 ? Theme.info : Theme.gold;
+        }
+        ZoomControl {
+            y: (parent.height - self.height) / 2;
+            value: root.zoom-level;
+            changed(v) => {
+                root.zoom-level = v;
+                root.zoom-changed(v);
+            }
         }
         Rectangle {
             width: tb.preferred-width;

@@ -21,6 +21,7 @@ Source repository & issue tracker: [https://gitlab.com/exalted6165/gungnir-fm](h
   - **Images**: PNG, JPG/JPEG, WebP, GIF, BMP, ICO, SVG, and AVIF via the `image` crate with ImageMagick fallback.
   - **Videos**: MP4, MKV, WebM, MOV, AVI, FLV, WMV, M4V, TS, MPG/MPEG frame extraction via `ffmpegthumbnailer` or `ffmpeg`.
 - **Integrated Previews**: Visible across List View, Grid View, the Properties dialog, and the Quick Preview overlay (`Spacebar`).
+- **Nemo-Style Preview Zoom Slider**: Interactive zoom slider anchored in the status bar with stepping buttons (`[-]` / `[+]`), percentage pill with click-to-reset, and smooth scaling from 50% to 250% that dynamically rescales thumbnails and reflows grid columns.
 - **Disk Caching**: Asynchronous background generation cached under `~/.cache/gungnir-fm/thumbnails/` using source URI and modification timestamp keys.
 
 ### 🔒 File Hashing & Interactive Checksum Verification
@@ -46,7 +47,7 @@ Source repository & issue tracker: [https://gitlab.com/exalted6165/gungnir-fm](h
 ### 💾 Crash-Resilient Session Persistence & Recovery
 - **Automatic State Saving**: Debounced auto-save (500 ms) to `~/.config/gungnir-fm/session.json`.
 - **Atomic Writes**: Writes to temporary files and atomically renames to prevent corruption during unexpected shutdowns or crashes.
-- **Persisted State**: Window size and maximized state, active pane, split view toggle, open tabs per pane, hidden file visibility (`Ctrl+H`), and sidebar state (`F9`).
+- **Persisted State**: Window size and maximized state, active pane, split view toggle, open tabs per pane, preview zoom level, hidden file visibility (`Ctrl+H`), and sidebar state (`F9`).
 - **Safe Recovery**: Automatically restores open tabs and paths on restart, safely falling back to the user's home directory if any saved path is unmounted or inaccessible.
 
 ### 🔌 Removable Drives & Desktop Integration
@@ -77,6 +78,9 @@ Source repository & issue tracker: [https://gitlab.com/exalted6165/gungnir-fm](h
 | `Alt+Left` / `Alt+Right` | Navigate back / forward in tab history |
 | `Ctrl+H` | Toggle hidden files |
 | `Ctrl+1` / `Ctrl+2` / `Ctrl+3` | Switch view: Detailed list / Compact list / Grid |
+| `Ctrl++` / `Ctrl+=` | Zoom in previews / icons (up to 250%) |
+| `Ctrl+-` / `Ctrl+_` | Zoom out previews / icons (down to 50%) |
+| `Ctrl+0` | Reset preview zoom to 100% |
 | `Space` | Quick Preview overlay (image/video/text) |
 | `F2` | Rename selected file or directory |
 | `F5` / `F6` | Copy / Move selection to other pane |

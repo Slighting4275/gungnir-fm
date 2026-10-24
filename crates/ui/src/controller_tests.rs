@@ -333,6 +333,7 @@ fn session_persistence_and_safe_recovery() {
         )),
         show_hidden: true,
         sidebar_visible: true,
+        zoom_level: 1.25,
     };
 
     // Save atomically
@@ -344,6 +345,7 @@ fn session_persistence_and_safe_recovery() {
     assert_eq!(loaded.window.width, 1440);
     assert!(loaded.split_view);
     assert!(loaded.show_hidden);
+    assert_eq!(loaded.zoom_level, 1.25);
 
     // Verify safe fallback: inaccessible path falls back to home_uri
     let paths = loaded.primary_pane_tabs.get_paths();
@@ -387,4 +389,13 @@ fn test_remote_connect_dialog_and_crumbs() {
     assert_eq!(smb_crumbs[0].icon, 2);
 
     backends::remote::set_remote_test_mode(false);
+}
+
+#[test]
+fn test_zoom_command_and_bounds() {
+    let h = start("/", "/", MockConfig::default());
+    h.send(Command::Zoom(1.75));
+    h.send(Command::Zoom(99.0)); // Should clamp safely
+    h.send(Command::Zoom(-5.0)); // Should clamp safely
+    let _ = h.drain_for(Duration::from_millis(50));
 }

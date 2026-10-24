@@ -93,6 +93,7 @@ fn wire(ui: &AppWindow, tx: &mpsc::Sender<Msg>) {
     on!(on_pane_focused, |p| Command::PaneFocused(pane(p)));
     on!(on_command, |name| Command::Run(name.to_string()));
     on!(on_view_mode_changed, |m| Command::ViewMode(m));
+    on!(on_zoom_changed, |z| Command::Zoom(z));
     on!(on_sidebar_open, |uri| Command::SidebarOpen(uri.to_string()));
     on!(on_tree_toggle, |i| Command::TreeToggle(index(i)));
     on!(on_sidebar_mode_changed, |m| Command::SidebarMode(m));

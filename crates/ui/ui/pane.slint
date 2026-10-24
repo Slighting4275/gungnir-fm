@@ -164,6 +164,7 @@ export component Pane inherits Rectangle {
         { name: ".mixrc", size-text: "312 bytes", type-text: "File", modified-text: "2026-09-30 12:00", perms-text: "-rw-------", status-text: "", status: 0, icon: 1, is-dir: false, hidden: true, selected: false },
     ];
     in-out property <int> thumbnail-rev: 0;
+    in-out property <float> zoom-level: 1.0;
 
     callback row-clicked(index: int, ctrl: bool, shift: bool);
     callback row-activated(index: int);
@@ -172,6 +173,7 @@ export component Pane inherits Rectangle {
     callback tab-select(index: int);
     callback tab-close(index: int);
     callback tab-new();
+    callback zoom-changed(float);
     callback focus-pane();
     callback command(name: string);
     callback custom-action(id: string);
@@ -188,7 +190,7 @@ export component Pane inherits Rectangle {
     // source from drag-start).
     pure callback drag-data(index: int) -> data-transfer;
 
-    property <length> row-h: root.view-mode == 0 ? Theme.compact-row-height : Theme.row-height;
+    property <length> row-h: (root.view-mode == 0 ? Theme.compact-row-height : Theme.row-height) * Math.max(0.9, Math.min(1.4, 0.85 + 0.15 * root.zoom-level));
     property <bool> show-type: list-area.width > 640px;
     property <bool> show-perms: list-area.width > 780px;
     property <bool> show-modified: list-area.width > 500px;
@@ -197,8 +199,11 @@ export component Pane inherits Rectangle {
     property <length> modified-w: root.show-modified ? 132px : 0px;
     property <length> perms-w: root.show-perms ? 96px : 0px;
     property <length> status-w: 92px;
-    property <int> grid-cols: max(1, floor(list-area.width / 108px));
-    property <length> grid-cell-h: 96px;
+    property <length> grid-cell-w: Math.max(72px, 108px * root.zoom-level);
+    property <length> grid-cell-h: Math.max(68px, 96px * root.zoom-level);
+    property <length> thumb-size: Math.max(32px, 48px * root.zoom-level);
+    property <length> icon-size: Math.max(24px, 40px * root.zoom-level);
+    property <int> grid-cols: Math.max(1, Math.floor(list-area.width / root.grid-cell-w));
     property <int> cursor: root.info.cursor;
 
     // Keep the keyboard cursor in view.
@@ -520,7 +525,7 @@ export component Pane inherits Rectangle {
                             property <int> rev: root.thumbnail-rev;
                             property <int> idx: r * root.grid-cols + c;
                             property <FileRow> f: root.files[cell.idx];
-                            width: 108px;
+                            width: root.grid-cell-w;
                             if cell.idx < root.files.length: Rectangle {
                                 x: 4px;
                                 y: 4px;
@@ -548,22 +553,22 @@ export component Pane inherits Rectangle {
                                     double-clicked => { root.row-activated(cell.idx); }
                                 }
                                 VerticalLayout {
-                                    padding: 6px;
-                                    spacing: 6px;
+                                    padding: 5px;
+                                    spacing: 5px;
                                     alignment: start;
                                     HorizontalLayout {
                                         alignment: center;
                                         Image {
                                             visible: cell.f.has-thumbnail;
-                                            width: cell.f.has-thumbnail ? 48px : 0px;
-                                            height: cell.f.has-thumbnail ? 48px : 0px;
+                                            width: cell.f.has-thumbnail ? root.thumb-size : 0px;
+                                            height: cell.f.has-thumbnail ? root.thumb-size : 0px;
                                             source: cell.f.thumbnail;
                                             image-fit: contain;
                                         }
                                         FileIcon {
                                             visible: !cell.f.has-thumbnail;
-                                            width: !cell.f.has-thumbnail ? 40px : 0px;
-                                            height: !cell.f.has-thumbnail ? 40px : 0px;
+                                            width: !cell.f.has-thumbnail ? root.icon-size : 0px;
+                                            height: !cell.f.has-thumbnail ? root.icon-size : 0px;
                                             category: cell.f.icon;
                                             large: true;
                                         }
@@ -575,7 +580,7 @@ export component Pane inherits Rectangle {
                                         horizontal-alignment: center;
                                         wrap: word-wrap;
                                         overflow: elide;
-                                        max-height: 30px;
+                                        max-height: 28px * Math.max(1.0, Math.min(1.8, root.zoom-level));
                                     }
                                 }
                                 if cell.f.status != 0: Dot {

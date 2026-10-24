@@ -39,6 +39,7 @@ export component AppWindow inherits Window {
     in-out property <int> sidebar-mode: 0;
     in-out property <int> view-mode: 1;
     in-out property <bool> show-hidden: false;
+    in-out property <float> zoom-level: 1.0;
     in-out property <bool> transfers-open: false;
     in-out property <int> active-transfers: 2;
     in-out property <int> renaming-pane: -1;
@@ -167,6 +168,7 @@ export component AppWindow inherits Window {
     callback rename-cancel();
     callback custom-action(pane: int, id: string);
     callback tab-cycle(pane: int, delta: int);
+    callback zoom-changed(zoom: float);
     callback dropped(src-pane: int, src-index: int, dst-pane: int, dst-index: int, copy: bool);
     pure callback drag-data(pane: int, index: int) -> data-transfer;
 
@@ -250,6 +252,10 @@ export component AppWindow inherits Window {
             MenuItem { title: "Grid"; shortcut: @keys(Control + "3"); activated => { root.view-mode = 2; root.view-mode-changed(2); } }
             MenuSeparator { }
             MenuItem { title: "Quick Preview (Space)"; activated => { root.command("quick-preview"); } }
+            MenuSeparator { }
+            MenuItem { title: "Zoom In"; shortcut: @keys(Control + "+"); activated => { root.zoom-level = Math.min(2.5, root.zoom-level + 0.25); root.zoom-changed(root.zoom-level); } }
+            MenuItem { title: "Zoom Out"; shortcut: @keys(Control + "-"); activated => { root.zoom-level = Math.max(0.5, root.zoom-level - 0.25); root.zoom-changed(root.zoom-level); } }
+            MenuItem { title: "Normal Size (100%)"; shortcut: @keys(Control + "0"); activated => { root.zoom-level = 1.0; root.zoom-changed(1.0); } }
             MenuSeparator { }
             MenuItem { title: "Dual Pane"; shortcut: @keys(F3); checkable: true; checked <=> root.dual-pane; activated => { root.command("toggle-dual"); } }
             MenuItem { title: "Sidebar"; shortcut: @keys(F9); checkable: true; checked <=> root.sidebar-visible; activated => { root.command("toggle-sidebar"); } }
@@ -353,6 +359,21 @@ export component AppWindow inherits Window {
             if e.modifiers.control && (e.text == "x" || e.text == "X") { root.command("cut"); return accept; }
             if e.modifiers.control && (e.text == "v" || e.text == "V") { root.command("paste"); return accept; }
             if e.modifiers.control && (e.text == "a" || e.text == "A") { root.command("select-all"); return accept; }
+            if e.modifiers.control && (e.text == "+" || e.text == "=") {
+                root.zoom-level = Math.min(2.5, root.zoom-level + 0.25);
+                root.zoom-changed(root.zoom-level);
+                return accept;
+            }
+            if e.modifiers.control && (e.text == "-" || e.text == "_") {
+                root.zoom-level = Math.max(0.5, root.zoom-level - 0.25);
+                root.zoom-changed(root.zoom-level);
+                return accept;
+            }
+            if e.modifiers.control && e.text == "0" {
+                root.zoom-level = 1.0;
+                root.zoom-changed(1.0);
+                return accept;
+            }
             reject
         }
 
@@ -448,6 +469,8 @@ export component AppWindow inherits Window {
                         info: root.left;
                         files: root.left-files;
                         thumbnail-rev: root.left-thumbnail-rev;
+                        zoom-level: root.zoom-level;
+                        zoom-changed(z) => { root.zoom-level = z; root.zoom-changed(z); }
                         custom-actions: root.left-custom-actions;
                         custom-action(id) => { root.custom-action(0, id); }
                         renaming-index: root.renaming-pane == 0 ? root.renaming-index : -1;
@@ -481,6 +504,8 @@ export component AppWindow inherits Window {
                         info: root.right;
                         files: root.right-files;
                         thumbnail-rev: root.right-thumbnail-rev;
+                        zoom-level: root.zoom-level;
+                        zoom-changed(z) => { root.zoom-level = z; root.zoom-changed(z); }
                         custom-actions: root.right-custom-actions;
                         custom-action(id) => { root.custom-action(1, id); }
                         renaming-index: root.renaming-pane == 1 ? root.renaming-index : -1;
@@ -513,6 +538,8 @@ export component AppWindow inherits Window {
                 info: root.status;
                 active-transfers: root.active-transfers;
                 drawer-open: root.transfers-open;
+                zoom-level: root.zoom-level;
+                zoom-changed(z) => { root.zoom-level = z; root.zoom-changed(z); }
                 toggle-drawer => { root.transfers-open = !root.transfers-open; }
             }
         }

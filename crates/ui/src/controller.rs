@@ -45,6 +45,7 @@ pub enum Command {
     PaneFocused(usize),
     Run(String),
     ViewMode(i32),
+    Zoom(f32),
     SidebarOpen(String),
     TreeToggle(usize),
     SidebarMode(i32),
@@ -280,6 +281,7 @@ pub struct Controller {
     sidebar_mode: i32,
     show_hidden: bool,
     view_mode: i32,
+    zoom_level: f32,
     next_tab: u64,
     next_transfer: u64,
     transfers: Vec<(u64, Transfer)>,
@@ -330,7 +332,7 @@ impl Controller {
     #[must_use]
     pub fn new(registry: VfsRegistry, ui: Arc<dyn UiSink>, tx: MsgTx, cfg: Config) -> Self {
         let mut next_tab = 1;
-        let (panes, active_pane, dual, show_hidden, sidebar) = if let Some(ref s) = cfg.initial_session {
+        let (panes, active_pane, dual, show_hidden, sidebar, zoom_level) = if let Some(ref s) = cfg.initial_session {
             let p0_paths = s.primary_pane_tabs.get_paths();
             let p0_tabs: Vec<Tab> = if p0_paths.is_empty() {
                 let id = next_tab;
@@ -388,6 +390,7 @@ impl Controller {
                 dual,
                 s.show_hidden,
                 s.sidebar_visible,
+                s.zoom_level,
             )
         } else {
             let panes = [
@@ -395,7 +398,7 @@ impl Controller {
                 Pane { tabs: vec![Tab::new(2, cfg.right.clone())], active: 0 },
             ];
             next_tab = 3;
-            (panes, 0, false, false, true)
+            (panes, 0, false, false, true, 1.0)
         };
 
         let actions = crate::actions::ActionRegistry::load_or_default(cfg.actions_dir.as_deref());
@@ -412,6 +415,7 @@ impl Controller {
             sidebar_mode: 0,
             show_hidden,
             view_mode: 1,
+            zoom_level,
             next_tab,
             next_transfer: 1,
             transfers: Vec::new(),
@@ -525,6 +529,7 @@ impl Controller {
             sidebar_visible: self.sidebar,
             show_hidden: self.show_hidden,
             view_mode: self.view_mode,
+            zoom_level: self.zoom_level,
         }));
     }
 
@@ -622,6 +627,7 @@ impl Controller {
             secondary_pane_tabs: secondary,
             show_hidden: self.show_hidden,
             sidebar_visible: self.sidebar,
+            zoom_level: self.zoom_level,
         }
     }
 
@@ -2137,6 +2143,10 @@ impl Controller {
             Command::PaneFocused(p) => self.focus_pane(p),
             Command::Run(name) => self.run_command(&name),
             Command::ViewMode(m) => self.view_mode = m,
+            Command::Zoom(z) => {
+                self.zoom_level = z.clamp(0.5, 2.5);
+                self.trigger_save_session();
+            }
             Command::SidebarOpen(uri) => {
                 let p = self.active_pane;
                 match self.resolve_input(p, &uri) {

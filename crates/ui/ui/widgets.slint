@@ -84,6 +84,7 @@ export component Glyph inherits Path {
         : name == "search" ? "M 11 11 L 14 14 M 12 7 A 5 5 0 1 1 2 7 A 5 5 0 1 1 12 7"
         : name == "close" ? "M 4 4 L 12 12 M 12 4 L 4 12"
         : name == "plus" ? "M 8 3 L 8 13 M 3 8 L 13 8"
+        : name == "minus" ? "M 3 8 L 13 8"
         : name == "pause" ? "M 5.5 3.5 L 5.5 12.5 M 10.5 3.5 L 10.5 12.5"
         : name == "play" ? "M 5 3 L 12.5 8 L 5 13 Z"
         : name == "chevron-right" ? "M 6 4 L 10 8 L 6 12"
@@ -193,5 +194,157 @@ export component Bar inherits Rectangle {
         border-radius: 2px;
         background: root.tint;
         animate width { duration: 160ms; }
+    }
+}
+
+// Nemo-style zoom control: minus button, interactive slider track, plus button, and percent reset button.
+export component ZoomControl inherits Rectangle {
+    in-out property <float> value: 1.0;
+    in property <float> minimum: 0.5;
+    in property <float> maximum: 2.5;
+    in property <float> step: 0.25;
+    callback changed(float);
+
+    height: 22px;
+    width: 142px;
+
+    function clamp-val(v: float) -> float {
+        return Math.max(root.minimum, Math.min(root.maximum, v));
+    }
+
+    function set-val(v: float) {
+        let rounded = Math.round(root.clamp-val(v) * 20.0) / 20.0;
+        root.value = rounded;
+        root.changed(root.value);
+    }
+
+    public function zoom-in() {
+        root.set-val(root.value + root.step);
+    }
+
+    public function zoom-out() {
+        root.set-val(root.value - root.step);
+    }
+
+    public function zoom-reset() {
+        root.set-val(1.0);
+    }
+
+    HorizontalLayout {
+        spacing: 3px;
+        alignment: center;
+
+        // Step down [-]
+        Rectangle {
+            width: 20px;
+            height: 20px;
+            border-radius: Theme.radius-small;
+            background: minus-touch.has-hover ? Theme.hover : transparent;
+            Glyph {
+                name: "minus";
+                width: 12px;
+                height: 12px;
+                tint: minus-touch.has-hover ? Theme.text : Theme.text-dim;
+            }
+            minus-touch := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.zoom-out(); }
+            }
+        }
+
+        // Interactive Slider Track
+        track := Rectangle {
+            width: 58px;
+            height: 16px;
+
+            // Track background bar
+            Rectangle {
+                y: (parent.height - 4px) / 2;
+                height: 4px;
+                border-radius: 2px;
+                background: Theme.overlay;
+                border-width: 1px;
+                border-color: Theme.border;
+
+                // Active fill bar
+                Rectangle {
+                    x: 0;
+                    width: parent.width * ((root.value - root.minimum) / (root.maximum - root.minimum));
+                    height: parent.height;
+                    border-radius: 2px;
+                    background: Theme.accent;
+                }
+            }
+
+            // Draggable Thumb
+            thumb := Rectangle {
+                x: (parent.width - self.width) * ((root.value - root.minimum) / (root.maximum - root.minimum));
+                y: (parent.height - self.height) / 2;
+                width: 12px;
+                height: 12px;
+                border-radius: 6px;
+                background: slider-touch.has-hover || slider-touch.pressed ? Theme.accent : Theme.text-dim;
+                border-width: 1px;
+                border-color: Theme.border-strong;
+                animate background { duration: Theme.fast; }
+            }
+
+            slider-touch := TouchArea {
+                mouse-cursor: pointer;
+                pointer-event(e) => {
+                    if e.kind == PointerEventKind.down && e.button == PointerEventButton.left {
+                        let ratio = Math.max(0.0, Math.min(1.0, self.mouse-x / parent.width));
+                        root.set-val(root.minimum + ratio * (root.maximum - root.minimum));
+                    }
+                }
+                moved => {
+                    if self.pressed {
+                        let ratio = Math.max(0.0, Math.min(1.0, self.mouse-x / parent.width));
+                        root.set-val(root.minimum + ratio * (root.maximum - root.minimum));
+                    }
+                }
+                double-clicked => {
+                    root.zoom-reset();
+                }
+            }
+        }
+
+        // Step up [+]
+        Rectangle {
+            width: 20px;
+            height: 20px;
+            border-radius: Theme.radius-small;
+            background: plus-touch.has-hover ? Theme.hover : transparent;
+            Glyph {
+                name: "plus";
+                width: 12px;
+                height: 12px;
+                tint: plus-touch.has-hover ? Theme.text : Theme.text-dim;
+            }
+            plus-touch := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.zoom-in(); }
+            }
+        }
+
+        // Percentage pill & reset button (e.g. "100%")
+        Rectangle {
+            width: 36px;
+            height: 18px;
+            border-radius: Theme.radius-small;
+            background: pct-touch.has-hover ? Theme.hover : transparent;
+            Text {
+                text: Math.round(root.value * 100) + "%";
+                color: root.value == 1.0 ? Theme.text-faint : Theme.accent;
+                font-size: 10px;
+                font-weight: 500;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            pct-touch := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.zoom-reset(); }
+            }
+        }
     }
 }

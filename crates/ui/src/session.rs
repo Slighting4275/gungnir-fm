@@ -93,7 +93,7 @@ impl PaneTabsState {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SessionState {
     #[serde(default)]
     pub window: WindowState,
@@ -108,10 +108,16 @@ pub struct SessionState {
     pub show_hidden: bool,
     #[serde(default = "default_true")]
     pub sidebar_visible: bool,
+    #[serde(default = "default_zoom")]
+    pub zoom_level: f32,
 }
 
 fn default_true() -> bool {
     true
+}
+
+fn default_zoom() -> f32 {
+    1.0
 }
 
 /// Atomically write state to a JSON file via a temporary sibling file.
@@ -261,6 +267,7 @@ mod tests {
             )),
             show_hidden: true,
             sidebar_visible: false,
+            zoom_level: 1.5,
         };
 
         let json = serde_json::to_string(&state).unwrap_or_else(|e| panic!("{e}"));
@@ -268,6 +275,7 @@ mod tests {
         assert_eq!(state, deserialized);
         assert_eq!(deserialized.primary_pane_tabs.get_paths().len(), 2);
         assert_eq!(deserialized.secondary_pane_tabs.as_ref().map(|s| s.get_paths().len()), Some(1));
+        assert_eq!(deserialized.zoom_level, 1.5);
     }
 
     struct TestSandbox(PathBuf);
@@ -307,6 +315,7 @@ mod tests {
             secondary_pane_tabs: None,
             show_hidden: false,
             sidebar_visible: true,
+            zoom_level: 1.0,
         };
 
         save_atomic(&session_file, &state).unwrap_or_else(|e| panic!("{e}"));
@@ -339,6 +348,7 @@ mod tests {
             secondary_pane_tabs: None,
             show_hidden: false,
             sidebar_visible: true,
+            zoom_level: 1.0,
         };
 
         saver.update(state.clone());

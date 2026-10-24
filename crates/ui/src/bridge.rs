@@ -41,13 +41,14 @@ pub struct DialogView {
     pub preview_path: Option<PathBuf>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Flags {
     pub active_pane: i32,
     pub dual_pane: bool,
     pub sidebar_visible: bool,
     pub show_hidden: bool,
     pub view_mode: i32,
+    pub zoom_level: f32,
 }
 
 #[derive(Debug)]
@@ -254,6 +255,7 @@ pub fn apply(ui: &AppWindow, u: Update) {
             ui.set_sidebar_visible(f.sidebar_visible);
             ui.set_show_hidden(f.show_hidden);
             ui.set_view_mode(f.view_mode);
+            ui.set_zoom_level(f.zoom_level);
         }
         Update::Dialog(d) => {
             let img = d.preview_path.and_then(|p| slint::Image::load_from_path(&p).ok()).unwrap_or_default();
