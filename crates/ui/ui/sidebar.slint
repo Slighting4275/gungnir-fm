@@ -1,0 +1,223 @@
+// Left sidebar (F9): Places, Gungnir VFS mounts with live status, or a directory tree.
+
+import { ScrollView, ListView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { PlaceItem, MountItem, TreeRow } from "types.slint";
+import { Glyph, Dot } from "widgets.slint";
+
+component SectionHeader inherits Rectangle {
+    in property <string> text;
+    in property <color> tint: Theme.text-faint;
+    in-out property <bool> open: true;
+    height: 28px;
+    HorizontalLayout {
+        padding-left: 4px;
+        spacing: 4px;
+        Glyph {
+            y: (parent.height - self.height) / 2;
+            name: root.open ? "chevron-down" : "chevron-right";
+            width: 10px;
+            height: 10px;
+            tint: touch.has-hover ? Theme.text-dim : Theme.text-faint;
+        }
+        Text {
+            text: root.text;
+            color: touch.has-hover ? root.tint.brighter(30%) : root.tint;
+            font-size: 10.5px;
+            font-weight: 700;
+            letter-spacing: 1px;
+            vertical-alignment: center;
+        }
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.open = !root.open; }
+    }
+}
+
+component SideItem inherits Rectangle {
+    in property <string> label;
+    in property <string> glyph: "folder";
+    in property <bool> active;
+    in property <color> glyph-tint: Theme.text-dim;
+    in property <string> trailing;
+    in property <color> dot: transparent;
+    callback clicked;
+    height: 28px;
+    border-radius: Theme.radius-small;
+    background: active ? Theme.selection : touch.has-hover ? Theme.hover : transparent;
+    animate background { duration: Theme.fast; }
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        spacing: 9px;
+        Glyph {
+            y: (parent.height - self.height) / 2;
+            name: root.glyph;
+            tint: root.active ? Theme.accent : root.glyph-tint;
+        }
+        Text {
+            text: root.label;
+            color: root.active ? Theme.text : Theme.text-dim;
+            font-size: Theme.font-size;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 1;
+        }
+        if root.trailing != "": Text {
+            text: root.trailing;
+            color: Theme.text-faint;
+            font-size: 10.5px;
+            vertical-alignment: center;
+        }
+        if root.dot != transparent: Dot {
+            y: (parent.height - self.height) / 2;
+            tint: root.dot;
+        }
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+export component Sidebar inherits Rectangle {
+    in property <[PlaceItem]> places: [
+        { label: "Home", uri: "/home/user", icon: 0, active: false },
+        { label: "Desktop", uri: "/home/user/Desktop", icon: 1, active: false },
+        { label: "Documents", uri: "/home/user/Documents", icon: 2, active: true },
+        { label: "Downloads", uri: "/home/user/Downloads", icon: 3, active: false },
+        { label: "Music", uri: "/home/user/Music", icon: 7, active: false },
+        { label: "Trash", uri: "/home/user/.local/share/Trash/files", icon: 5, active: false },
+        { label: "File System", uri: "/", icon: 6, active: false },
+    ];
+    in property <[MountItem]> mounts: [
+        { label: "odin/asgard", uri: "gungnir://odin/asgard", status: 0, status-text: "Online", detail: "mock node odin", active: false },
+        { label: "odin/valhalla", uri: "gungnir://odin/valhalla", status: 0, status-text: "Online", detail: "mock node odin", active: false },
+        { label: "huginn/memory", uri: "gungnir://huginn/memory", status: 1, status-text: "Syncing", detail: "mock node huginn", active: false },
+        { label: "muninn/thought", uri: "gungnir://muninn/thought", status: 3, status-text: "Disconnected", detail: "mock node muninn", active: false },
+    ];
+    in property <[TreeRow]> tree: [
+        { label: "/", uri: "/", depth: 0, expanded: true, has-children: true, active: false },
+        { label: "home", uri: "/home", depth: 1, expanded: true, has-children: true, active: false },
+        { label: "user", uri: "/home/user", depth: 2, expanded: true, has-children: true, active: false },
+        { label: "Documents", uri: "/home/user/Documents", depth: 3, expanded: false, has-children: true, active: true },
+        { label: "src", uri: "/home/user/src", depth: 3, expanded: false, has-children: true, active: false },
+        { label: "etc", uri: "/etc", depth: 1, expanded: false, has-children: true, active: false },
+        { label: "usr", uri: "/usr", depth: 1, expanded: false, has-children: true, active: false },
+    ];
+    in-out property <int> mode: 0;
+    in property <string> gungnir-label: "GUNGNIR VFS";
+    callback open(uri: string);
+    callback toggle-tree(index: int);
+    callback mode-changed(mode: int);
+
+    pure function place-glyph(icon: int) -> string {
+        if icon == 0 { return "home"; }
+        if icon == 1 { return "desktop"; }
+        if icon == 2 { return "document"; }
+        if icon == 3 { return "download"; }
+        if icon == 5 { return "trash"; }
+        if icon == 6 { return "drive"; }
+        if icon == 7 { return "music"; }
+        if icon == 8 { return "image"; }
+        return "folder";
+    }
+
+    width: 232px;
+    background: Theme.base;
+
+    in-out property <bool> places-open: true;
+    in-out property <bool> gungnir-open: true;
+
+    VerticalLayout {
+        padding: 6px;
+        padding-top: 4px;
+        spacing: 0px;
+
+        if root.mode == 0: ScrollView {
+            vertical-stretch: 1;
+            VerticalLayout {
+                spacing: 1px;
+                SectionHeader { text: "PLACES"; open <=> root.places-open; }
+                if root.places-open: VerticalLayout { spacing: 1px; for p in root.places: SideItem {
+                    label: p.label;
+                    glyph: root.place-glyph(p.icon);
+                    active: p.active;
+                    clicked => { root.open(p.uri); }
+                } }
+                SectionHeader { text: root.gungnir-label; tint: Theme.gold.darker(10%); open <=> root.gungnir-open; }
+                if root.gungnir-open: VerticalLayout { spacing: 1px; for m in root.mounts: SideItem {
+                    label: m.label;
+                    glyph: "spear";
+                    glyph-tint: Theme.gold;
+                    active: m.active;
+                    trailing: m.status-text;
+                    dot: Theme.mount-color(m.status);
+                    clicked => { root.open(m.uri); }
+                } }
+                Rectangle { vertical-stretch: 1; }
+            }
+        }
+
+        if root.mode == 1: Rectangle {
+            height: 28px;
+            HorizontalLayout {
+                padding-left: 6px;
+                Text { text: "FOLDERS"; color: Theme.text-faint; font-size: 10.5px; font-weight: 700; letter-spacing: 1px; vertical-alignment: bottom; }
+            }
+        }
+        if root.mode == 1: ListView {
+            vertical-stretch: 1;
+            for t[i] in root.tree: Rectangle {
+                height: 24px;
+                border-radius: Theme.radius-small;
+                background: t.active ? Theme.selection : row-touch.has-hover ? Theme.hover : transparent;
+                row-touch := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.open(t.uri); }
+                    double-clicked => { root.toggle-tree(i); }
+                }
+                HorizontalLayout {
+                    padding-left: 4px + t.depth * 14px;
+                    padding-right: 6px;
+                    spacing: 4px;
+                    Rectangle {
+                        width: 16px;
+                        if t.has-children: Glyph {
+                            y: (parent.height - self.height) / 2;
+                            name: t.expanded ? "chevron-down" : "chevron-right";
+                            tint: Theme.text-faint;
+                            width: 12px;
+                            height: 12px;
+                            x: 2px;
+                        }
+                        TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.toggle-tree(i); }
+                        }
+                    }
+                    Glyph {
+                        y: (parent.height - self.height) / 2;
+                        name: "folder";
+                        tint: t.active ? Theme.accent : Theme.category-color(0);
+                    }
+                    Text {
+                        text: t.label;
+                        color: t.active ? Theme.text : Theme.text-dim;
+                        font-size: Theme.font-size;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                }
+            }
+        }
+    }
+
+    // 1px right border.
+    Rectangle {
+        x: parent.width - 1px;
+        width: 1px;
+        background: Theme.border;
+    }
+}

@@ -1,0 +1,91 @@
+// Gungnir FM theme: deep slate dark mode, crisp 1px borders, one blue accent and a
+// Gungnir gold for VFS elements. Every component reads colours from here.
+
+export global Theme {
+    // Surfaces, darkest to lightest.
+    out property <color> window: #0d1015;
+    out property <color> base: #11151c;
+    out property <color> surface: #151a22;
+    out property <color> raised: #1b212b;
+    out property <color> overlay: #222936;
+    out property <color> field: #0f1319;
+
+    // Lines.
+    out property <color> border: #252c38;
+    out property <color> border-strong: #323c4d;
+    out property <color> divider: #1d232d;
+
+    // Text.
+    out property <color> text: #e4e8ef;
+    out property <color> text-dim: #a2abb9;
+    out property <color> text-faint: #6d7787;
+    out property <color> text-on-accent: #ffffff;
+
+    // Accents.
+    out property <color> accent: #4c8dff;
+    out property <color> accent-dim: #4c8dff33;
+    out property <color> accent-soft: #4c8dff1f;
+    out property <color> gold: #e2b457;
+    out property <color> gold-soft: #e2b45724;
+
+    // Interaction.
+    out property <color> hover: #ffffff09;
+    out property <color> pressed: #ffffff14;
+    out property <color> selection: #27425f;
+    out property <color> selection-inactive: #2b3442;
+    out property <color> stripe: #ffffff04;
+
+    // States.
+    out property <color> ok: #3fb950;
+    out property <color> warn: #d6a33a;
+    out property <color> bad: #f05a4f;
+    out property <color> info: #58a6ff;
+    out property <color> violet: #a37cf0;
+    out property <color> orange: #ee8a3c;
+
+    // Metrics.
+    out property <length> radius: 6px;
+    out property <length> radius-small: 4px;
+    out property <length> row-height: 24px;
+    out property <length> compact-row-height: 21px;
+    out property <length> toolbar-height: 44px;
+    out property <length> font-size: 13px;
+    out property <length> font-size-small: 11.5px;
+    out property <length> font-size-large: 15px;
+    out property <duration> fast: 90ms;
+
+    // VFS status badge colour (core_vfs::VfsStatus::code).
+    public pure function status-color(code: int) -> color {
+        if code == 1 { return ok; }          // synced
+        if code == 2 { return warn; }        // syncing
+        if code == 3 { return text-dim; }    // cached
+        if code == 4 { return info; }        // remote
+        if code == 5 { return orange; }      // conflict
+        if code == 6 { return violet; }      // tagged
+        if code == 7 { return bad; }         // unreachable
+        return transparent;                  // local
+    }
+
+    // Mount status dot (core_vfs::MountStatus::code).
+    public pure function mount-color(code: int) -> color {
+        if code == 0 { return ok; }
+        if code == 1 { return warn; }
+        if code == 2 { return orange; }
+        return bad;
+    }
+
+    // Icon colour per file category (core_vfs::format::Category).
+    public pure function category-color(code: int) -> color {
+        if code == 0 { return #d9a845; }     // folder
+        if code == 2 { return #3fb9a4; }     // image
+        if code == 3 { return #c678dd; }     // audio
+        if code == 4 { return #f06b7f; }     // video
+        if code == 5 { return #d69b4c; }     // archive
+        if code == 6 { return #6fa8ff; }     // code / text
+        if code == 7 { return #e06c5f; }     // document
+        if code == 8 { return #7ccf61; }     // executable
+        if code == 9 { return #8fa0b8; }     // link
+        if code == 10 { return #9a7f6a; }    // special
+        return #9aa6b8;                      // generic file
+    }
+}

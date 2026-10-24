@@ -1,0 +1,219 @@
+//! The only way data reaches the UI: `Update`s applied on the Slint event loop via
+//! `slint::Weak::upgrade_in_event_loop` (`invoke_from_event_loop`). Everything in an
+//! `Update` is `Send` plain data built on worker threads; the UI thread only moves
+//! it into models (`VecModel::set_vec` / `extend` / `set_row_data`).
+
+use std::rc::Rc;
+
+use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
+
+use crate::{
+    AppWindow, Crumb, DialogKind, FileRow, KeyValue, MountItem, PaneInfo, PlaceItem, StatusInfo, TabInfo, TransferRow,
+    TreeRow,
+};
+
+/// Pane header data without models (so it is `Send`).
+#[derive(Debug, Clone, Default)]
+pub struct PaneView {
+    pub tabs: Vec<TabInfo>,
+    pub active_tab: i32,
+    pub location: String,
+    pub crumbs: Vec<Crumb>,
+    pub sort_column: i32,
+    pub sort_ascending: bool,
+    pub loading: bool,
+    pub error: String,
+    pub filter: String,
+    pub can_back: bool,
+    pub can_forward: bool,
+    pub cursor: i32,
+}
+
+#[derive(Debug, Clone)]
+pub struct DialogView {
+    pub kind: DialogKind,
+    pub title: String,
+    pub message: String,
+    pub rows: Vec<(String, String)>,
+    pub input: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Flags {
+    pub active_pane: i32,
+    pub dual_pane: bool,
+    pub sidebar_visible: bool,
+    pub show_hidden: bool,
+    pub view_mode: i32,
+}
+
+#[derive(Debug)]
+pub enum Update {
+    /// Replace every row of a pane.
+    Rows {
+        pane: usize,
+        rows: Vec<FileRow>,
+    },
+    /// Append streamed rows.
+    AppendRows {
+        pane: usize,
+        rows: Vec<FileRow>,
+    },
+    /// Flip the selected flag of single rows.
+    Selection {
+        pane: usize,
+        changes: Vec<(usize, bool)>,
+    },
+    Pane {
+        pane: usize,
+        view: PaneView,
+    },
+    Status(StatusInfo),
+    Places(Vec<PlaceItem>),
+    Mounts {
+        items: Vec<MountItem>,
+        label: String,
+    },
+    Tree(Vec<TreeRow>),
+    Transfers {
+        rows: Vec<TransferRow>,
+        active: i32,
+        open: Option<bool>,
+    },
+    Flags(Flags),
+    Dialog(DialogView),
+    CloseDialog,
+    Rename {
+        pane: i32,
+        index: i32,
+    },
+    Quit,
+}
+
+/// Where the controller sends updates (the window, or a test recorder).
+pub trait UiSink: Send + Sync + 'static {
+    fn send(&self, u: Update);
+}
+
+pub struct SlintSink {
+    weak: slint::Weak<AppWindow>,
+}
+
+impl SlintSink {
+    /// Install empty models on the window (replacing the Live-Preview sample data).
+    /// Must run on the UI thread, before the event loop starts.
+    pub fn attach(ui: &AppWindow) -> Self {
+        ui.set_left_files(ModelRc::from(Rc::new(VecModel::<FileRow>::default())));
+        ui.set_right_files(ModelRc::from(Rc::new(VecModel::<FileRow>::default())));
+        ui.set_transfers(ModelRc::from(Rc::new(VecModel::<TransferRow>::default())));
+        ui.set_active_transfers(0);
+        ui.set_transfers_open(false);
+        ui.set_places(ModelRc::default());
+        ui.set_mounts(ModelRc::default());
+        ui.set_tree(ModelRc::default());
+        Self { weak: ui.as_weak() }
+    }
+}
+
+fn files_model(ui: &AppWindow, pane: usize) -> ModelRc<FileRow> {
+    if pane == 0 { ui.get_left_files() } else { ui.get_right_files() }
+}
+
+fn with_vec_model<T: Clone + 'static>(m: &ModelRc<T>, f: impl FnOnce(&VecModel<T>)) {
+    if let Some(vm) = m.as_any().downcast_ref::<VecModel<T>>() {
+        f(vm);
+    }
+}
+
+fn model<T: Clone + 'static>(v: Vec<T>) -> ModelRc<T> {
+    ModelRc::from(Rc::new(VecModel::from(v)))
+}
+
+pub fn apply(ui: &AppWindow, u: Update) {
+    match u {
+        Update::Rows { pane, rows } => with_vec_model(&files_model(ui, pane), |m| m.set_vec(rows)),
+        Update::AppendRows { pane, rows } => with_vec_model(&files_model(ui, pane), |m| m.extend(rows)),
+        Update::Selection { pane, changes } => with_vec_model(&files_model(ui, pane), |m| {
+            for (i, sel) in changes {
+                if let Some(mut r) = m.row_data(i)
+                    && r.selected != sel
+                {
+                    r.selected = sel;
+                    m.set_row_data(i, r);
+                }
+            }
+        }),
+        Update::Pane { pane, view } => {
+            let info = PaneInfo {
+                tabs: model(view.tabs),
+                active_tab: view.active_tab,
+                location: view.location.into(),
+                crumbs: model(view.crumbs),
+                sort_column: view.sort_column,
+                sort_ascending: view.sort_ascending,
+                loading: view.loading,
+                error: view.error.into(),
+                filter: view.filter.into(),
+                can_back: view.can_back,
+                can_forward: view.can_forward,
+                cursor: view.cursor,
+            };
+            if pane == 0 { ui.set_left(info) } else { ui.set_right(info) }
+        }
+        Update::Status(s) => ui.set_status(s),
+        Update::Places(p) => ui.set_places(model(p)),
+        Update::Mounts { items, label } => {
+            ui.set_mounts(model(items));
+            ui.set_gungnir_label(label.into());
+        }
+        Update::Tree(t) => ui.set_tree(model(t)),
+        Update::Transfers { rows, active, open } => {
+            let m = ui.get_transfers();
+            match m.as_any().downcast_ref::<VecModel<TransferRow>>() {
+                // Same length: update in place (no flicker of the drawer rows).
+                Some(vm) if vm.row_count() == rows.len() => {
+                    for (i, r) in rows.into_iter().enumerate() {
+                        vm.set_row_data(i, r);
+                    }
+                }
+                Some(vm) => vm.set_vec(rows),
+                None => ui.set_transfers(model(rows)),
+            }
+            ui.set_active_transfers(active);
+            if let Some(o) = open {
+                ui.set_transfers_open(o);
+            }
+        }
+        Update::Flags(f) => {
+            ui.set_active_pane(f.active_pane);
+            ui.set_dual_pane(f.dual_pane);
+            ui.set_sidebar_visible(f.sidebar_visible);
+            ui.set_show_hidden(f.show_hidden);
+            ui.set_view_mode(f.view_mode);
+        }
+        Update::Dialog(d) => {
+            ui.set_dialog_title(d.title.into());
+            ui.set_dialog_message(d.message.into());
+            ui.set_dialog_rows(model(
+                d.rows.into_iter().map(|(k, v)| KeyValue { key: k.into(), value: v.into() }).collect(),
+            ));
+            ui.set_dialog_input(SharedString::from(d.input));
+            ui.set_dialog_kind(d.kind);
+        }
+        Update::CloseDialog => ui.set_dialog_kind(DialogKind::None),
+        Update::Rename { pane, index } => {
+            ui.set_renaming_pane(pane);
+            ui.set_renaming_index(index);
+        }
+        Update::Quit => {
+            let _ = slint::quit_event_loop();
+        }
+    }
+}
+
+impl UiSink for SlintSink {
+    fn send(&self, u: Update) {
+        // Queued onto the event loop; dropped silently once the window is gone.
+        let _ = self.weak.upgrade_in_event_loop(move |ui| apply(&ui, u));
+    }
+}

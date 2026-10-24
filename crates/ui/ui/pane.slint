@@ -1,0 +1,509 @@
+// One file pane: tab strip (active-pane accent), sortable column header and a
+// virtualized ListView (only visible rows are instantiated, so 100k+ entries scroll
+// smoothly). Three view modes: 0 compact list, 1 detailed columns, 2 grid.
+
+import { ListView, LineEdit } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { FileRow, PaneInfo, TabInfo } from "types.slint";
+import { FileIcon, Glyph, Dot } from "widgets.slint";
+
+component Tab inherits Rectangle {
+    in property <TabInfo> tab;
+    in property <bool> current;
+    in property <bool> pane-active;
+    in property <bool> closable;
+    callback select;
+    callback close;
+    height: 30px;
+    width: min(220px, max(110px, title.preferred-width + 52px));
+    background: current ? Theme.surface : touch.has-hover ? Theme.hover : transparent;
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.select(); }
+        pointer-event(e) => {
+            if e.kind == PointerEventKind.down && e.button == PointerEventButton.middle && root.closable {
+                root.close();
+            }
+        }
+    }
+    // Accent line: active tab of the active pane.
+    Rectangle {
+        y: 0;
+        height: 2px;
+        background: root.current ? (root.pane-active ? Theme.accent : Theme.border-strong) : transparent;
+    }
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 4px;
+        spacing: 6px;
+        if root.tab.loading: Rectangle {
+            width: 8px;
+            Rectangle {
+                y: (parent.height - 8px) / 2;
+                width: 8px;
+                height: 8px;
+                border-radius: 4px;
+                background: Theme.accent.with-alpha(0.4 + 0.6 * abs(sin(animation-tick() / 700ms * 360deg)));
+            }
+        }
+        title := Text {
+            text: root.tab.title;
+            color: root.current ? Theme.text : Theme.text-dim;
+            font-size: Theme.font-size-small;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 1;
+        }
+        if root.closable: Rectangle {
+            width: 20px;
+            opacity: touch.has-hover || close-touch.has-hover || root.current ? 1.0 : 0.0;
+            Rectangle {
+                y: (parent.height - 20px) / 2;
+                height: 20px;
+                border-radius: Theme.radius-small;
+                background: close-touch.has-hover ? Theme.pressed : transparent;
+                Glyph {
+                    name: "close";
+                    width: 10px;
+                    height: 10px;
+                    tint: Theme.text-faint;
+                }
+                close-touch := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.close(); }
+                }
+            }
+        }
+    }
+    Rectangle {
+        x: parent.width - 1px;
+        width: 1px;
+        background: Theme.divider;
+    }
+}
+
+component HeaderCell inherits Rectangle {
+    in property <string> label;
+    in property <int> column;
+    in property <int> sort-column;
+    in property <bool> ascending;
+    in property <TextHorizontalAlignment> align: left;
+    callback clicked(column: int);
+    background: touch.has-hover ? Theme.hover : transparent;
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        spacing: 4px;
+        Text {
+            text: root.label;
+            color: root.sort-column == root.column ? Theme.text : Theme.text-faint;
+            font-size: Theme.font-size-small;
+            font-weight: root.sort-column == root.column ? 600 : 400;
+            vertical-alignment: center;
+            horizontal-alignment: root.align;
+            horizontal-stretch: 1;
+            overflow: elide;
+        }
+        if root.sort-column == root.column: Text {
+            text: root.ascending ? "▲" : "▼";
+            color: Theme.accent;
+            font-size: 8px;
+            vertical-alignment: center;
+        }
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(root.column); }
+    }
+    Rectangle {
+        x: parent.width - 1px;
+        width: 1px;
+        height: parent.height * 0.5;
+        y: parent.height * 0.25;
+        background: Theme.divider;
+    }
+}
+
+export component Pane inherits Rectangle {
+    in property <int> pane-index: 0;
+    in property <bool> active: true;
+    in property <bool> split: false;
+    in property <int> view-mode: 1;
+    in property <int> renaming-index: -1;
+    in property <PaneInfo> info: {
+        tabs: [
+            { title: "project_demo", location: "/home/user/Documents/project_demo", loading: false },
+            { title: "asgard", location: "gungnir://odin/asgard", loading: true },
+        ],
+        active-tab: 0,
+        location: "/home/user/Documents/project_demo",
+        crumbs: [],
+        sort-column: 0,
+        sort-ascending: true,
+        loading: false,
+        error: "",
+        filter: "",
+        can-back: true,
+        can-forward: false,
+        cursor: 2,
+    };
+    in property <[FileRow]> files: [
+        { name: "release_v1", size-text: "", type-text: "Folder", modified-text: "2026-10-12 21:40", perms-text: "drwxr-xr-x", status-text: "", status: 0, icon: 0, is-dir: true, hidden: false, selected: false },
+        { name: "assets", size-text: "", type-text: "Folder", modified-text: "2026-10-20 03:12", perms-text: "drwxr-xr-x", status-text: "synced", status: 1, icon: 0, is-dir: true, hidden: false, selected: false },
+        { name: "track_01.flac", size-text: "48.2 MB", type-text: "FLAC audio", modified-text: "2026-10-12 21:44", perms-text: "-rw-r--r--", status-text: "tagged", status: 6, icon: 3, is-dir: false, hidden: false, selected: true },
+        { name: "track_02.flac", size-text: "52.0 MB", type-text: "FLAC audio", modified-text: "2026-10-12 21:51", perms-text: "-rw-r--r--", status-text: "syncing", status: 2, icon: 3, is-dir: false, hidden: false, selected: true },
+        { name: "track_03.flac", size-text: "44.1 MB", type-text: "FLAC audio", modified-text: "2026-10-12 22:03", perms-text: "-rw-r--r--", status-text: "", status: 0, icon: 3, is-dir: false, hidden: false, selected: false },
+        { name: "cover.jpg", size-text: "1.2 MB", type-text: "JPEG image", modified-text: "2026-10-11 18:20", perms-text: "-rw-r--r--", status-text: "remote", status: 4, icon: 2, is-dir: false, hidden: false, selected: false },
+        { name: "notes.md", size-text: "4.8 kB", type-text: "Markdown", modified-text: "2026-10-22 09:15", perms-text: "-rw-r--r--", status-text: "conflict", status: 5, icon: 6, is-dir: false, hidden: false, selected: false },
+        { name: "build.sh", size-text: "1.1 kB", type-text: "Shell script", modified-text: "2026-10-22 09:30", perms-text: "-rwxr-xr-x", status-text: "", status: 0, icon: 8, is-dir: false, hidden: false, selected: false },
+        { name: "demo_video.mkv", size-text: "4.3 GB", type-text: "Matroska video", modified-text: "2026-10-23 23:59", perms-text: "-rw-r--r--", status-text: "cached", status: 3, icon: 4, is-dir: false, hidden: false, selected: false },
+        { name: ".mixrc", size-text: "312 bytes", type-text: "File", modified-text: "2026-09-30 12:00", perms-text: "-rw-------", status-text: "", status: 0, icon: 1, is-dir: false, hidden: true, selected: false },
+    ];
+
+    callback row-clicked(index: int, ctrl: bool, shift: bool);
+    callback row-activated(index: int);
+    callback row-context(index: int);
+    callback sort-by(column: int);
+    callback tab-select(index: int);
+    callback tab-close(index: int);
+    callback tab-new();
+    callback focus-pane();
+    callback command(name: string);
+    callback rename-commit(index: int, name: string);
+    callback rename-cancel();
+
+    property <length> row-h: root.view-mode == 0 ? Theme.compact-row-height : Theme.row-height;
+    property <bool> show-type: list-area.width > 640px;
+    property <bool> show-perms: list-area.width > 780px;
+    property <bool> show-modified: list-area.width > 500px;
+    property <length> size-w: 86px;
+    property <length> type-w: root.show-type ? 132px : 0px;
+    property <length> modified-w: root.show-modified ? 132px : 0px;
+    property <length> perms-w: root.show-perms ? 96px : 0px;
+    property <length> status-w: 92px;
+    property <int> grid-cols: max(1, floor(list-area.width / 108px));
+    property <length> grid-cell-h: 96px;
+    property <int> cursor: root.info.cursor;
+
+    // Keep the keyboard cursor in view.
+    changed cursor => {
+        if root.view-mode == 2 {
+            let row-y = floor(root.cursor / root.grid-cols) * root.grid-cell-h;
+            if row-y < -grid.content-y { grid.content-y = -row-y; }
+            if row-y + root.grid-cell-h > -grid.content-y + grid.visible-height { grid.content-y = -min(max(0px, grid.content-height - grid.visible-height), row-y + root.grid-cell-h - grid.visible-height); }
+        } else {
+            // A programmatic content-y is not clamped, so never scroll past the end.
+            let max-scroll = max(0px, list.content-height - list.visible-height);
+            let y = root.cursor * root.row-h;
+            if y < -list.content-y { list.content-y = -y; }
+            if y + root.row-h > -list.content-y + list.visible-height { list.content-y = -min(max-scroll, y + root.row-h - list.visible-height); }
+        }
+    }
+
+    // Flush, edge to edge (no card). In split view the active pane gets a thin accent
+    // line on top and the inactive one is dimmed slightly, as in Nemo.
+    background: root.split && !root.active ? Theme.base : Theme.surface;
+    clip: true;
+
+    if root.split: Rectangle {
+        y: 0;
+        height: 2px;
+        background: root.active ? Theme.accent : transparent;
+        z: 10;
+    }
+
+    VerticalLayout {
+        padding: 0px;
+        // Tabs: only when the pane has more than one (Nemo hides a lone tab).
+        if root.info.tabs.length > 1: Rectangle {
+            height: 30px;
+            background: Theme.base;
+            HorizontalLayout {
+                for t[i] in root.info.tabs: Tab {
+                    tab: t;
+                    current: i == root.info.active-tab;
+                    pane-active: root.active;
+                    closable: root.info.tabs.length > 1;
+                    select => { root.focus-pane(); root.tab-select(i); }
+                    close => { root.tab-close(i); }
+                }
+                Rectangle {
+                    width: 30px;
+                    Rectangle {
+                        width: 24px;
+                        height: 24px;
+                        border-radius: Theme.radius-small;
+                        background: plus.has-hover ? Theme.hover : transparent;
+                        Glyph { name: "plus"; width: 12px; height: 12px; tint: Theme.text-faint; }
+                        plus := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.focus-pane(); root.tab-new(); }
+                        }
+                    }
+                }
+                Rectangle { horizontal-stretch: 1; }
+            }
+            Rectangle {
+                y: parent.height - 1px;
+                height: 1px;
+                background: Theme.border;
+            }
+        }
+
+        // Column header (detailed view).
+        if root.view-mode == 1: Rectangle {
+            height: 26px;
+            min-width: 0px;
+            preferred-width: 0px;
+            background: Theme.surface;
+            // Absolutely positioned (no layout), so the width-dependent columns never feed
+            // back into the pane's size constraints.
+            property <length> fixed: root.size-w + root.type-w + root.modified-w + root.perms-w + root.status-w + 12px;
+            property <length> name-w: max(80px, self.width - 6px - self.fixed);
+            HeaderCell { x: 6px; width: parent.name-w; height: parent.height; label: "Name"; column: 0; sort-column: root.info.sort-column; ascending: root.info.sort-ascending; clicked(c) => { root.sort-by(c); } }
+            HeaderCell { x: 6px + parent.name-w; width: root.size-w - 6px; height: parent.height; label: "Size"; column: 1; align: right; sort-column: root.info.sort-column; ascending: root.info.sort-ascending; clicked(c) => { root.sort-by(c); } }
+            if root.show-type: HeaderCell { x: 6px + parent.name-w + root.size-w; width: root.type-w; height: parent.height; label: "Type"; column: 2; sort-column: root.info.sort-column; ascending: root.info.sort-ascending; clicked(c) => { root.sort-by(c); } }
+            if root.show-modified: HeaderCell { x: 6px + parent.name-w + root.size-w + root.type-w; width: root.modified-w; height: parent.height; label: "Modified"; column: 3; sort-column: root.info.sort-column; ascending: root.info.sort-ascending; clicked(c) => { root.sort-by(c); } }
+            if root.show-perms: HeaderCell { x: 6px + parent.name-w + root.size-w + root.type-w + root.modified-w; width: root.perms-w; height: parent.height; label: "Permissions"; column: 4; sort-column: root.info.sort-column; ascending: root.info.sort-ascending; clicked(c) => { root.sort-by(c); } }
+            HeaderCell { x: 6px + parent.name-w + root.size-w + root.type-w + root.modified-w + root.perms-w; width: root.status-w; height: parent.height; label: "VFS Status"; column: 5; sort-column: root.info.sort-column; ascending: root.info.sort-ascending; clicked(c) => { root.sort-by(c); } }
+            Rectangle {
+                y: parent.height - 1px;
+                height: 1px;
+                background: Theme.divider;
+            }
+        }
+
+        list-area := Rectangle {
+            vertical-stretch: 1;
+            cm := ContextMenuArea {
+                Menu {
+                    MenuItem { title: "Open"; activated => { root.command("open"); } }
+                    MenuItem { title: "Open in New Tab"; activated => { root.command("open-in-tab"); } }
+                    MenuSeparator { }
+                    MenuItem { title: "Copy to Other Pane (F5)"; activated => { root.command("copy-to-other"); } }
+                    MenuItem { title: "Move to Other Pane (F6)"; activated => { root.command("move-to-other"); } }
+                    MenuItem { title: "Rename… (F2)"; activated => { root.command("rename"); } }
+                    MenuItem { title: "New Folder… (F7)"; activated => { root.command("new-folder"); } }
+                    MenuSeparator { }
+                    MenuItem { title: "Move to Trash"; activated => { root.command("trash"); } }
+                    MenuItem { title: "Delete Permanently…"; activated => { root.command("delete"); } }
+                    MenuSeparator { }
+                    MenuItem { title: "Properties"; activated => { root.command("properties"); } }
+                    MenuItem { title: "Gungnir VFS Inspect"; activated => { root.command("inspect"); } }
+                }
+
+                // List views (compact / detailed).
+                list := ListView {
+                    visible: root.view-mode != 2;
+                    for f[idx] in root.files: Rectangle {
+                        height: root.row-h;
+                        background: f.selected ? (root.active ? Theme.selection : Theme.selection-inactive)
+                            : row-touch.has-hover ? Theme.hover
+                            : Math.mod(idx, 2) == 1 ? Theme.stripe : transparent;
+                        // Keyboard cursor on an unselected row: a faint outline only.
+                        border-width: idx == root.info.cursor && root.active && !f.selected ? 1px : 0px;
+                        border-color: Theme.border-strong;
+
+                        row-touch := TouchArea {
+                            pointer-event(e) => {
+                                if e.kind == PointerEventKind.down {
+                                    root.focus-pane();
+                                    if e.button == PointerEventButton.left {
+                                        root.row-clicked(idx, e.modifiers.control, e.modifiers.shift);
+                                    } else if e.button == PointerEventButton.right {
+                                        root.row-context(idx);
+                                        cm.show({
+                                            x: self.absolute-position.x - cm.absolute-position.x + self.mouse-x,
+                                            y: self.absolute-position.y - cm.absolute-position.y + self.mouse-y,
+                                        });
+                                    }
+                                }
+                            }
+                            double-clicked => { root.row-activated(idx); }
+                        }
+
+                        HorizontalLayout {
+                            padding-left: 10px;
+                            spacing: 0px;
+                            HorizontalLayout {
+                                horizontal-stretch: 1;
+                                spacing: 8px;
+                                padding-right: 8px;
+                                FileIcon {
+                                    y: (parent.height - self.height) / 2;
+                                    category: f.icon;
+                                }
+                                if idx != root.renaming-index: Text {
+                                    text: f.name;
+                                    color: f.hidden ? Theme.text-faint : Theme.text;
+                                    font-size: Theme.font-size;
+                                    font-weight: f.is-dir ? 500 : 400;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                    horizontal-stretch: 1;
+                                }
+                                if idx == root.renaming-index: LineEdit {
+                                    horizontal-stretch: 1;
+                                    height: root.row-h - 2px;
+                                    y: 1px;
+                                    text: f.name;
+                                    font-size: Theme.font-size;
+                                    init => {
+                                        self.focus();
+                                        self.select-all();
+                                    }
+                                    accepted(t) => { root.rename-commit(idx, t); }
+                                    key-pressed(e) => {
+                                        if e.text == Key.Escape {
+                                            root.rename-cancel();
+                                            return accept;
+                                        }
+                                        reject
+                                    }
+                                }
+                                if root.view-mode == 0 && f.status != 0: Dot {
+                                    y: (parent.height - self.height) / 2;
+                                    tint: Theme.status-color(f.status);
+                                }
+                            }
+                            if root.view-mode == 1: Text {
+                                width: root.size-w - 14px;
+                                text: f.size-text;
+                                color: Theme.text-dim;
+                                font-size: Theme.font-size-small;
+                                horizontal-alignment: right;
+                                vertical-alignment: center;
+                            }
+                            if root.view-mode == 1: Rectangle { width: 14px; }
+                            if root.view-mode == 1 && root.show-type: Text {
+                                width: root.type-w;
+                                text: f.type-text;
+                                color: Theme.text-dim;
+                                font-size: Theme.font-size-small;
+                                vertical-alignment: center;
+                                overflow: elide;
+                            }
+                            if root.view-mode == 1 && root.show-modified: Text {
+                                width: root.modified-w;
+                                text: f.modified-text;
+                                color: Theme.text-dim;
+                                font-size: Theme.font-size-small;
+                                vertical-alignment: center;
+                            }
+                            if root.view-mode == 1 && root.show-perms: Text {
+                                width: root.perms-w;
+                                text: f.perms-text;
+                                color: Theme.text-faint;
+                                font-family: "monospace";
+                                font-size: Theme.font-size-small;
+                                vertical-alignment: center;
+                            }
+                            if root.view-mode == 1: HorizontalLayout {
+                                width: root.status-w;
+                                spacing: 6px;
+                                padding-left: 6px;
+                                if f.status != 0: Dot {
+                                    y: (parent.height - self.height) / 2;
+                                    tint: Theme.status-color(f.status);
+                                }
+                                Text {
+                                    text: f.status-text;
+                                    color: Theme.status-color(f.status);
+                                    font-size: Theme.font-size-small;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                    horizontal-stretch: 1;
+                                }
+                            }
+                            if root.view-mode == 1: Rectangle { width: 12px; }
+                        }
+                    }
+                }
+
+                // Grid view: virtualized rows of `grid-cols` cells.
+                grid := ListView {
+                    visible: root.view-mode == 2;
+                    for r in (root.view-mode == 2 ? ceil(root.files.length / root.grid-cols) : 0): HorizontalLayout {
+                        height: root.grid-cell-h;
+                        padding-left: 6px;
+                        spacing: 0px;
+                        for c in root.grid-cols: cell := Rectangle {
+                            property <int> idx: r * root.grid-cols + c;
+                            property <FileRow> f: root.files[cell.idx];
+                            width: 108px;
+                            if cell.idx < root.files.length: Rectangle {
+                                x: 4px;
+                                y: 4px;
+                                width: parent.width - 8px;
+                                height: parent.height - 8px;
+                                border-radius: Theme.radius;
+                                background: cell.f.selected ? (root.active ? Theme.selection : Theme.selection-inactive) : cell-touch.has-hover ? Theme.hover : transparent;
+                                border-width: cell.idx == root.info.cursor && root.active && !cell.f.selected ? 1px : 0px;
+                                border-color: Theme.border-strong;
+                                cell-touch := TouchArea {
+                                    pointer-event(e) => {
+                                        if e.kind == PointerEventKind.down {
+                                            root.focus-pane();
+                                            if e.button == PointerEventButton.left {
+                                                root.row-clicked(cell.idx, e.modifiers.control, e.modifiers.shift);
+                                            } else if e.button == PointerEventButton.right {
+                                                root.row-context(cell.idx);
+                                                cm.show({
+                                                    x: self.absolute-position.x - cm.absolute-position.x + self.mouse-x,
+                                                    y: self.absolute-position.y - cm.absolute-position.y + self.mouse-y,
+                                                });
+                                            }
+                                        }
+                                    }
+                                    double-clicked => { root.row-activated(cell.idx); }
+                                }
+                                VerticalLayout {
+                                    padding: 6px;
+                                    spacing: 6px;
+                                    alignment: start;
+                                    HorizontalLayout {
+                                        alignment: center;
+                                        FileIcon { category: cell.f.icon; large: true; }
+                                    }
+                                    Text {
+                                        text: cell.f.name;
+                                        color: cell.f.hidden ? Theme.text-faint : Theme.text;
+                                        font-size: Theme.font-size-small;
+                                        horizontal-alignment: center;
+                                        wrap: word-wrap;
+                                        overflow: elide;
+                                        max-height: 30px;
+                                    }
+                                }
+                                if cell.f.status != 0: Dot {
+                                    x: parent.width - 14px;
+                                    y: 8px;
+                                    tint: Theme.status-color(cell.f.status);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Empty / error / loading states.
+            if root.files.length == 0: VerticalLayout {
+                alignment: center;
+                spacing: 8px;
+                Text {
+                    text: root.info.error != "" ? "Cannot open this location" : root.info.loading ? "Loading…" : root.info.filter != "" ? "No matches" : "This folder is empty";
+                    color: root.info.error != "" ? Theme.bad : Theme.text-faint;
+                    font-size: Theme.font-size-large;
+                    horizontal-alignment: center;
+                }
+                if root.info.error != "": Text {
+                    text: root.info.error;
+                    color: Theme.text-dim;
+                    font-size: Theme.font-size-small;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,96 @@
+// Data structures shared by the UI and the Rust controller (generated as Rust
+// structs by slint-build). Field meanings are documented in src/model.rs.
+
+export struct FileRow {
+    name: string,
+    size-text: string,
+    type-text: string,
+    modified-text: string,
+    perms-text: string,
+    status-text: string,
+    status: int,
+    icon: int,
+    is-dir: bool,
+    hidden: bool,
+    selected: bool,
+}
+
+export struct TabInfo {
+    title: string,
+    location: string,
+    loading: bool,
+}
+
+// icon: 0 none, 1 home, 2 file system root, 3 Gungnir node
+export struct Crumb {
+    label: string,
+    uri: string,
+    icon: int,
+}
+
+export struct PaneInfo {
+    tabs: [TabInfo],
+    active-tab: int,
+    location: string,
+    crumbs: [Crumb],
+    sort-column: int,
+    sort-ascending: bool,
+    loading: bool,
+    error: string,
+    filter: string,
+    can-back: bool,
+    can-forward: bool,
+    cursor: int,
+}
+
+export struct PlaceItem {
+    label: string,
+    uri: string,
+    icon: int,
+    active: bool,
+}
+
+export struct MountItem {
+    label: string,
+    uri: string,
+    status: int,
+    status-text: string,
+    detail: string,
+    active: bool,
+}
+
+export struct TreeRow {
+    label: string,
+    uri: string,
+    depth: int,
+    expanded: bool,
+    has-children: bool,
+    active: bool,
+}
+
+export struct TransferRow {
+    id: int,
+    title: string,
+    detail: string,
+    progress: float,
+    rate: string,
+    // 0 queued, 1 running, 2 paused, 3 done, 4 failed, 5 cancelled
+    state: int,
+    can-pause: bool,
+}
+
+export struct StatusInfo {
+    items: string,
+    selection: string,
+    free: string,
+    backend: string,
+    // 0 POSIX, 1 Gungnir mock, 2 Gungnir live
+    backend-kind: int,
+    message: string,
+    message-is-error: bool,
+}
+
+export struct KeyValue {
+    key: string,
+    value: string,
+}

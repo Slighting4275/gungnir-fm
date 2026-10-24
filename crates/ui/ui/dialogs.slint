@@ -1,0 +1,181 @@
+// In-window modal overlays: new folder, delete confirmation, properties, Gungnir VFS
+// Inspect, and errors. Rendered inside AppWindow (no extra OS windows), so they show
+// in slint-lsp Live-Preview too.
+
+import { LineEdit, ScrollView, Button } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { KeyValue } from "types.slint";
+import { Glyph } from "widgets.slint";
+
+export enum DialogKind {
+    none,
+    new-folder,
+    confirm-delete,
+    properties,
+    inspect,
+    error,
+}
+
+component DialogButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> primary;
+    in property <bool> danger;
+    callback clicked;
+    height: 30px;
+    width: max(84px, t.preferred-width + 28px);
+    border-radius: Theme.radius;
+    background: primary ? (danger ? Theme.bad : Theme.accent).darker(touch.pressed ? 20% : touch.has-hover ? 8% : 0%)
+        : touch.pressed ? Theme.pressed : touch.has-hover ? Theme.hover : Theme.raised;
+    border-width: primary ? 0px : 1px;
+    border-color: Theme.border-strong;
+    t := Text {
+        text: root.label;
+        color: root.primary ? Theme.text-on-accent : Theme.text;
+        font-size: Theme.font-size;
+        font-weight: root.primary ? 600 : 400;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+export component DialogOverlay inherits Rectangle {
+    in property <DialogKind> kind: DialogKind.inspect;
+    in property <string> title: "Gungnir VFS Inspect";
+    in property <string> message: "gungnir://odin/asgard/project_demo/release_v1/track_02.flac";
+    in property <[KeyValue]> rows: [
+        { key: "URI", value: "gungnir://odin/asgard/project_demo/release_v1/track_02.flac" },
+        { key: "VFS status", value: "synced" },
+        { key: "gungnir::node", value: "odin" },
+        { key: "gungnir::replicas", value: "odin,huginn" },
+        { key: "gungnir::content-hash", value: "9e3779b97f4a7c15deadbeef00c0ffee" },
+        { key: "metadata::emblems", value: "[important, viking]" },
+    ];
+    in-out property <string> input;
+    callback accept(text: string);
+    callback cancel();
+
+    public function focus-input() {
+        field.focus();
+        field.select-all();
+    }
+
+    visible: kind != DialogKind.none;
+    background: #00000099;
+
+    // Swallow clicks outside the card; click on the backdrop cancels.
+    TouchArea {
+        clicked => { root.cancel(); }
+    }
+
+    card := Rectangle {
+        width: min(parent.width - 48px, root.kind == DialogKind.properties || root.kind == DialogKind.inspect ? 620px : 440px);
+        height: layout.preferred-height;
+        x: (parent.width - self.width) / 2;
+        y: max(24px, (parent.height - self.height) / 2.4);
+        border-radius: 10px;
+        background: Theme.surface;
+        border-width: 1px;
+        border-color: Theme.border-strong;
+        drop-shadow-blur: 24px;
+        drop-shadow-color: #00000080;
+        TouchArea { } // clicks inside the card do not cancel
+
+        layout := VerticalLayout {
+            padding: 18px;
+            spacing: 12px;
+            HorizontalLayout {
+                spacing: 10px;
+                Glyph {
+                    y: (parent.height - self.height) / 2;
+                    name: root.kind == DialogKind.inspect ? "spear" : root.kind == DialogKind.confirm-delete ? "trash" : root.kind == DialogKind.new-folder ? "folder" : "document";
+                    tint: root.kind == DialogKind.inspect ? Theme.gold : root.kind == DialogKind.error || root.kind == DialogKind.confirm-delete ? Theme.bad : Theme.accent;
+                }
+                Text {
+                    text: root.title;
+                    color: Theme.text;
+                    font-size: Theme.font-size-large;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+            }
+            if root.message != "": Text {
+                text: root.message;
+                color: root.kind == DialogKind.error ? Theme.bad.brighter(20%) : Theme.text-dim;
+                font-size: Theme.font-size;
+                wrap: word-wrap;
+            }
+            field := LineEdit {
+                visible: root.kind == DialogKind.new-folder;
+                height: root.kind == DialogKind.new-folder ? 32px : 0px;
+                text <=> root.input;
+                placeholder-text: "Folder name";
+                accepted(t) => { root.accept(t); }
+                key-pressed(e) => {
+                    if e.text == Key.Escape {
+                        root.cancel();
+                        return EventResult.accept;
+                    }
+                    EventResult.reject
+                }
+            }
+            if root.rows.length > 0: Rectangle {
+                // Values wrap (long URIs), so size by row count rather than the unwrapped estimate.
+                height: min(400px, max(rows-layout.preferred-height + 2px, root.rows.length * 30px + 18px));
+                border-radius: Theme.radius;
+                background: Theme.field;
+                border-width: 1px;
+                border-color: Theme.border;
+                ScrollView {
+                    rows-layout := VerticalLayout {
+                        padding: 8px;
+                        spacing: 2px;
+                        for r in root.rows: HorizontalLayout {
+                            spacing: 14px;
+                            Text {
+                                width: 150px;
+                                text: r.key;
+                                color: Theme.gold.darker(8%);
+                                font-size: Theme.font-size-small;
+                                overflow: elide;
+                            }
+                            TextInput {
+                                text: r.value;
+                                read-only: true;
+                                color: Theme.text;
+                                font-size: Theme.font-size-small;
+                                wrap: word-wrap;
+                                horizontal-stretch: 1;
+                                single-line: false;
+                            }
+                        }
+                    }
+                }
+            }
+            HorizontalLayout {
+                alignment: end;
+                spacing: 8px;
+                if root.kind == DialogKind.new-folder || root.kind == DialogKind.confirm-delete: DialogButton {
+                    label: "Cancel";
+                    clicked => { root.cancel(); }
+                }
+                DialogButton {
+                    label: root.kind == DialogKind.new-folder ? "Create" : root.kind == DialogKind.confirm-delete ? "Delete" : "Close";
+                    primary: true;
+                    danger: root.kind == DialogKind.confirm-delete;
+                    clicked => {
+                        if root.kind == DialogKind.new-folder || root.kind == DialogKind.confirm-delete {
+                            root.accept(root.input);
+                        } else {
+                            root.cancel();
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

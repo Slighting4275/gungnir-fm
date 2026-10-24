@@ -1,0 +1,453 @@
+// Gungnir FM main window: Nemo-style layout with a modern dark theme.
+//
+// Every property below has sample data, so this file renders a full dual-pane
+// window in slint-lsp Live-Preview / slint-viewer with no Rust attached. At runtime
+// the Rust controller (crates/ui/src/controller.rs) replaces it with live models.
+
+import { LineEdit } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { FileRow, PaneInfo, TabInfo, Crumb, PlaceItem, MountItem, TreeRow, TransferRow, StatusInfo, KeyValue } from "types.slint";
+import { Glyph, ToolButton } from "widgets.slint";
+import { PathBar } from "pathbar.slint";
+import { Sidebar } from "sidebar.slint";
+import { Pane } from "pane.slint";
+import { StatusBar, TransferDrawer } from "statusbar.slint";
+import { DialogOverlay, DialogKind } from "dialogs.slint";
+
+export { Theme, FileRow, PaneInfo, TabInfo, Crumb, PlaceItem, MountItem, TreeRow, TransferRow, StatusInfo, KeyValue, DialogKind }
+
+component Separator inherits Rectangle {
+    width: 1px;
+    height: 20px;
+    background: Theme.border;
+}
+
+export component AppWindow inherits Window {
+    title: "Gungnir FM";
+    icon: @image-url("../assets/gungnir-fm.svg");
+    preferred-width: 1320px;
+    preferred-height: 820px;
+    min-width: 760px;
+    min-height: 440px;
+    background: Theme.window;
+    default-font-size: Theme.font-size;
+
+    // ---- State (sample data for Live-Preview) ---------------------------------------
+    in-out property <int> active-pane: 0;
+    in-out property <bool> dual-pane: false;
+    in-out property <bool> sidebar-visible: true;
+    in-out property <int> sidebar-mode: 0;
+    in-out property <int> view-mode: 1;
+    in-out property <bool> show-hidden: false;
+    in-out property <bool> transfers-open: false;
+    in-out property <int> active-transfers: 2;
+    in-out property <int> renaming-pane: -1;
+    in-out property <int> renaming-index: -1;
+
+    in-out property <PaneInfo> left: {
+        tabs: [
+            { title: "project_demo", location: "/home/user/Documents/project_demo", loading: false },
+            { title: "Downloads", location: "/home/user/Downloads", loading: false },
+        ],
+        active-tab: 0,
+        location: "/home/user/Documents/project_demo",
+        crumbs: [
+            { label: "Home", uri: "/home/user", icon: 1 },
+            { label: "Documents", uri: "/home/user/Documents", icon: 0 },
+            { label: "project_demo", uri: "/home/user/Documents/project_demo", icon: 0 },
+        ],
+        sort-column: 0, sort-ascending: true, loading: false, error: "", filter: "",
+        can-back: true, can-forward: false, cursor: 2,
+    };
+    in-out property <PaneInfo> right: {
+        tabs: [{ title: "asgard", location: "gungnir://odin/asgard", loading: false }],
+        active-tab: 0,
+        location: "gungnir://odin/asgard",
+        crumbs: [{ label: "odin", uri: "gungnir://odin/", icon: 3 }, { label: "asgard", uri: "gungnir://odin/asgard", icon: 0 }],
+        sort-column: 1, sort-ascending: false, loading: false, error: "", filter: "",
+        can-back: false, can-forward: false, cursor: 0,
+    };
+    in-out property <[FileRow]> left-files: [
+        { name: "release_v1", size-text: "", type-text: "Folder", modified-text: "2026-10-12 21:40", perms-text: "drwxr-xr-x", status-text: "", status: 0, icon: 0, is-dir: true, hidden: false, selected: false },
+        { name: "assets", size-text: "", type-text: "Folder", modified-text: "2026-10-20 03:12", perms-text: "drwxr-xr-x", status-text: "", status: 0, icon: 0, is-dir: true, hidden: false, selected: false },
+        { name: "track_01.flac", size-text: "48.2 MB", type-text: "FLAC audio", modified-text: "2026-10-12 21:44", perms-text: "-rw-r--r--", status-text: "tagged", status: 6, icon: 3, is-dir: false, hidden: false, selected: true },
+        { name: "track_02.flac", size-text: "52.0 MB", type-text: "FLAC audio", modified-text: "2026-10-12 21:51", perms-text: "-rw-r--r--", status-text: "", status: 0, icon: 3, is-dir: false, hidden: false, selected: true },
+        { name: "track_03.flac", size-text: "44.1 MB", type-text: "FLAC audio", modified-text: "2026-10-12 22:03", perms-text: "-rw-r--r--", status-text: "", status: 0, icon: 3, is-dir: false, hidden: false, selected: true },
+        { name: "cover.jpg", size-text: "1.2 MB", type-text: "JPEG image", modified-text: "2026-10-11 18:20", perms-text: "-rw-r--r--", status-text: "", status: 0, icon: 2, is-dir: false, hidden: false, selected: false },
+        { name: "notes.md", size-text: "4.8 kB", type-text: "Markdown", modified-text: "2026-10-22 09:15", perms-text: "-rw-r--r--", status-text: "", status: 0, icon: 6, is-dir: false, hidden: false, selected: false },
+        { name: "build.sh", size-text: "1.1 kB", type-text: "Shell script", modified-text: "2026-10-22 09:30", perms-text: "-rwxr-xr-x", status-text: "", status: 0, icon: 8, is-dir: false, hidden: false, selected: false },
+        { name: "demo_video.mkv", size-text: "4.3 GB", type-text: "Matroska video", modified-text: "2026-10-23 23:59", perms-text: "-rw-r--r--", status-text: "", status: 0, icon: 4, is-dir: false, hidden: false, selected: false },
+        { name: "archive_alpha.tar.zst", size-text: "2.8 GB", type-text: "Tar archive", modified-text: "2026-10-21 04:10", perms-text: "-rw-r--r--", status-text: "", status: 0, icon: 5, is-dir: false, hidden: false, selected: false },
+        { name: "sample_document.pdf", size-text: "612.0 kB", type-text: "PDF document", modified-text: "2026-10-19 16:45", perms-text: "-rw-r--r--", status-text: "", status: 0, icon: 7, is-dir: false, hidden: false, selected: false },
+    ];
+    in-out property <[FileRow]> right-files: [
+        { name: "runes", size-text: "", type-text: "Folder", modified-text: "2026-08-02 11:10", perms-text: "drwxr-xr-x", status-text: "synced", status: 1, icon: 0, is-dir: true, hidden: false, selected: false },
+        { name: "sagas", size-text: "", type-text: "Folder", modified-text: "2026-08-02 11:12", perms-text: "drwxr-xr-x", status-text: "remote", status: 4, icon: 0, is-dir: true, hidden: false, selected: false },
+        { name: "stress-50k", size-text: "", type-text: "Folder", modified-text: "2026-09-14 07:55", perms-text: "drwxr-xr-x", status-text: "synced", status: 1, icon: 0, is-dir: true, hidden: false, selected: false },
+        { name: "mead-hall.png", size-text: "2.4 MB", type-text: "PNG image", modified-text: "2026-07-30 20:01", perms-text: "-rw-r--r--", status-text: "cached", status: 3, icon: 2, is-dir: false, hidden: false, selected: false },
+        { name: "README.md", size-text: "4.8 kB", type-text: "Markdown", modified-text: "2026-10-01 10:00", perms-text: "-rw-r--r--", status-text: "conflict", status: 5, icon: 6, is-dir: false, hidden: false, selected: false },
+        { name: "yggdrasil.svg", size-text: "88.1 kB", type-text: "SVG image", modified-text: "2026-06-21 12:00", perms-text: "-rw-r--r--", status-text: "syncing", status: 2, icon: 2, is-dir: false, hidden: false, selected: false },
+    ];
+    in-out property <[PlaceItem]> places: [
+        { label: "Home", uri: "/home/user", icon: 0, active: false },
+        { label: "Desktop", uri: "/home/user/Desktop", icon: 1, active: false },
+        { label: "Documents", uri: "/home/user/Documents", icon: 2, active: true },
+        { label: "Downloads", uri: "/home/user/Downloads", icon: 3, active: false },
+        { label: "Music", uri: "/home/user/Music", icon: 7, active: false },
+        { label: "Trash", uri: "/home/user/.local/share/Trash/files", icon: 5, active: false },
+        { label: "File System", uri: "/", icon: 6, active: false },
+    ];
+    in-out property <[MountItem]> mounts: [
+        { label: "odin/asgard", uri: "gungnir://odin/asgard", status: 0, status-text: "Online", detail: "", active: false },
+        { label: "odin/valhalla", uri: "gungnir://odin/valhalla", status: 0, status-text: "Online", detail: "", active: false },
+        { label: "huginn/memory", uri: "gungnir://huginn/memory", status: 1, status-text: "Syncing", detail: "", active: false },
+        { label: "muninn/thought", uri: "gungnir://muninn/thought", status: 3, status-text: "Disconnected", detail: "", active: false },
+    ];
+    in-out property <string> gungnir-label: "GUNGNIR VFS · MOCK";
+    in-out property <[TreeRow]> tree: [
+        { label: "/", uri: "/", depth: 0, expanded: true, has-children: true, active: false },
+        { label: "home", uri: "/home", depth: 1, expanded: true, has-children: true, active: false },
+        { label: "user", uri: "/home/user", depth: 2, expanded: true, has-children: true, active: false },
+        { label: "Documents", uri: "/home/user/Documents", depth: 3, expanded: false, has-children: true, active: true },
+    ];
+    in-out property <[TransferRow]> transfers: [
+        { id: 1, title: "Copying 3 items to gungnir://odin/asgard", detail: "track_02.flac · 61.3 MB of 144.3 MB", progress: 0.42, rate: "318.6 MB/s", state: 1, can-pause: true },
+        { id: 2, title: "Moving archive_alpha.tar.zst to /mnt/archive", detail: "Paused · 1.1 GB of 2.8 GB", progress: 0.39, rate: "", state: 2, can-pause: true },
+    ];
+    in-out property <StatusInfo> status: {
+        items: "11 items (1 hidden)",
+        selection: "3 selected (144.3 MB)",
+        free: "412.8 GB free",
+        backend: "POSIX",
+        backend-kind: 0,
+        message: "",
+        message-is-error: false,
+    };
+
+    in-out property <DialogKind> dialog-kind: DialogKind.none;
+    in-out property <string> dialog-title;
+    in-out property <string> dialog-message;
+    in-out property <[KeyValue]> dialog-rows;
+    in-out property <string> dialog-input;
+
+    // ---- Callbacks to the Rust controller -----------------------------------------
+    callback navigate(pane: int, location: string);
+    callback nav(pane: int, action: string);
+    callback row-clicked(pane: int, index: int, ctrl: bool, shift: bool);
+    callback row-activated(pane: int, index: int);
+    callback row-context(pane: int, index: int);
+    callback move-cursor(pane: int, delta: int, extend: bool);
+    callback sort-by(pane: int, column: int);
+    callback filter-changed(pane: int, text: string);
+    callback tab-new(pane: int);
+    callback tab-close(pane: int, index: int);
+    callback tab-select(pane: int, index: int);
+    callback pane-focused(pane: int);
+    callback command(name: string);
+    callback view-mode-changed(mode: int);
+    callback sidebar-open(uri: string);
+    callback tree-toggle(index: int);
+    callback sidebar-mode-changed(mode: int);
+    callback transfer-action(id: int, action: string);
+    callback dialog-accept(text: string);
+    callback dialog-cancel();
+    callback rename-commit(pane: int, index: int, name: string);
+    callback rename-cancel();
+
+    // ---- Functions the controller calls -------------------------------------------
+    public function focus-files() {
+        key-handler.focus();
+    }
+
+    public function focus-path-bar() {
+        path-bar.start-edit();
+    }
+
+    public function focus-filter() {
+        filter-edit.focus();
+        filter-edit.select-all();
+    }
+
+    property <PaneInfo> active-info: root.active-pane == 0 ? root.left : root.right;
+
+    function activate-pane(p: int) {
+        key-handler.focus();
+        if root.active-pane != p {
+            root.active-pane = p;
+            root.pane-focused(p);
+        }
+    }
+
+    changed active-pane => {
+        filter-edit.text = root.active-info.filter;
+    }
+
+    changed dialog-kind => {
+        if root.dialog-kind == DialogKind.new-folder {
+            dialog.focus-input();
+        } else if root.dialog-kind == DialogKind.none {
+            key-handler.focus();
+        }
+    }
+
+    init => {
+        key-handler.focus();
+    }
+
+    MenuBar {
+        Menu {
+            title: "File";
+            MenuItem { title: "New Tab"; shortcut: @keys(Control + T); activated => { root.tab-new(root.active-pane); } }
+            MenuItem { title: "Close Tab"; shortcut: @keys(Control + W); activated => { root.tab-close(root.active-pane, root.active-info.active-tab); } }
+            MenuSeparator { }
+            MenuItem { title: "New Folder…"; shortcut: @keys(F7); activated => { root.command("new-folder"); } }
+            MenuItem { title: "Properties"; shortcut: @keys(Alt + Return); activated => { root.command("properties"); } }
+            MenuSeparator { }
+            MenuItem { title: "Quit"; shortcut: @keys(Control + Q); activated => { root.command("quit"); } }
+        }
+        Menu {
+            title: "Edit";
+            MenuItem { title: "Rename…"; shortcut: @keys(F2); activated => { root.command("rename"); } }
+            MenuItem { title: "Copy to Other Pane"; shortcut: @keys(F5); activated => { root.command("copy-to-other"); } }
+            MenuItem { title: "Move to Other Pane"; shortcut: @keys(F6); activated => { root.command("move-to-other"); } }
+            MenuSeparator { }
+            MenuItem { title: "Move to Trash (Delete)"; activated => { root.command("trash"); } }
+            MenuItem { title: "Delete Permanently… (Shift+Delete)"; activated => { root.command("delete"); } }
+            MenuSeparator { }
+            MenuItem { title: "Select All (Ctrl+A)"; activated => { root.command("select-all"); } }
+            MenuItem { title: "Filter…"; shortcut: @keys(Control + F); activated => { root.focus-filter(); } }
+        }
+        Menu {
+            title: "View";
+            MenuItem { title: "Compact List"; shortcut: @keys(Control + "1"); activated => { root.view-mode = 0; root.view-mode-changed(0); } }
+            MenuItem { title: "Detailed Columns"; shortcut: @keys(Control + "2"); activated => { root.view-mode = 1; root.view-mode-changed(1); } }
+            MenuItem { title: "Grid"; shortcut: @keys(Control + "3"); activated => { root.view-mode = 2; root.view-mode-changed(2); } }
+            MenuSeparator { }
+            MenuItem { title: "Dual Pane"; shortcut: @keys(F3); checkable: true; checked <=> root.dual-pane; activated => { root.command("toggle-dual"); } }
+            MenuItem { title: "Sidebar"; shortcut: @keys(F9); checkable: true; checked <=> root.sidebar-visible; activated => { root.command("toggle-sidebar"); } }
+            MenuItem { title: "Hidden Files"; shortcut: @keys(Control + H); checkable: true; checked <=> root.show-hidden; activated => { root.command("toggle-hidden"); } }
+            MenuItem { title: "Sidebar: Places"; activated => { root.sidebar-mode = 0; root.sidebar-mode-changed(0); } }
+            MenuItem { title: "Sidebar: Folder Tree"; activated => { root.sidebar-mode = 1; root.sidebar-mode-changed(1); } }
+            MenuItem { title: "Transfers"; checkable: true; checked <=> root.transfers-open; }
+            MenuSeparator { }
+            MenuItem { title: "Reload"; shortcut: @keys(Control + R); activated => { root.nav(root.active-pane, "refresh"); } }
+        }
+        Menu {
+            title: "Go";
+            MenuItem { title: "Back (Alt+Left)"; activated => { root.nav(root.active-pane, "back"); } }
+            MenuItem { title: "Forward (Alt+Right)"; activated => { root.nav(root.active-pane, "forward"); } }
+            MenuItem { title: "Parent Folder (Alt+Up)"; activated => { root.nav(root.active-pane, "up"); } }
+            MenuItem { title: "Home"; shortcut: @keys(Alt + Home); activated => { root.nav(root.active-pane, "home"); } }
+            MenuSeparator { }
+            MenuItem { title: "Location…"; shortcut: @keys(Control + L); activated => { root.focus-path-bar(); } }
+        }
+        Menu {
+            title: "Gungnir";
+            MenuItem { title: "Inspect Selection"; shortcut: @keys(Control + I); activated => { root.command("inspect"); } }
+            MenuItem { title: "Open Gungnir Root"; activated => { root.command("gungnir-root"); } }
+            MenuItem { title: "Open 50k Stress Directory"; activated => { root.navigate(root.active-pane, "gungnir://odin/asgard/stress-50k"); } }
+            MenuItem { title: "Open 100k Stress Directory"; activated => { root.navigate(root.active-pane, "gungnir://odin/valhalla/stress-100k"); } }
+            MenuSeparator { }
+            MenuItem { title: "Backend Status"; activated => { root.command("backend-status"); } }
+        }
+        Menu {
+            title: "Bookmarks";
+            MenuItem { title: "Bookmark This Location"; shortcut: @keys(Control + D); activated => { root.command("bookmark"); } }
+            MenuItem { title: "Clear Bookmarks"; activated => { root.command("clear-bookmarks"); } }
+        }
+        Menu {
+            title: "Help";
+            MenuItem { title: "Keyboard Shortcuts"; shortcut: @keys(F1); activated => { root.command("help-keys"); } }
+            MenuItem { title: "About Gungnir FM"; activated => { root.command("about"); } }
+        }
+    }
+
+    key-handler := FocusScope {
+        key-pressed(e) => {
+            if root.dialog-kind != DialogKind.none {
+                if e.text == Key.Escape { root.dialog-cancel(); return accept; }
+                return reject;
+            }
+            let p = root.active-pane;
+            if e.text == Key.Tab && !e.modifiers.control {
+                if root.dual-pane { root.activate-pane(1 - p); }
+                return accept;
+            }
+            if e.modifiers.alt {
+                if e.text == Key.UpArrow { root.nav(p, "up"); return accept; }
+                if e.text == Key.LeftArrow { root.nav(p, "back"); return accept; }
+                if e.text == Key.RightArrow { root.nav(p, "forward"); return accept; }
+                return reject;
+            }
+            if e.text == Key.Backspace { root.nav(p, "up"); return accept; }
+            if e.text == Key.Return { root.command("open"); return accept; }
+            if e.text == Key.Delete { root.command(e.modifiers.shift ? "delete" : "trash"); return accept; }
+            if e.text == Key.Escape { root.command("clear-selection"); return accept; }
+            if e.text == Key.UpArrow { root.move-cursor(p, root.view-mode == 2 ? -4 : -1, e.modifiers.shift); return accept; }
+            if e.text == Key.DownArrow { root.move-cursor(p, root.view-mode == 2 ? 4 : 1, e.modifiers.shift); return accept; }
+            if e.text == Key.PageUp { root.move-cursor(p, -20, e.modifiers.shift); return accept; }
+            if e.text == Key.PageDown { root.move-cursor(p, 20, e.modifiers.shift); return accept; }
+            if e.text == Key.Home { root.move-cursor(p, -1000000000, e.modifiers.shift); return accept; }
+            if e.text == Key.End { root.move-cursor(p, 1000000000, e.modifiers.shift); return accept; }
+            if e.text == " " { root.command("toggle-select"); return accept; }
+            if e.modifiers.control && (e.text == "a" || e.text == "A") { root.command("select-all"); return accept; }
+            reject
+        }
+
+        VerticalLayout {
+            // ---- Toolbar ----------------------------------------------------------------
+            Rectangle {
+                height: Theme.toolbar-height;
+                background: Theme.base;
+                HorizontalLayout {
+                    padding-left: 8px;
+                    padding-right: 8px;
+                    spacing: 4px;
+                    alignment: stretch;
+                    ToolButton { y: (parent.height - self.height) / 2; glyph: "back"; enabled: root.active-info.can-back; clicked => { root.nav(root.active-pane, "back"); } }
+                    ToolButton { y: (parent.height - self.height) / 2; glyph: "forward"; enabled: root.active-info.can-forward; clicked => { root.nav(root.active-pane, "forward"); } }
+                    ToolButton { y: (parent.height - self.height) / 2; glyph: "up"; clicked => { root.nav(root.active-pane, "up"); } }
+                    ToolButton { y: (parent.height - self.height) / 2; glyph: "refresh"; clicked => { root.nav(root.active-pane, "refresh"); } }
+                    ToolButton { y: (parent.height - self.height) / 2; glyph: "home"; clicked => { root.nav(root.active-pane, "home"); } }
+                    Rectangle { width: 6px; }
+                    path-bar := PathBar {
+                        y: (parent.height - self.height) / 2;
+                        horizontal-stretch: 1;
+                        crumbs: root.active-info.crumbs;
+                        location: root.active-info.location;
+                        loading: root.active-info.loading;
+                        navigate(loc) => { root.navigate(root.active-pane, loc); }
+                        edit-finished => { key-handler.focus(); }
+                    }
+                    Rectangle { width: 6px; }
+                    Rectangle {
+                        width: 210px;
+                        filter-edit := LineEdit {
+                            y: (parent.height - 30px) / 2;
+                            height: 30px;
+                            width: parent.width;
+                            placeholder-text: "Filter  (Ctrl+F)";
+                            font-size: Theme.font-size;
+                            edited(t) => { root.filter-changed(root.active-pane, t); }
+                            accepted(t) => { key-handler.focus(); }
+                            key-pressed(e) => {
+                                if e.text == Key.Escape {
+                                    self.text = "";
+                                    root.filter-changed(root.active-pane, "");
+                                    key-handler.focus();
+                                    return accept;
+                                }
+                                reject
+                            }
+                        }
+                    }
+                    Rectangle { width: 4px; }
+                    ToolButton { y: (parent.height - self.height) / 2; glyph: "list"; checked: root.view-mode == 0; clicked => { root.view-mode = 0; root.view-mode-changed(0); } }
+                    ToolButton { y: (parent.height - self.height) / 2; glyph: "details"; checked: root.view-mode == 1; clicked => { root.view-mode = 1; root.view-mode-changed(1); } }
+                    ToolButton { y: (parent.height - self.height) / 2; glyph: "grid"; checked: root.view-mode == 2; clicked => { root.view-mode = 2; root.view-mode-changed(2); } }
+                    Separator { y: (parent.height - self.height) / 2; }
+                    ToolButton { y: (parent.height - self.height) / 2; glyph: "split"; checked: root.dual-pane; clicked => { root.dual-pane = !root.dual-pane; root.command("toggle-dual"); } }
+                    ToolButton { y: (parent.height - self.height) / 2; glyph: "sidebar"; checked: root.sidebar-visible; clicked => { root.sidebar-visible = !root.sidebar-visible; root.command("toggle-sidebar"); } }
+                }
+                Rectangle {
+                    y: parent.height - 1px;
+                    height: 1px;
+                    background: Theme.border;
+                }
+            }
+
+            // ---- Body -------------------------------------------------------------------
+            HorizontalLayout {
+                vertical-stretch: 1;
+                if root.sidebar-visible: Sidebar {
+                    places: root.places;
+                    mounts: root.mounts;
+                    tree: root.tree;
+                    mode: root.sidebar-mode;
+                    gungnir-label: root.gungnir-label;
+                    open(uri) => { root.sidebar-open(uri); }
+                    toggle-tree(i) => { root.tree-toggle(i); }
+                    mode-changed(m) => { root.sidebar-mode = m; root.sidebar-mode-changed(m); }
+                }
+                // Panes sit flush against the sidebar, toolbar and status bar; split view
+                // (F3) adds a second pane behind a 1px divider.
+                HorizontalLayout {
+                    padding: 0px;
+                    spacing: 0px;
+                    Pane {
+                        split: root.dual-pane;
+                        horizontal-stretch: 1;
+                        pane-index: 0;
+                        active: root.active-pane == 0;
+                        view-mode: root.view-mode;
+                        info: root.left;
+                        files: root.left-files;
+                        renaming-index: root.renaming-pane == 0 ? root.renaming-index : -1;
+                        focus-pane => { root.activate-pane(0); }
+                        row-clicked(i, c, s) => { root.row-clicked(0, i, c, s); }
+                        row-activated(i) => { root.row-activated(0, i); }
+                        row-context(i) => { root.row-context(0, i); }
+                        sort-by(c) => { root.sort-by(0, c); }
+                        tab-select(i) => { root.tab-select(0, i); }
+                        tab-close(i) => { root.tab-close(0, i); }
+                        tab-new => { root.tab-new(0); }
+                        command(n) => { root.activate-pane(0); root.command(n); }
+                        rename-commit(i, n) => { root.rename-commit(0, i, n); key-handler.focus(); }
+                        rename-cancel => { root.rename-cancel(); key-handler.focus(); }
+                    }
+                    if root.dual-pane: Rectangle {
+                        width: 1px;
+                        background: Theme.border-strong;
+                    }
+                    if root.dual-pane: Pane {
+                        split: true;
+                        horizontal-stretch: 1;
+                        pane-index: 1;
+                        active: root.active-pane == 1;
+                        view-mode: root.view-mode;
+                        info: root.right;
+                        files: root.right-files;
+                        renaming-index: root.renaming-pane == 1 ? root.renaming-index : -1;
+                        focus-pane => { root.activate-pane(1); }
+                        row-clicked(i, c, s) => { root.row-clicked(1, i, c, s); }
+                        row-activated(i) => { root.row-activated(1, i); }
+                        row-context(i) => { root.row-context(1, i); }
+                        sort-by(c) => { root.sort-by(1, c); }
+                        tab-select(i) => { root.tab-select(1, i); }
+                        tab-close(i) => { root.tab-close(1, i); }
+                        tab-new => { root.tab-new(1); }
+                        command(n) => { root.activate-pane(1); root.command(n); }
+                        rename-commit(i, n) => { root.rename-commit(1, i, n); key-handler.focus(); }
+                        rename-cancel => { root.rename-cancel(); key-handler.focus(); }
+                    }
+                }
+            }
+
+            if root.transfers-open && root.transfers.length > 0: TransferDrawer {
+                transfers: root.transfers;
+                action(id, a) => { root.transfer-action(id, a); }
+            }
+
+            StatusBar {
+                info: root.status;
+                active-transfers: root.active-transfers;
+                drawer-open: root.transfers-open;
+                toggle-drawer => { root.transfers-open = !root.transfers-open; }
+            }
+        }
+
+        dialog := DialogOverlay {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            kind: root.dialog-kind;
+            title: root.dialog-title;
+            message: root.dialog-message;
+            rows: root.dialog-rows;
+            input <=> root.dialog-input;
+            accept(t) => { root.dialog-accept(t); }
+            cancel => { root.dialog-cancel(); }
+        }
+    }
+}

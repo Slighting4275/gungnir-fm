@@ -1,0 +1,180 @@
+// Status bar (counts, selection size, free space, backend badge) and the
+// expandable, non-modal transfer drawer.
+
+import { Theme } from "theme.slint";
+import { StatusInfo, TransferRow } from "types.slint";
+import { Badge, Bar, Glyph, ToolButton } from "widgets.slint";
+
+export component StatusBar inherits Rectangle {
+    in property <StatusInfo> info: {
+        items: "1,284 items",
+        selection: "3 selected (152.4 MB)",
+        free: "412.8 GB free of 1.0 TB",
+        backend: "POSIX",
+        backend-kind: 0,
+        message: "",
+        message-is-error: false,
+    };
+    in property <int> active-transfers: 2;
+    in property <bool> drawer-open: false;
+    callback toggle-drawer();
+
+    height: 28px;
+    background: Theme.base;
+    Rectangle {
+        y: 0;
+        height: 1px;
+        background: Theme.border;
+    }
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 8px;
+        spacing: 14px;
+        Text {
+            text: root.info.items;
+            color: Theme.text-dim;
+            font-size: Theme.font-size-small;
+            vertical-alignment: center;
+        }
+        if root.info.selection != "": Text {
+            text: root.info.selection;
+            color: Theme.accent.brighter(25%);
+            font-size: Theme.font-size-small;
+            vertical-alignment: center;
+        }
+        Text {
+            text: root.info.message;
+            color: root.info.message-is-error ? Theme.bad : Theme.text-faint;
+            font-size: Theme.font-size-small;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 1;
+        }
+        Text {
+            text: root.info.free;
+            color: Theme.text-faint;
+            font-size: Theme.font-size-small;
+            vertical-alignment: center;
+        }
+        Badge {
+            y: (parent.height - self.height) / 2;
+            text: root.info.backend;
+            tint: root.info.backend-kind == 0 ? Theme.info : Theme.gold;
+        }
+        Rectangle {
+            width: tb.preferred-width;
+            tb := ToolButton {
+                y: (parent.height - self.height) / 2;
+                height: 22px;
+                glyph: "transfers";
+                label: root.active-transfers > 0 ? root.active-transfers + " active" : "Transfers";
+                checked: root.drawer-open;
+                clicked => { root.toggle-drawer(); }
+            }
+        }
+    }
+}
+
+component TransferItem inherits Rectangle {
+    in property <TransferRow> item;
+    callback action(id: int, action: string);
+    height: 48px;
+    background: touch.has-hover ? Theme.hover : transparent;
+    touch := TouchArea { }
+    HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 8px;
+        spacing: 12px;
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            spacing: 5px;
+            HorizontalLayout {
+                spacing: 10px;
+                Text {
+                    text: root.item.title;
+                    color: Theme.text;
+                    font-size: Theme.font-size;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                }
+                Text {
+                    text: root.item.rate;
+                    color: Theme.text-dim;
+                    font-size: Theme.font-size-small;
+                }
+            }
+            Bar {
+                value: root.item.progress;
+                tint: root.item.state == 4 ? Theme.bad : root.item.state == 3 ? Theme.ok : root.item.state == 2 ? Theme.warn : root.item.state == 5 ? Theme.text-faint : Theme.accent;
+            }
+            Text {
+                text: root.item.detail;
+                color: root.item.state == 4 ? Theme.bad : Theme.text-faint;
+                font-size: 11px;
+                overflow: elide;
+            }
+        }
+        if root.item.state <= 2 && root.item.can-pause: ToolButton {
+            y: (parent.height - self.height) / 2;
+            glyph: root.item.state == 2 ? "play" : "pause";
+            tooltip: root.item.state == 2 ? "Resume" : "Pause";
+            clicked => { root.action(root.item.id, root.item.state == 2 ? "resume" : "pause"); }
+        }
+        ToolButton {
+            y: (parent.height - self.height) / 2;
+            glyph: "close";
+            tooltip: root.item.state <= 2 ? "Cancel" : "Dismiss";
+            clicked => { root.action(root.item.id, root.item.state <= 2 ? "cancel" : "dismiss"); }
+        }
+    }
+}
+
+export component TransferDrawer inherits Rectangle {
+    in property <[TransferRow]> transfers: [
+        { id: 1, title: "Copying 3 items to /mnt/backup", detail: "track_02.flac · 412 MB of 1.2 GB", progress: 0.34, rate: "312.4 MB/s", state: 1, can-pause: true },
+        { id: 2, title: "Moving archive_alpha.tar.zst to gungnir://huginn/memory", detail: "Paused", progress: 0.71, rate: "", state: 2, can-pause: true },
+        { id: 3, title: "Copying cover.jpg to /home/user/Pictures", detail: "Done · 1.2 MB", progress: 1.0, rate: "", state: 3, can-pause: true },
+    ];
+    callback action(id: int, action: string);
+    height: min(root.transfers.length, 4) * 48px + 32px;
+    background: Theme.surface;
+    clip: true;
+    Rectangle {
+        y: 0;
+        height: 1px;
+        background: Theme.border;
+    }
+    VerticalLayout {
+        HorizontalLayout {
+            height: 32px;
+            padding-left: 14px;
+            padding-right: 8px;
+            Text {
+                text: "TRANSFERS";
+                color: Theme.text-faint;
+                font-size: 10.5px;
+                font-weight: 700;
+                letter-spacing: 1.1px;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+            ToolButton {
+                y: (parent.height - self.height) / 2;
+                height: 22px;
+                label: "Clear finished";
+                glyph: "close";
+                clicked => { root.action(-1, "clear"); }
+            }
+        }
+        Flickable {
+            content-height: root.transfers.length * 48px;
+            VerticalLayout {
+                for t in root.transfers: TransferItem {
+                    item: t;
+                    action(id, a) => { root.action(id, a); }
+                }
+            }
+        }
+    }
+}

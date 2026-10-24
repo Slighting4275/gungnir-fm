@@ -1,0 +1,23 @@
+[package]
+name = "gungnir-fm"
+description = "Gungnir FM: a fast dual-pane Linux file manager in Rust and Slint, companion to Gungnir VFS"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+default-run = "gungnir-fm"
+
+[dependencies]
+core-vfs.workspace = true
+backends.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+slint.workspace = true
+libc.workspace = true
+
+[build-dependencies]
+slint-build.workspace = true
+
+[lints]
+workspace = true
