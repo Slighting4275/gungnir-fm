@@ -88,6 +88,10 @@ pub enum Update {
         pane: i32,
         index: i32,
     },
+    CustomActions {
+        pane: usize,
+        actions: Vec<crate::CustomActionItem>,
+    },
     Quit,
 }
 
@@ -207,6 +211,13 @@ pub fn apply(ui: &AppWindow, u: Update) {
         Update::Rename { pane, index } => {
             ui.set_renaming_pane(pane);
             ui.set_renaming_index(index);
+        }
+        Update::CustomActions { pane, actions } => {
+            if pane == 0 {
+                ui.set_left_custom_actions(model(actions));
+            } else {
+                ui.set_right_custom_actions(model(actions));
+            }
         }
         Update::Quit => {
             let _ = slint::quit_event_loop();

@@ -4,7 +4,7 @@
 
 import { ListView, LineEdit } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { FileRow, PaneInfo, TabInfo } from "types.slint";
+import { FileRow, PaneInfo, TabInfo, CustomActionItem } from "types.slint";
 import { FileIcon, Glyph, Dot } from "widgets.slint";
 
 component Tab inherits Rectangle {
@@ -15,7 +15,7 @@ component Tab inherits Rectangle {
     callback select;
     callback close;
     height: 30px;
-    width: min(220px, max(110px, title.preferred-width + 52px));
+    width: root.closable ? min(220px, max(110px, title.preferred-width + 52px)) : min(220px, max(80px, title.preferred-width + 24px));
     background: current ? Theme.surface : touch.has-hover ? Theme.hover : transparent;
     touch := TouchArea {
         mouse-cursor: pointer;
@@ -56,7 +56,8 @@ component Tab inherits Rectangle {
         }
         if root.closable: Rectangle {
             width: 20px;
-            opacity: touch.has-hover || close-touch.has-hover || root.current ? 1.0 : 0.0;
+            opacity: touch.has-hover || close-touch.has-hover ? 1.0 : 0.0;
+            animate opacity { duration: 100ms; }
             Rectangle {
                 y: (parent.height - 20px) / 2;
                 height: 20px;
@@ -66,7 +67,7 @@ component Tab inherits Rectangle {
                     name: "close";
                     width: 10px;
                     height: 10px;
-                    tint: Theme.text-faint;
+                    tint: close-touch.has-hover ? Theme.text : Theme.text-faint;
                 }
                 close-touch := TouchArea {
                     mouse-cursor: pointer;
@@ -130,6 +131,9 @@ export component Pane inherits Rectangle {
     in property <bool> split: false;
     in property <int> view-mode: 1;
     in property <int> renaming-index: -1;
+    in property <[CustomActionItem]> custom-actions: [
+        { id: "terminal", title: "Open Terminal Here" },
+    ];
     in property <PaneInfo> info: {
         tabs: [
             { title: "project_demo", location: "/home/user/Documents/project_demo", loading: false },
@@ -169,6 +173,7 @@ export component Pane inherits Rectangle {
     callback tab-new();
     callback focus-pane();
     callback command(name: string);
+    callback custom-action(id: string);
     callback rename-commit(index: int, name: string);
     callback rename-cancel();
     // Drag and drop inside the app: the pane reports where a drag started and where
@@ -224,9 +229,9 @@ export component Pane inherits Rectangle {
 
     VerticalLayout {
         padding: 0px;
-        // Tabs: only when the pane has more than one (Nemo hides a lone tab).
-        if root.info.tabs.length > 1: Rectangle {
-            height: 30px;
+        // Tab strip: always visible, flat and unobtrusive when single tab.
+        if root.info.tabs.length >= 1: Rectangle {
+            height: root.info.tabs.length > 1 ? 30px : 26px;
             background: Theme.base;
             HorizontalLayout {
                 for t[i] in root.info.tabs: Tab {
@@ -238,13 +243,14 @@ export component Pane inherits Rectangle {
                     close => { root.tab-close(i); }
                 }
                 Rectangle {
-                    width: 30px;
+                    width: 28px;
                     Rectangle {
-                        width: 24px;
-                        height: 24px;
+                        width: 22px;
+                        height: 22px;
+                        y: (parent.height - self.height) / 2;
                         border-radius: Theme.radius-small;
                         background: plus.has-hover ? Theme.hover : transparent;
-                        Glyph { name: "plus"; width: 12px; height: 12px; tint: Theme.text-faint; }
+                        Glyph { name: "plus"; width: 12px; height: 12px; tint: plus.has-hover ? Theme.text : Theme.text-faint; }
                         plus := TouchArea {
                             mouse-cursor: pointer;
                             clicked => { root.focus-pane(); root.tab-new(); }
@@ -317,6 +323,11 @@ export component Pane inherits Rectangle {
                     MenuSeparator { }
                     MenuItem { title: "Properties"; activated => { root.command("properties"); } }
                     MenuItem { title: "Gungnir VFS Inspect"; activated => { root.command("inspect"); } }
+                    if root.custom-actions.length > 0: MenuSeparator { }
+                    for act in root.custom-actions: MenuItem {
+                        title: act.title;
+                        activated => { root.custom-action(act.id); }
+                    }
                 }
 
                 // List views (compact / detailed).

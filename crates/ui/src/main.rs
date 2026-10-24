@@ -18,6 +18,7 @@
 //!
 //! Arguments: `gungnir-fm [LEFT] [RIGHT]` (paths or URIs).
 
+mod actions;
 mod bridge;
 mod controller;
 mod desktop;
@@ -25,6 +26,7 @@ mod drives;
 #[cfg(test)]
 mod controller_tests;
 mod rows;
+mod session;
 
 use std::sync::Arc;
 
@@ -84,6 +86,8 @@ fn wire(ui: &AppWindow, tx: &mpsc::Sender<Msg>) {
     on!(on_tab_new, |p| Command::TabNew(pane(p)));
     on!(on_tab_close, |p, i| Command::TabClose(pane(p), index(i)));
     on!(on_tab_select, |p, i| Command::TabSelect(pane(p), index(i)));
+    on!(on_tab_cycle, |p, d| Command::TabCycle { pane: pane(p), delta: d });
+    on!(on_custom_action, |p, id| Command::CustomAction { pane: pane(p), id: id.to_string() });
     on!(on_pane_focused, |p| Command::PaneFocused(pane(p)));
     on!(on_command, |name| Command::Run(name.to_string()));
     on!(on_view_mode_changed, |m| Command::ViewMode(m));
@@ -181,24 +185,73 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(std::path::PathBuf::from)
         .filter(|p| p.is_absolute())
         .unwrap_or_else(|| std::path::Path::new(&home_path).join(".config"));
+    let actions_dir = config_dir.join("gungnir-fm/actions");
+    let session_file = config_dir.join("gungnir-fm/session.json");
+    let saved_session = crate::session::load(&session_file).ok();
+
     let cfg = Config {
-        left: arg_uri(0).unwrap_or_else(|| home.clone()),
-        right: arg_uri(1).unwrap_or(right_default),
+        left: arg_uri(0).unwrap_or_else(|| {
+            saved_session
+                .as_ref()
+                .and_then(|s| s.primary_pane_tabs.get_paths().first().cloned())
+                .map(|p| crate::session::resolve_path_with_fallback(&p, &home))
+                .unwrap_or_else(|| home.clone())
+        }),
+        right: arg_uri(1).unwrap_or_else(|| {
+            saved_session
+                .as_ref()
+                .and_then(|s| s.secondary_pane_tabs.as_ref())
+                .and_then(|sec| sec.get_paths().first().cloned())
+                .map(|p| crate::session::resolve_path_with_fallback(&p, &home))
+                .unwrap_or(right_default)
+        }),
         home,
         gungnir_root,
         gungnir_label,
         bookmarks_file: Some(config_dir.join("gungnir-fm/bookmarks")),
+        actions_dir: Some(actions_dir),
+        session_file: Some(session_file),
+        initial_session: if args.is_empty() { saved_session.clone() } else { None },
         trace: std::env::var_os("GUNGNIR_FM_TRACE").is_some(),
     };
 
     let ui = AppWindow::new()?;
+    if let Some(ref s) = saved_session {
+        ui.window().set_size(slint::LogicalSize::new(s.window.width as f32, s.window.height as f32));
+        if s.window.maximized {
+            ui.window().set_maximized(true);
+        }
+    }
     let sink = Arc::new(SlintSink::attach(&ui));
     let (tx, rx) = mpsc::channel(QUEUE);
     wire(&ui, &tx);
-    let controller = Controller::new(registry, sink, tx, cfg);
+    let controller = Controller::new(registry, sink, tx.clone(), cfg);
     rt.spawn(controller.run(rx));
 
+    // Graceful exit hooks (SIGINT, SIGTERM)
+    let sig_tx = tx.clone();
+    rt.spawn(async move {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut sigint = match signal(SignalKind::interrupt()) {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        let mut sigterm = match signal(SignalKind::terminate()) {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        tokio::select! {
+            _ = sigint.recv() => {
+                let _ = sig_tx.send(Msg::Ui(Command::Quit)).await;
+            }
+            _ = sigterm.recv() => {
+                let _ = sig_tx.send(Msg::Ui(Command::Quit)).await;
+            }
+        }
+    });
+
     ui.run()?;
+    let _ = tx.blocking_send(Msg::Ui(Command::Quit));
     drop(ui);
     rt.shutdown_timeout(std::time::Duration::from_millis(500));
     Ok(())

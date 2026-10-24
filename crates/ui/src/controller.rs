@@ -40,6 +40,8 @@ pub enum Command {
     TabNew(usize),
     TabClose(usize, usize),
     TabSelect(usize, usize),
+    TabCycle { pane: usize, delta: i32 },
+    CustomAction { pane: usize, id: String },
     PaneFocused(usize),
     Run(String),
     ViewMode(i32),
@@ -58,6 +60,7 @@ pub enum Command {
     DeviceEject(String),
     RenameCommit { pane: usize, index: usize, name: String },
     RenameCancel,
+    Quit,
 }
 
 /// Results of background work.
@@ -137,6 +140,9 @@ pub struct Config {
     pub gungnir_root: VfsUri,
     pub gungnir_label: String,
     pub bookmarks_file: Option<PathBuf>,
+    pub actions_dir: Option<PathBuf>,
+    pub session_file: Option<PathBuf>,
+    pub initial_session: Option<crate::session::SessionState>,
     pub trace: bool,
 }
 
@@ -287,6 +293,8 @@ pub struct Controller {
     /// udisks2 over the system bus (None until connected, or without udisks).
     bus: Option<zbus::Connection>,
     devices: Vec<crate::drives::Device>,
+    session_saver: Option<crate::session::SessionSaver>,
+    actions: crate::actions::ActionRegistry,
 }
 
 /// Breadcrumbs as Nemo shows them: a folder below `home` starts at a "Home" crumb, the
@@ -314,23 +322,94 @@ pub(crate) fn crumb_views(u: &VfsUri, home: &VfsUri) -> Vec<Crumb> {
 impl Controller {
     #[must_use]
     pub fn new(registry: VfsRegistry, ui: Arc<dyn UiSink>, tx: MsgTx, cfg: Config) -> Self {
-        let panes = [
-            Pane { tabs: vec![Tab::new(1, cfg.left.clone())], active: 0 },
-            Pane { tabs: vec![Tab::new(2, cfg.right.clone())], active: 0 },
-        ];
+        let mut next_tab = 1;
+        let (panes, active_pane, dual, show_hidden, sidebar) = if let Some(ref s) = cfg.initial_session {
+            let p0_paths = s.primary_pane_tabs.get_paths();
+            let p0_tabs: Vec<Tab> = if p0_paths.is_empty() {
+                let id = next_tab;
+                next_tab += 1;
+                vec![Tab::new(id, cfg.left.clone())]
+            } else {
+                p0_paths
+                    .into_iter()
+                    .map(|p| {
+                        let id = next_tab;
+                        next_tab += 1;
+                        let uri = crate::session::resolve_path_with_fallback(&p, &cfg.home);
+                        Tab::new(id, uri)
+                    })
+                    .collect()
+            };
+            let p0_active = s.primary_pane_tabs.get_active_index().min(p0_tabs.len().saturating_sub(1));
+
+            let p1_tabs: Vec<Tab> = if let Some(ref sec) = s.secondary_pane_tabs {
+                let p1_paths = sec.get_paths();
+                if p1_paths.is_empty() {
+                    let id = next_tab;
+                    next_tab += 1;
+                    vec![Tab::new(id, cfg.right.clone())]
+                } else {
+                    p1_paths
+                        .into_iter()
+                        .map(|p| {
+                            let id = next_tab;
+                            next_tab += 1;
+                            let uri = crate::session::resolve_path_with_fallback(&p, &cfg.home);
+                            Tab::new(id, uri)
+                        })
+                        .collect()
+                }
+            } else {
+                let id = next_tab;
+                next_tab += 1;
+                vec![Tab::new(id, cfg.right.clone())]
+            };
+            let p1_active = s
+                .secondary_pane_tabs
+                .as_ref()
+                .map(|sec| sec.get_active_index().min(p1_tabs.len().saturating_sub(1)))
+                .unwrap_or(0);
+
+            let dual = s.split_view;
+            let active_pane = if s.active_pane == 1 && dual { 1 } else { 0 };
+            (
+                [
+                    Pane { tabs: p0_tabs, active: p0_active },
+                    Pane { tabs: p1_tabs, active: p1_active },
+                ],
+                active_pane,
+                dual,
+                s.show_hidden,
+                s.sidebar_visible,
+            )
+        } else {
+            let panes = [
+                Pane { tabs: vec![Tab::new(1, cfg.left.clone())], active: 0 },
+                Pane { tabs: vec![Tab::new(2, cfg.right.clone())], active: 0 },
+            ];
+            next_tab = 3;
+            (panes, 0, false, false, true)
+        };
+
+        let session_saver = cfg.session_file.as_ref().map(|path| {
+            let (saver, _handle) = crate::session::SessionSaver::spawn(path.clone());
+            saver
+        });
+        let actions = crate::actions::ActionRegistry::load_or_default(cfg.actions_dir.as_deref());
+
         Self {
             registry,
             ui,
             tx,
             cfg,
             panes,
-            active_pane: 0,
-            dual: false,
-            sidebar: true,
+            active_pane,
+            dual,
+            sidebar,
             sidebar_mode: 0,
-            show_hidden: false,
+            show_hidden,
             view_mode: 1,
-            next_tab: 3,
+            next_tab,
             next_transfer: 1,
             transfers: Vec::new(),
             transfers_dirty: false,
@@ -346,6 +425,8 @@ impl Controller {
             clipboard: None,
             bus: None,
             devices: Vec::new(),
+            session_saver,
+            actions,
         }
     }
 
@@ -455,6 +536,85 @@ impl Controller {
             cursor: i32::try_from(t.cursor).unwrap_or(0),
         };
         self.ui.send(Update::Pane { pane: p, view });
+        self.push_custom_actions(p);
+    }
+
+    fn push_custom_actions(&self, p: usize) {
+        let t = self.panes[p].tab();
+        let active_dir = t.location.to_local_path().unwrap_or_default();
+        let targets: Vec<crate::actions::TargetItem> = t
+            .targets()
+            .into_iter()
+            .map(|e| {
+                let path = e.uri.to_local_path().unwrap_or_else(|| PathBuf::from(e.uri.path()));
+                crate::actions::TargetItem {
+                    name: e.name.clone(),
+                    path,
+                    uri: e.uri.to_uri_string(),
+                    is_dir: e.is_navigable(),
+                    mime: None,
+                }
+            })
+            .collect();
+        let matching = self.actions.matching_actions(&active_dir, &targets);
+        let items: Vec<crate::CustomActionItem> = matching
+            .into_iter()
+            .map(|a| crate::CustomActionItem { id: a.id.clone().into(), title: a.name.clone().into() })
+            .collect();
+        self.ui.send(Update::CustomActions { pane: p, actions: items });
+    }
+
+    fn run_custom_action(&mut self, pane: usize, id: &str) {
+        let t = self.panes[pane].tab();
+        let active_dir = t.location.to_local_path().unwrap_or_default();
+        let targets: Vec<crate::actions::TargetItem> = t
+            .targets()
+            .into_iter()
+            .map(|e| {
+                let path = e.uri.to_local_path().unwrap_or_else(|| PathBuf::from(e.uri.path()));
+                crate::actions::TargetItem {
+                    name: e.name.clone(),
+                    path,
+                    uri: e.uri.to_uri_string(),
+                    is_dir: e.is_navigable(),
+                    mime: None,
+                }
+            })
+            .collect();
+        if let Some(action) = self.actions.get_action(id) {
+            let name = action.name.clone();
+            match action.execute(&active_dir, &targets) {
+                Ok(_) => self.say(format!("Launched {name}"), false),
+                Err(e) => self.say(format!("Failed to run {name}: {e}"), true),
+            }
+        }
+    }
+
+    fn current_session_state(&self) -> crate::session::SessionState {
+        let p0_paths: Vec<String> = self.panes[0].tabs.iter().map(|t| t.location.to_uri_string()).collect();
+        let p0_active = self.panes[0].active;
+        let secondary = if self.dual {
+            let p1_paths: Vec<String> = self.panes[1].tabs.iter().map(|t| t.location.to_uri_string()).collect();
+            let p1_active = self.panes[1].active;
+            Some(crate::session::PaneTabsState::new(p1_paths, p1_active))
+        } else {
+            None
+        };
+        crate::session::SessionState {
+            window: crate::session::WindowState::default(),
+            split_view: self.dual,
+            active_pane: self.active_pane,
+            primary_pane_tabs: crate::session::PaneTabsState::new(p0_paths, p0_active),
+            secondary_pane_tabs: secondary,
+            show_hidden: self.show_hidden,
+            sidebar_visible: self.sidebar,
+        }
+    }
+
+    fn trigger_save_session(&self) {
+        if let Some(ref saver) = self.session_saver {
+            saver.update(self.current_session_state());
+        }
     }
 
     fn push_status(&self) {
@@ -918,6 +1078,7 @@ impl Controller {
         if pane == self.active_pane {
             self.push_places();
         }
+        self.trigger_save_session();
     }
 
     /// Parse what the user typed: absolute paths, URIs, `~`, or a path relative to
@@ -1040,6 +1201,7 @@ impl Controller {
             if self.sidebar && self.sidebar_mode == 1 {
                 self.rebuild_tree();
             }
+            self.trigger_save_session();
         }
     }
 
@@ -1301,6 +1463,7 @@ impl Controller {
                     self.prepare(pane, id, false);
                 }
                 self.say(if self.show_hidden { "Showing hidden files" } else { "Hiding hidden files" }, false);
+                self.trigger_save_session();
             }
             "toggle-dual" => {
                 self.dual = !self.dual;
@@ -1310,6 +1473,7 @@ impl Controller {
                 self.push_flags();
                 self.push_status();
                 self.push_places();
+                self.trigger_save_session();
             }
             "toggle-sidebar" => {
                 self.sidebar = !self.sidebar;
@@ -1317,6 +1481,7 @@ impl Controller {
                 if self.sidebar && self.sidebar_mode == 1 {
                     self.rebuild_tree();
                 }
+                self.trigger_save_session();
             }
             "select-all" => {
                 let t = self.panes[p].tab();
@@ -1429,7 +1594,12 @@ impl Controller {
                     rows,
                 );
             }
-            "quit" => self.ui.send(Update::Quit),
+            "quit" => {
+                let tx = self.tx.clone();
+                tokio::spawn(async move {
+                    let _ = tx.send(Msg::Ui(Command::Quit)).await;
+                });
+            }
             other => self.say(format!("Unknown command {other}"), true),
         }
     }
@@ -1516,6 +1686,7 @@ impl Controller {
         self.panes[pane].active = self.panes[pane].tabs.len() - 1;
         self.focus_pane(pane);
         self.load(pane, loc, false);
+        self.trigger_save_session();
     }
 
     fn select_tab(&mut self, pane: usize, idx: usize) {
@@ -1528,10 +1699,37 @@ impl Controller {
         self.push_pane(pane);
         self.push_status();
         self.push_places();
+        self.trigger_save_session();
+    }
+
+    fn cycle_tab(&mut self, pane: usize, delta: i32) {
+        let n = self.panes[pane].tabs.len();
+        if n <= 1 {
+            return;
+        }
+        let cur = self.panes[pane].active as i32;
+        let next = (cur + delta).rem_euclid(n as i32) as usize;
+        self.select_tab(pane, next);
     }
 
     fn close_tab(&mut self, pane: usize, idx: usize) {
-        if self.panes[pane].tabs.len() <= 1 || idx >= self.panes[pane].tabs.len() {
+        if idx >= self.panes[pane].tabs.len() {
+            return;
+        }
+        if self.panes[pane].tabs.len() == 1 {
+            if pane == 1 {
+                self.dual = false;
+                self.active_pane = 0;
+                self.push_flags();
+                self.push_places();
+                self.push_status();
+                self.trigger_save_session();
+            } else {
+                let home = self.cfg.home.clone();
+                if self.panes[0].tab().location != home {
+                    self.navigate_to(0, home);
+                }
+            }
             return;
         }
         let t = self.panes[pane].tabs.remove(idx);
@@ -1543,6 +1741,7 @@ impl Controller {
         self.panes[pane].active = if a > idx || a >= self.panes[pane].tabs.len() { a.saturating_sub(1) } else { a };
         let new = self.panes[pane].active;
         self.select_tab(pane, new);
+        self.trigger_save_session();
     }
 
     fn save_bookmarks(&self) {
@@ -1696,6 +1895,17 @@ impl Controller {
             Command::TabSelect(p, i) => {
                 self.focus_pane(p);
                 self.select_tab(p, i);
+            }
+            Command::TabCycle { pane, delta } => self.cycle_tab(pane, delta),
+            Command::CustomAction { pane, id } => self.run_custom_action(pane, &id),
+            Command::Quit => {
+                if let Some(ref saver) = self.session_saver {
+                    let saver = saver.clone();
+                    tokio::spawn(async move {
+                        saver.flush().await;
+                    });
+                }
+                self.ui.send(Update::Quit);
             }
             Command::PaneFocused(p) => self.focus_pane(p),
             Command::Run(name) => self.run_command(&name),

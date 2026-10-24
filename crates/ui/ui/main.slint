@@ -6,7 +6,7 @@
 
 import { LineEdit } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { FileRow, PaneInfo, TabInfo, Crumb, PlaceItem, MountItem, TreeRow, TransferRow, StatusInfo, KeyValue, DeviceItem } from "types.slint";
+import { FileRow, PaneInfo, TabInfo, Crumb, PlaceItem, MountItem, TreeRow, TransferRow, StatusInfo, KeyValue, DeviceItem, CustomActionItem } from "types.slint";
 import { Glyph, ToolButton } from "widgets.slint";
 import { PathBar } from "pathbar.slint";
 import { Sidebar } from "sidebar.slint";
@@ -14,7 +14,7 @@ import { Pane } from "pane.slint";
 import { StatusBar, TransferDrawer } from "statusbar.slint";
 import { DialogOverlay, DialogKind } from "dialogs.slint";
 
-export { Theme, FileRow, PaneInfo, TabInfo, Crumb, PlaceItem, MountItem, TreeRow, TransferRow, StatusInfo, KeyValue, DeviceItem, DialogKind }
+export { Theme, FileRow, PaneInfo, TabInfo, Crumb, PlaceItem, MountItem, TreeRow, TransferRow, StatusInfo, KeyValue, DeviceItem, DialogKind, CustomActionItem }
 
 component Separator inherits Rectangle {
     width: 1px;
@@ -43,6 +43,8 @@ export component AppWindow inherits Window {
     in-out property <int> active-transfers: 2;
     in-out property <int> renaming-pane: -1;
     in-out property <int> renaming-index: -1;
+    in-out property <[CustomActionItem]> left-custom-actions: [];
+    in-out property <[CustomActionItem]> right-custom-actions: [];
 
     in-out property <PaneInfo> left: {
         tabs: [
@@ -159,6 +161,8 @@ export component AppWindow inherits Window {
     callback dialog-choose(index: int);
     callback rename-commit(pane: int, index: int, name: string);
     callback rename-cancel();
+    callback custom-action(pane: int, id: string);
+    callback tab-cycle(pane: int, delta: int);
     callback dropped(src-pane: int, src-index: int, dst-pane: int, dst-index: int, copy: bool);
     pure callback drag-data(pane: int, index: int) -> data-transfer;
 
@@ -290,10 +294,39 @@ export component AppWindow inherits Window {
                 if root.dual-pane { root.activate-pane(1 - p); }
                 return accept;
             }
+            if e.modifiers.control && e.text == Key.Tab {
+                root.tab-cycle(p, e.modifiers.shift ? -1 : 1);
+                return accept;
+            }
+            if e.modifiers.control && e.text == Key.PageUp {
+                root.tab-cycle(p, -1);
+                return accept;
+            }
+            if e.modifiers.control && e.text == Key.PageDown {
+                root.tab-cycle(p, 1);
+                return accept;
+            }
+            if e.modifiers.control && (e.text == "t" || e.text == "T") {
+                root.tab-new(p);
+                return accept;
+            }
+            if e.modifiers.control && (e.text == "w" || e.text == "W") {
+                root.tab-close(p, root.active-info.active-tab);
+                return accept;
+            }
             if e.modifiers.alt {
                 if e.text == Key.UpArrow { root.nav(p, "up"); return accept; }
                 if e.text == Key.LeftArrow { root.nav(p, "back"); return accept; }
                 if e.text == Key.RightArrow { root.nav(p, "forward"); return accept; }
+                if e.text == "1" { root.tab-select(p, 0); return accept; }
+                if e.text == "2" { root.tab-select(p, 1); return accept; }
+                if e.text == "3" { root.tab-select(p, 2); return accept; }
+                if e.text == "4" { root.tab-select(p, 3); return accept; }
+                if e.text == "5" { root.tab-select(p, 4); return accept; }
+                if e.text == "6" { root.tab-select(p, 5); return accept; }
+                if e.text == "7" { root.tab-select(p, 6); return accept; }
+                if e.text == "8" { root.tab-select(p, 7); return accept; }
+                if e.text == "9" { root.tab-select(p, 8); return accept; }
                 return reject;
             }
             if e.text == Key.Backspace { root.nav(p, "up"); return accept; }
@@ -406,6 +439,8 @@ export component AppWindow inherits Window {
                         view-mode: root.view-mode;
                         info: root.left;
                         files: root.left-files;
+                        custom-actions: root.left-custom-actions;
+                        custom-action(id) => { root.custom-action(0, id); }
                         renaming-index: root.renaming-pane == 0 ? root.renaming-index : -1;
                         focus-pane => { root.activate-pane(0); }
                         row-clicked(i, c, s) => { root.row-clicked(0, i, c, s); }
@@ -436,6 +471,8 @@ export component AppWindow inherits Window {
                         view-mode: root.view-mode;
                         info: root.right;
                         files: root.right-files;
+                        custom-actions: root.right-custom-actions;
+                        custom-action(id) => { root.custom-action(1, id); }
                         renaming-index: root.renaming-pane == 1 ? root.renaming-index : -1;
                         focus-pane => { root.activate-pane(1); }
                         row-clicked(i, c, s) => { root.row-clicked(1, i, c, s); }

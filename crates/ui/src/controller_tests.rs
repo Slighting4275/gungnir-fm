@@ -49,6 +49,9 @@ fn start(left: &str, right: &str, mock: MockConfig) -> Harness {
         gungnir_root: uri("gungnir://odin/"),
         gungnir_label: "TEST".into(),
         bookmarks_file: None,
+        actions_dir: None,
+        session_file: None,
+        initial_session: None,
         trace: false,
     };
     let c = Controller::new(reg, Arc::new(Recorder(Mutex::new(utx))), tx.clone(), cfg);
@@ -238,5 +241,118 @@ fn copy_paste_and_cut_paste_between_folders() {
     h.send(Command::Run("paste".into()));
     h.until(Duration::from_secs(5), |u| matches!(u, Update::Status(s) if s.message.starts_with("Moving") && s.message.contains("finished")));
     assert!(d.join("dst_dir/sample_document.pdf").exists() && !d.join("src_dir/sample_document.pdf").exists(), "moved");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn tab_creation_cycling_and_closing() {
+    let d = temp_dir("tabs");
+    let d1 = d.join("folder_alpha");
+    let d2 = d.join("folder_beta");
+    std::fs::create_dir_all(&d1).ok();
+    std::fs::create_dir_all(&d2).ok();
+
+    let h = start(d1.to_str().unwrap_or("/"), d2.to_str().unwrap_or("/"), MockConfig::instant());
+    h.until(Duration::from_secs(5), |u| matches!(u, Update::Pane { pane: 0, view } if view.tabs.len() == 1));
+
+    // 1. Create a new tab in pane 0
+    h.send(Command::TabNew(0));
+    let updates = h.until(Duration::from_secs(5), |u| matches!(u, Update::Pane { pane: 0, view } if view.tabs.len() == 2));
+    let pane_view = updates.into_iter().find_map(|u| match u {
+        Update::Pane { pane: 0, view } if view.tabs.len() == 2 => Some(view),
+        _ => None,
+    }).unwrap_or_else(|| panic!("missing pane view"));
+    assert_eq!(pane_view.tabs.len(), 2);
+    assert_eq!(pane_view.active_tab, 1);
+
+    // 2. Cycle active tab forward (delta = 1) -> wraps from index 1 back to 0
+    h.send(Command::TabCycle { pane: 0, delta: 1 });
+    let updates = h.until(Duration::from_secs(5), |u| matches!(u, Update::Pane { pane: 0, view } if view.active_tab == 0));
+    let pane_view = updates.into_iter().find_map(|u| match u {
+        Update::Pane { pane: 0, view } if view.active_tab == 0 => Some(view),
+        _ => None,
+    }).unwrap_or_else(|| panic!("missing pane view"));
+    assert_eq!(pane_view.active_tab, 0);
+
+    // 3. Cycle active tab backward (delta = -1) -> wraps from index 0 to 1
+    h.send(Command::TabCycle { pane: 0, delta: -1 });
+    let updates = h.until(Duration::from_secs(5), |u| matches!(u, Update::Pane { pane: 0, view } if view.active_tab == 1));
+    let pane_view = updates.into_iter().find_map(|u| match u {
+        Update::Pane { pane: 0, view } if view.active_tab == 1 => Some(view),
+        _ => None,
+    }).unwrap_or_else(|| panic!("missing pane view"));
+    assert_eq!(pane_view.active_tab, 1);
+
+    // 4. Close the 2nd tab (index 1) -> 1 tab remains, active tab becomes 0
+    h.send(Command::TabClose(0, 1));
+    let updates = h.until(Duration::from_secs(5), |u| matches!(u, Update::Pane { pane: 0, view } if view.tabs.len() == 1));
+    let pane_view = updates.into_iter().find_map(|u| match u {
+        Update::Pane { pane: 0, view } if view.tabs.len() == 1 => Some(view),
+        _ => None,
+    }).unwrap_or_else(|| panic!("missing pane view"));
+    assert_eq!(pane_view.tabs.len(), 1);
+    assert_eq!(pane_view.active_tab, 0);
+
+    // 5. Open split view (F3 / toggle-dual)
+    h.send(Command::Run("toggle-dual".into()));
+    h.until(Duration::from_secs(5), |u| matches!(u, Update::Flags(f) if f.dual_pane));
+
+    // 6. Close the last tab in the secondary pane (pane 1) -> collapses split view
+    h.send(Command::TabClose(1, 0));
+    h.until(Duration::from_secs(5), |u| matches!(u, Update::Flags(f) if !f.dual_pane));
+
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn session_persistence_and_safe_recovery() {
+    let d = temp_dir("session_test");
+    let session_file = d.join("session.json");
+    let home_dir = d.join("home_mock");
+    std::fs::create_dir_all(&home_dir).ok();
+    let home_uri = VfsUri::from_local_path(&home_dir).unwrap_or_else(|_| panic!("home uri"));
+
+    let valid_tab = home_dir.join("release_v1");
+    std::fs::create_dir_all(&valid_tab).ok();
+
+    let state = crate::session::SessionState {
+        window: crate::session::WindowState {
+            width: 1440,
+            height: 900,
+            maximized: false,
+        },
+        split_view: true,
+        active_pane: 0,
+        primary_pane_tabs: crate::session::PaneTabsState::new(
+            vec![valid_tab.display().to_string(), "/nonexistent/inaccessible/path_12345".into()],
+            0,
+        ),
+        secondary_pane_tabs: Some(crate::session::PaneTabsState::new(
+            vec![home_dir.display().to_string()],
+            0,
+        )),
+        show_hidden: true,
+        sidebar_visible: true,
+    };
+
+    // Save atomically
+    crate::session::save_atomic(&session_file, &state).unwrap_or_else(|e| panic!("save atomic: {e}"));
+    assert!(session_file.exists());
+
+    // Load back
+    let loaded = crate::session::load(&session_file).unwrap_or_else(|e| panic!("load: {e}"));
+    assert_eq!(loaded.window.width, 1440);
+    assert!(loaded.split_view);
+    assert!(loaded.show_hidden);
+
+    // Verify safe fallback: inaccessible path falls back to home_uri
+    let paths = loaded.primary_pane_tabs.get_paths();
+    let recovered_0 = crate::session::resolve_path_with_fallback(&paths[0], &home_uri);
+    let recovered_1 = crate::session::resolve_path_with_fallback(&paths[1], &home_uri);
+
+    let expected_0 = VfsUri::from_local_path(&valid_tab).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(recovered_0, expected_0);
+    assert_eq!(recovered_1, home_uri, "Inaccessible path cleanly fell back to home");
+
     let _ = std::fs::remove_dir_all(&d);
 }
