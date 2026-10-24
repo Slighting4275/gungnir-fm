@@ -73,11 +73,7 @@ pub fn file_row(e: &FileEntry, selected: bool) -> RowItem {
 #[must_use]
 pub fn to_file_row(r: &RowItem) -> FileRow {
     let (thumbnail, has_thumbnail) = if let Some(path) = &r.thumbnail_path {
-        if let Ok(img) = slint::Image::load_from_path(path) {
-            (img, true)
-        } else {
-            (slint::Image::default(), false)
-        }
+        if let Ok(img) = slint::Image::load_from_path(path) { (img, true) } else { (slint::Image::default(), false) }
     } else {
         (slint::Image::default(), false)
     };

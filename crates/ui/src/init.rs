@@ -77,21 +77,10 @@ fn notify_abstract_socket(path_bytes: &[u8]) {
         let mut addr: libc::sockaddr_un = std::mem::zeroed();
         addr.sun_family = libc::AF_UNIX as libc::sa_family_t;
         let len = std::cmp::min(path_bytes.len(), addr.sun_path.len() - 1);
-        std::ptr::copy_nonoverlapping(
-            path_bytes.as_ptr().cast::<libc::c_char>(),
-            addr.sun_path.as_mut_ptr(),
-            len,
-        );
+        std::ptr::copy_nonoverlapping(path_bytes.as_ptr().cast::<libc::c_char>(), addr.sun_path.as_mut_ptr(), len);
         let sock_len = (std::mem::size_of::<libc::sa_family_t>() + len) as libc::socklen_t;
         let msg = b"READY=1\n";
-        let _ = libc::sendto(
-            fd,
-            msg.as_ptr().cast(),
-            msg.len(),
-            0,
-            std::ptr::addr_of!(addr).cast(),
-            sock_len,
-        );
+        let _ = libc::sendto(fd, msg.as_ptr().cast(), msg.len(), 0, std::ptr::addr_of!(addr).cast(), sock_len);
         let _ = libc::close(fd);
     }
 }
@@ -140,9 +129,7 @@ pub fn create_pidfile(path: Option<&Path>) -> Result<PidFileGuard, Box<dyn std::
         let pid = std::process::id();
         let mut f = File::create(p)?;
         writeln!(f, "{pid}")?;
-        Ok(PidFileGuard {
-            path: Some(p.to_path_buf()),
-        })
+        Ok(PidFileGuard { path: Some(p.to_path_buf()) })
     } else {
         Ok(PidFileGuard { path: None })
     }
@@ -172,17 +159,15 @@ mod tests {
         let res = unsafe { libc::pipe(fds.as_mut_ptr()) };
         assert_eq!(res, 0);
 
-        let cfg = InitConfig {
-            daemon: false,
-            pidfile: None,
-            ready_fd: Some(fds[1]),
-        };
+        let cfg = InitConfig { daemon: false, pidfile: None, ready_fd: Some(fds[1]) };
         notify_ready(&cfg);
 
         let mut buf = [0u8; 4];
         let n = unsafe { libc::read(fds[0], buf.as_mut_ptr().cast(), buf.len()) };
         assert_eq!(n, 1);
         assert_eq!(buf[0], b'\n');
-        unsafe { libc::close(fds[0]); }
+        unsafe {
+            libc::close(fds[0]);
+        }
     }
 }

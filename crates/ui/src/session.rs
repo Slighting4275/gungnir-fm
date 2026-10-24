@@ -4,10 +4,10 @@
 //! Uses atomic writes (`session.json.tmp` renamed to `session.json`) and a 500ms
 //! debounced background saver.
 
-use std::path::{Path, PathBuf};
-use std::time::Duration;
 use core_vfs::VfsUri;
 use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WindowState {
@@ -29,11 +29,7 @@ fn default_height() -> u32 {
 
 impl Default for WindowState {
     fn default() -> Self {
-        Self {
-            width: default_width(),
-            height: default_height(),
-            maximized: false,
-        }
+        Self { width: default_width(), height: default_height(), maximized: false }
     }
 }
 
@@ -62,11 +58,7 @@ pub enum PaneTabsState {
 impl PaneTabsState {
     #[must_use]
     pub fn new(paths: Vec<String>, active_index: usize) -> Self {
-        Self::Structured {
-            paths,
-            active_index,
-            tabs: Vec::new(),
-        }
+        Self::Structured { paths, active_index, tabs: Vec::new() }
     }
 
     #[must_use]
@@ -126,8 +118,8 @@ pub fn save_atomic(path: &Path, state: &SessionState) -> std::io::Result<()> {
         std::fs::create_dir_all(parent)?;
     }
     let tmp_path = path.with_extension(format!("tmp-{}", std::process::id()));
-    let json_bytes = serde_json::to_vec_pretty(state)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    let json_bytes =
+        serde_json::to_vec_pretty(state).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
     {
         use std::io::Write;
@@ -142,8 +134,7 @@ pub fn save_atomic(path: &Path, state: &SessionState) -> std::io::Result<()> {
 /// Load and parse session state from file.
 pub fn load(path: &Path) -> std::io::Result<SessionState> {
     let data = std::fs::read_to_string(path)?;
-    serde_json::from_str(&data)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+    serde_json::from_str(&data).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
 }
 
 /// Resolve a saved path or URI safely, falling back to `home` if nonexistent or inaccessible.
@@ -250,21 +241,14 @@ mod tests {
     #[test]
     fn round_trip_serialization() {
         let state = SessionState {
-            window: WindowState {
-                width: 1400,
-                height: 900,
-                maximized: true,
-            },
+            window: WindowState { width: 1400, height: 900, maximized: true },
             split_view: true,
             active_pane: 1,
             primary_pane_tabs: PaneTabsState::new(
                 vec!["/home/user/project_demo".into(), "/home/user/release_v1".into()],
                 0,
             ),
-            secondary_pane_tabs: Some(PaneTabsState::new(
-                vec!["/home/user/backup_01".into()],
-                0,
-            )),
+            secondary_pane_tabs: Some(PaneTabsState::new(vec!["/home/user/backup_01".into()], 0)),
             show_hidden: true,
             sidebar_visible: false,
             zoom_level: 1.5,

@@ -10,8 +10,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use async_trait::async_trait;
 use core_vfs::error::{VfsError, VfsResult};
 use core_vfs::model::{
-    BackendKind, FileEntry, FileKind, ListSummary, TransferProgress, TransferRequest,
-    VfsCapabilities, VfsMetadata, VolumeInfo,
+    BackendKind, FileEntry, FileKind, ListSummary, TransferProgress, TransferRequest, VfsCapabilities, VfsMetadata,
+    VolumeInfo,
 };
 use core_vfs::provider::{EntrySink, ListOptions, TransferControl, VfsProvider};
 use core_vfs::uri::{Scheme, VfsUri};
@@ -88,9 +88,7 @@ impl VfsProvider for RemoteVfsBackend {
 
             if !output.status.success() {
                 let err_msg = String::from_utf8_lossy(&output.stderr);
-                return Err(VfsError::Transport(format!(
-                    "cannot open {uri_str}: {err_msg}"
-                )));
+                return Err(VfsError::Transport(format!("cannot open {uri_str}: {err_msg}")));
             }
 
             let text = String::from_utf8_lossy(&output.stdout);
@@ -149,10 +147,7 @@ impl VfsProvider for RemoteVfsBackend {
             }
 
             let total_u64 = u64::try_from(total).unwrap_or(0);
-            Ok(ListSummary {
-                entries: total_u64,
-                skipped: 0,
-            })
+            Ok(ListSummary { entries: total_u64, skipped: 0 })
         })
         .await
         .map_err(|e| VfsError::Transport(e.to_string()))?
@@ -184,9 +179,7 @@ impl VfsProvider for RemoteVfsBackend {
                 .map_err(|e| VfsError::Transport(format!("gio info failed: {e}")))?;
 
             if !output.status.success() {
-                return Err(VfsError::Transport(format!(
-                    "stat failed for {uri_str}"
-                )));
+                return Err(VfsError::Transport(format!("stat failed for {uri_str}")));
             }
 
             let text = String::from_utf8_lossy(&output.stdout);
@@ -224,11 +217,7 @@ impl VfsProvider for RemoteVfsBackend {
                 .args(["mkdir", &uri_str])
                 .status()
                 .map_err(|e| VfsError::Transport(e.to_string()))?;
-            if status.success() {
-                Ok(())
-            } else {
-                Err(VfsError::Transport(format!("failed to create dir {uri_str}")))
-            }
+            if status.success() { Ok(()) } else { Err(VfsError::Transport(format!("failed to create dir {uri_str}"))) }
         })
         .await
         .map_err(|e| VfsError::Transport(e.to_string()))?
@@ -249,11 +238,7 @@ impl VfsProvider for RemoteVfsBackend {
                 .args(["rename", &uri_str, &new_name_owned])
                 .status()
                 .map_err(|e| VfsError::Transport(e.to_string()))?;
-            if status.success() {
-                Ok(new_uri)
-            } else {
-                Err(VfsError::Transport(format!("failed to rename {uri_str}")))
-            }
+            if status.success() { Ok(new_uri) } else { Err(VfsError::Transport(format!("failed to rename {uri_str}"))) }
         })
         .await
         .map_err(|e| VfsError::Transport(e.to_string()))?
@@ -280,15 +265,18 @@ impl VfsProvider for RemoteVfsBackend {
         let is_move = matches!(req.kind, core_vfs::model::TransferKind::Move);
 
         if TEST_MODE.load(Ordering::Relaxed) {
-            let _ = ctl.progress.send(TransferProgress {
-                id: 0,
-                bytes_done: 100,
-                bytes_total: 100,
-                files_done: req.sources.len() as u64,
-                files_total: req.sources.len() as u64,
-                current: String::new(),
-                state: core_vfs::model::TransferState::Done,
-            }).await;
+            let _ = ctl
+                .progress
+                .send(TransferProgress {
+                    id: 0,
+                    bytes_done: 100,
+                    bytes_total: 100,
+                    files_done: req.sources.len() as u64,
+                    files_total: req.sources.len() as u64,
+                    current: String::new(),
+                    state: core_vfs::model::TransferState::Done,
+                })
+                .await;
             return Ok(());
         }
 
@@ -303,9 +291,7 @@ impl VfsProvider for RemoteVfsBackend {
                     .status()
                     .map_err(|e| VfsError::Transport(e.to_string()))?;
                 if !status.success() {
-                    return Err(VfsError::Transport(format!(
-                        "transfer failed from {s} to {dest_str}"
-                    )));
+                    return Err(VfsError::Transport(format!("transfer failed from {s} to {dest_str}")));
                 }
             }
             Ok(())
@@ -317,10 +303,7 @@ impl VfsProvider for RemoteVfsBackend {
     async fn volume(&self, uri: &VfsUri) -> VfsResult<VolumeInfo> {
         let uri_str = uri.to_uri_string();
         if TEST_MODE.load(Ordering::Relaxed) {
-            return Ok(VolumeInfo {
-                total_bytes: 1024 * 1024 * 1024 * 100,
-                free_bytes: 1024 * 1024 * 1024 * 50,
-            });
+            return Ok(VolumeInfo { total_bytes: 1024 * 1024 * 1024 * 100, free_bytes: 1024 * 1024 * 1024 * 50 });
         }
 
         tokio::task::spawn_blocking(move || {
@@ -337,10 +320,7 @@ impl VfsProvider for RemoteVfsBackend {
                     }
                 }
             }
-            Ok(VolumeInfo {
-                total_bytes: total,
-                free_bytes: free,
-            })
+            Ok(VolumeInfo { total_bytes: total, free_bytes: free })
         })
         .await
         .map_err(|e| VfsError::Transport(e.to_string()))?
@@ -363,10 +343,7 @@ impl VfsProvider for RemoteVfsBackend {
                 .map_err(|e| VfsError::Transport(format!("gio info failed: {e}")))?;
 
             let text = String::from_utf8_lossy(&output.stdout);
-            let mut rows = vec![
-                ("URI".to_string(), uri_str),
-                ("Backend".to_string(), "Remote GIO".to_string()),
-            ];
+            let mut rows = vec![("URI".to_string(), uri_str), ("Backend".to_string(), "Remote GIO".to_string())];
             for line in text.lines() {
                 if let Some((k, v)) = line.split_once(':') {
                     rows.push((k.trim().to_string(), v.trim().to_string()));

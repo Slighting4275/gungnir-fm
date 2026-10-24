@@ -205,9 +205,7 @@ impl DesktopIndex {
         if is_dir {
             return "inode/directory".into();
         }
-        self.globs
-            .lookup(name)
-            .unwrap_or_else(|| builtin_mime(name).into())
+        self.globs.lookup(name).unwrap_or_else(|| builtin_mime(name).into())
     }
 
     /// Applications for `mime`, best first: the default, added associations, then every
@@ -508,7 +506,11 @@ pub fn command_lines(app: &App, files: &[PathBuf]) -> Vec<Vec<String>> {
         }
         out
     };
-    if single && files.len() > 1 { files.iter().map(|f| expand(std::slice::from_ref(f))).collect() } else { vec![expand(files)] }
+    if single && files.len() > 1 {
+        files.iter().map(|f| expand(std::slice::from_ref(f))).collect()
+    } else {
+        vec![expand(files)]
+    }
 }
 
 /// Start `app` on `files`, detached in its own process group (closing Gungnir FM does not
@@ -562,7 +564,10 @@ mod tests {
         let files = [PathBuf::from("/tmp/a b.txt"), PathBuf::from("/tmp/c.txt")];
         assert_eq!(command_lines(&app("ed %F"), &files), [vec!["ed", "/tmp/a b.txt", "/tmp/c.txt"]]);
         assert_eq!(command_lines(&app("ed %U"), &files[..1]), [vec!["ed", "file:///tmp/a%20b.txt"]]);
-        assert_eq!(command_lines(&app("ed --file=%f"), &files), [vec!["ed", "--file=/tmp/a b.txt"], vec!["ed", "--file=/tmp/c.txt"]]);
+        assert_eq!(
+            command_lines(&app("ed --file=%f"), &files),
+            [vec!["ed", "--file=/tmp/a b.txt"], vec!["ed", "--file=/tmp/c.txt"]]
+        );
         assert_eq!(command_lines(&app("ed %i %c %%"), &[]), [vec!["ed", "--icon", "demo", "Demo App", "%"]]);
         assert_eq!(command_lines(&app("ed %d %m"), &files[..1]), [vec!["ed"]], "deprecated codes are dropped");
     }
@@ -602,23 +607,36 @@ mod tests {
         let t = Tree::new("desktop");
         t.write("sys-data/mime/globs2", "50:text/plain:*.txt\n50:text/x-rust:*.rs\n50:application/x-compressed-tar:*.tar.gz\n10:application/gzip:*.gz\n60:text/x-makefile:Makefile\n");
         t.write("sys-data/mime/subclasses", "text/x-rust text/plain\n");
-        let entry = |name: &str, mime: &str| format!("[Desktop Entry]\nType=Application\nName={name}\nExec={name} %F\nMimeType={mime};\n");
+        let entry = |name: &str, mime: &str| {
+            format!("[Desktop Entry]\nType=Application\nName={name}\nExec={name} %F\nMimeType={mime};\n")
+        };
         t.write("sys-data/applications/editor_alpha.desktop", &entry("EditorAlpha", "text/plain"));
         t.write("sys-data/applications/editor_beta.desktop", &entry("EditorBeta", "text/plain;text/x-rust"));
         t.write("sys-data/applications/viewer_gamma.desktop", &entry("ViewerGamma", "text/plain"));
         t.write("sys-data/applications/sub/nested.desktop", &entry("Nested", "application/gzip"));
-        t.write("home-data/applications/viewer_gamma.desktop", "[Desktop Entry]\nType=Application\nName=ViewerGamma\nExec=x\nHidden=true\n");
+        t.write(
+            "home-data/applications/viewer_gamma.desktop",
+            "[Desktop Entry]\nType=Application\nName=ViewerGamma\nExec=x\nHidden=true\n",
+        );
         t.write("config/mimeapps.list", "[Default Applications]\ntext/plain=editor_alpha.desktop;\n[Removed Associations]\ntext/x-rust=editor_beta.desktop;\n");
         let idx = DesktopIndex::load(&t.dirs());
 
         assert_eq!(idx.mime_for("notes.TXT", false), "text/plain");
-        assert_eq!(idx.mime_for("archive_alpha.tar.gz", false), "application/x-compressed-tar", "longest extension wins");
+        assert_eq!(
+            idx.mime_for("archive_alpha.tar.gz", false),
+            "application/x-compressed-tar",
+            "longest extension wins"
+        );
         assert_eq!(idx.mime_for("Makefile", false), "text/x-makefile");
         assert_eq!(idx.mime_for("blob", false), "application/octet-stream");
         assert_eq!(idx.mime_for("project_demo", true), "inode/directory");
 
         let names = |m: &str| idx.apps_for(m).iter().map(|a| a.name.clone()).collect::<Vec<_>>();
-        assert_eq!(names("text/plain"), ["EditorAlpha", "EditorBeta"], "default first; Hidden user entry masks ViewerGamma");
+        assert_eq!(
+            names("text/plain"),
+            ["EditorAlpha", "EditorBeta"],
+            "default first; Hidden user entry masks ViewerGamma"
+        );
         // text/x-rust: EditorBeta is removed for it, then the parent text/plain apps follow.
         // text/x-rust: EditorBeta's own association is removed, so the parent type
         // (text/plain) supplies the list: its default first, then EditorBeta again.

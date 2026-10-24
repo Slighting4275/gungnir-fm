@@ -29,19 +29,52 @@ use crate::{Crumb, DialogKind, MountItem, PlaceItem, StatusInfo, TabInfo, Transf
 /// Commands from the UI (one per Slint callback).
 #[derive(Debug, Clone)]
 pub enum Command {
-    Navigate { pane: usize, location: String },
-    Nav { pane: usize, action: String },
-    RowClicked { pane: usize, index: usize, ctrl: bool, shift: bool },
-    RowActivated { pane: usize, index: usize },
-    RowContext { pane: usize, index: usize },
-    MoveCursor { pane: usize, delta: i64, extend: bool },
-    SortBy { pane: usize, column: i32 },
-    Filter { pane: usize, text: String },
+    Navigate {
+        pane: usize,
+        location: String,
+    },
+    Nav {
+        pane: usize,
+        action: String,
+    },
+    RowClicked {
+        pane: usize,
+        index: usize,
+        ctrl: bool,
+        shift: bool,
+    },
+    RowActivated {
+        pane: usize,
+        index: usize,
+    },
+    RowContext {
+        pane: usize,
+        index: usize,
+    },
+    MoveCursor {
+        pane: usize,
+        delta: i64,
+        extend: bool,
+    },
+    SortBy {
+        pane: usize,
+        column: i32,
+    },
+    Filter {
+        pane: usize,
+        text: String,
+    },
     TabNew(usize),
     TabClose(usize, usize),
     TabSelect(usize, usize),
-    TabCycle { pane: usize, delta: i32 },
-    CustomAction { pane: usize, id: String },
+    TabCycle {
+        pane: usize,
+        delta: i32,
+    },
+    CustomAction {
+        pane: usize,
+        id: String,
+    },
     PaneFocused(usize),
     Run(String),
     ViewMode(i32),
@@ -49,7 +82,10 @@ pub enum Command {
     SidebarOpen(String),
     TreeToggle(usize),
     SidebarMode(i32),
-    TransferAction { id: i64, action: String },
+    TransferAction {
+        id: i64,
+        action: String,
+    },
     DialogAccept(String),
     DialogCancel,
     /// A row picked in a chooser dialog.
@@ -64,11 +100,21 @@ pub enum Command {
     TerminalRun(String),
     TerminalClear,
     /// Internal drag and drop: source row, target row (`None`: the pane's folder).
-    Drop { src_pane: usize, src_index: usize, dst_pane: usize, dst_index: Option<usize>, copy: bool },
+    Drop {
+        src_pane: usize,
+        src_index: usize,
+        dst_pane: usize,
+        dst_index: Option<usize>,
+        copy: bool,
+    },
     /// Sidebar device clicked (mounts it first if needed), or its eject button.
     DeviceOpen(String),
     DeviceEject(String),
-    RenameCommit { pane: usize, index: usize, name: String },
+    RenameCommit {
+        pane: usize,
+        index: usize,
+        name: String,
+    },
     RenameCancel,
     Quit,
 }
@@ -131,10 +177,17 @@ pub enum Event {
         id: u64,
         result: VfsResult<()>,
     },
-    OpenWith { mime: String, files: Vec<PathBuf>, apps: Vec<crate::desktop::App> },
+    OpenWith {
+        mime: String,
+        files: Vec<PathBuf>,
+        apps: Vec<crate::desktop::App>,
+    },
     BusReady(zbus::Connection),
     Devices(Vec<crate::drives::Device>),
-    Mounted { object: String, result: Result<String, String> },
+    Mounted {
+        object: String,
+        result: Result<String, String>,
+    },
     SearchResults {
         root: VfsUri,
         results: Vec<(String, String)>,
@@ -297,11 +350,21 @@ pub enum ConflictAction {
 }
 
 enum PendingDialog {
-    NewFolder { pane: usize },
-    ConnectServer { pane: usize },
-    Delete { pane: usize, uris: Vec<VfsUri> },
+    NewFolder {
+        pane: usize,
+    },
+    ConnectServer {
+        pane: usize,
+    },
+    Delete {
+        pane: usize,
+        uris: Vec<VfsUri>,
+    },
     /// "Open With": the files and the candidate applications shown as rows.
-    OpenWith { files: Vec<PathBuf>, apps: Vec<crate::desktop::App> },
+    OpenWith {
+        files: Vec<PathBuf>,
+        apps: Vec<crate::desktop::App>,
+    },
     Info,
     Conflict {
         kind: TransferKind,
@@ -380,6 +443,8 @@ pub(crate) fn crumb_views(u: &VfsUri, home: &VfsUri) -> Vec<Crumb> {
                 (0, Scheme::File) => (String::new(), 2),
                 (0, Scheme::Gungnir) => (uri.authority().to_owned(), 3),
                 (0, Scheme::Sftp | Scheme::Smb) => (uri.authority().to_owned(), 2),
+                (0, Scheme::Trash) => ("Trash".to_owned(), 5),
+                (0, Scheme::Recent) => ("Recent".to_owned(), 4),
                 _ => (label, 0),
             };
             let label = if icon == 3 && label.is_empty() { "gungnir".to_owned() } else { label };
@@ -442,10 +507,7 @@ impl Controller {
             let dual = s.split_view;
             let active_pane = if s.active_pane == 1 && dual { 1 } else { 0 };
             (
-                [
-                    Pane { tabs: p0_tabs, active: p0_active },
-                    Pane { tabs: p1_tabs, active: p1_active },
-                ],
+                [Pane { tabs: p0_tabs, active: p0_active }, Pane { tabs: p1_tabs, active: p1_active }],
                 active_pane,
                 dual,
                 s.show_hidden,
@@ -1362,7 +1424,10 @@ impl Controller {
         let path = match e.uri.scheme() {
             Scheme::File => e.uri.to_local_path(),
             Scheme::Gungnir if e.uri.authority().is_empty() => Some(PathBuf::from(e.uri.path())),
-            Scheme::Gungnir | Scheme::Sftp | Scheme::Smb => None,
+            Scheme::Trash => {
+                backends::local::home_trash().ok().map(|t| t.join("files").join(e.uri.path().trim_start_matches('/')))
+            }
+            Scheme::Recent | Scheme::Gungnir | Scheme::Sftp | Scheme::Smb => None,
         };
         let Some(path) = path else {
             self.say(format!("{} lives on a remote/cluster node and cannot be opened locally yet", e.name), true);
@@ -1447,11 +1512,12 @@ impl Controller {
                             Scheme::Gungnir if s.authority().is_empty() => Some(PathBuf::from(s.path())),
                             _ => None,
                         };
-                        let (src_size, src_mtime) = if let Some(sp) = src_path.as_ref().and_then(|p| p.symlink_metadata().ok()) {
-                            (sp.len(), sp.modified().ok())
-                        } else {
-                            (0, None)
-                        };
+                        let (src_size, src_mtime) =
+                            if let Some(sp) = src_path.as_ref().and_then(|p| p.symlink_metadata().ok()) {
+                                (sp.len(), sp.modified().ok())
+                            } else {
+                                (0, None)
+                            };
                         let dst_size = dm.len();
                         let dst_mtime = dm.modified().ok();
                         let src_is_newer = match (src_mtime, dst_mtime) {
@@ -1502,8 +1568,18 @@ impl Controller {
                 })
                 .unwrap_or_else(|| "Unknown".into())
         };
-        let src_mod = format!("{} · Modified: {} {}", format::size(c.src_size), format_time(c.src_mtime), if c.src_is_newer { "[NEWER]" } else { "" });
-        let dst_mod = format!("{} · Modified: {} {}", format::size(c.dst_size), format_time(c.dst_mtime), if !c.src_is_newer { "[NEWER/SAME]" } else { "" });
+        let src_mod = format!(
+            "{} · Modified: {} {}",
+            format::size(c.src_size),
+            format_time(c.src_mtime),
+            if c.src_is_newer { "[NEWER]" } else { "" }
+        );
+        let dst_mod = format!(
+            "{} · Modified: {} {}",
+            format::size(c.dst_size),
+            format_time(c.dst_mtime),
+            if !c.src_is_newer { "[NEWER/SAME]" } else { "" }
+        );
         let rows = vec![
             ("File name".to_string(), c.filename.clone()),
             ("Source file".to_string(), src_mod),
@@ -1530,15 +1606,9 @@ impl Controller {
             "skip" => ConflictAction::Skip,
             _ => return,
         };
-        let Some(PendingDialog::Conflict {
-            kind,
-            sources,
-            dest,
-            conflicts,
-            mut current_idx,
-            mut resolutions,
-            ..
-        }) = self.dialog.take() else {
+        let Some(PendingDialog::Conflict { kind, sources, dest, conflicts, mut current_idx, mut resolutions, .. }) =
+            self.dialog.take()
+        else {
             return;
         };
 
@@ -1555,14 +1625,7 @@ impl Controller {
         }
 
         if current_idx < conflicts.len() {
-            self.dialog = Some(PendingDialog::Conflict {
-                kind,
-                sources,
-                dest,
-                conflicts,
-                current_idx,
-                resolutions,
-            });
+            self.dialog = Some(PendingDialog::Conflict { kind, sources, dest, conflicts, current_idx, resolutions });
             self.show_conflict();
             return;
         }
@@ -1723,7 +1786,14 @@ impl Controller {
                 let cut = name == "cut";
                 let n = uris.len();
                 self.clipboard = Some((uris, cut));
-                self.say(format!("{} {n} item{} (Ctrl+V to paste)", if cut { "Cut" } else { "Copied" }, if n == 1 { "" } else { "s" }), false);
+                self.say(
+                    format!(
+                        "{} {n} item{} (Ctrl+V to paste)",
+                        if cut { "Cut" } else { "Copied" },
+                        if n == 1 { "" } else { "s" }
+                    ),
+                    false,
+                );
             }
             "paste" => {
                 let Some((uris, cut)) = self.clipboard.clone() else {
@@ -1790,7 +1860,9 @@ impl Controller {
                 self.ui.send(Update::Dialog(DialogView {
                     kind: DialogKind::BatchRename,
                     title: format!("Batch Rename ({n} files)"),
-                    message: "Enter find/replace pattern or numbering prefix below. Live preview updates automatically:".into(),
+                    message:
+                        "Enter find/replace pattern or numbering prefix below. Live preview updates automatically:"
+                            .into(),
                     rows,
                     input: String::new(),
                     preview_path: None,
@@ -1822,6 +1894,10 @@ impl Controller {
                     return;
                 }
                 let loc = self.panes[p].tab().location.clone();
+                if loc.scheme() == Scheme::Trash {
+                    self.confirm_delete(p, targets);
+                    return;
+                }
                 let Ok(provider) = self.registry.resolve(&loc) else { return };
                 if !provider.capabilities().trash {
                     // No trash on this backend: ask before deleting for good.
@@ -1833,6 +1909,35 @@ impl Controller {
                 self.spawn_op(vec![loc], None, async move {
                     provider.trash(&uris).await?;
                     Ok(format!("Moved {n} item{} to the trash", if n == 1 { "" } else { "s" }))
+                });
+            }
+            "restore" => {
+                let targets = self.panes[p].tab().targets();
+                if targets.is_empty() {
+                    return;
+                }
+                let loc = self.panes[p].tab().location.clone();
+                let Ok(provider) = self.registry.resolve(&loc) else { return };
+                let uris: Vec<VfsUri> = targets.iter().map(|e| e.uri.clone()).collect();
+                let n = uris.len();
+                self.spawn_op(vec![loc], None, async move {
+                    provider.restore(&uris).await?;
+                    Ok(format!("Restored {n} item{} from trash", if n == 1 { "" } else { "s" }))
+                });
+            }
+            "empty-trash" => {
+                let trash_root = match VfsUri::trash("/") {
+                    Ok(u) => u,
+                    Err(e) => {
+                        self.say(e.to_string(), true);
+                        return;
+                    }
+                };
+                let Ok(provider) = self.registry.resolve(&trash_root) else { return };
+                let loc = self.panes[p].tab().location.clone();
+                self.spawn_op(vec![loc, trash_root], None, async move {
+                    provider.empty_trash().await?;
+                    Ok("Trash emptied".to_owned())
                 });
             }
             "delete" => {
@@ -1864,10 +1969,9 @@ impl Controller {
                 let name = e.name.clone();
                 let tx = self.tx.clone();
                 tokio::task::spawn_blocking(move || {
-                    let is_checksum_file = local_path
-                        .extension()
-                        .and_then(|s| s.to_str())
-                        .is_some_and(|s| matches!(s.to_ascii_lowercase().as_str(), "sha256" | "md5" | "sha512" | "sha1"));
+                    let is_checksum_file = local_path.extension().and_then(|s| s.to_str()).is_some_and(|s| {
+                        matches!(s.to_ascii_lowercase().as_str(), "sha256" | "md5" | "sha512" | "sha1")
+                    });
 
                     if is_checksum_file
                         && let Ok(results) = crate::hash::verify_checksum_file(&local_path)
@@ -1929,7 +2033,8 @@ impl Controller {
                     .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                     .map(|d| i64::try_from(d.as_secs()).unwrap_or(0))
                     .unwrap_or(0);
-                let is_vid = matches!(cat, core_vfs::format::Category::Video) || crate::thumbnails::is_video_ext(ext.as_deref());
+                let is_vid =
+                    matches!(cat, core_vfs::format::Category::Video) || crate::thumbnails::is_video_ext(ext.as_deref());
 
                 let thumb_path = if crate::thumbnails::is_previewable(cat, ext.as_deref()) {
                     crate::thumbnails::lookup_cached(&uri_str, mtime_secs)
@@ -1973,11 +2078,7 @@ impl Controller {
                 }
 
                 self.dialog = Some(PendingDialog::Info);
-                self.ui.send(Update::Preview {
-                    title: e.name.clone(),
-                    detail,
-                    image_path: thumb_path,
-                });
+                self.ui.send(Update::Preview { title: e.name.clone(), detail, image_path: thumb_path });
             }
             "inspect" => {
                 let t = self.panes[p].tab();
@@ -2175,7 +2276,8 @@ impl Controller {
                     .map(|d| i64::try_from(d.as_secs()).unwrap_or(0))
                     .unwrap_or(0);
                 let uri_str = e.uri.to_uri_string();
-                let is_vid = matches!(cat, core_vfs::format::Category::Video) || crate::thumbnails::is_video_ext(ext.as_deref());
+                let is_vid =
+                    matches!(cat, core_vfs::format::Category::Video) || crate::thumbnails::is_video_ext(ext.as_deref());
                 preview_path = crate::thumbnails::lookup_cached(&uri_str, mtime_secs)
                     .or_else(|| {
                         e.uri.to_local_path().and_then(|lp| {
@@ -2598,11 +2700,7 @@ impl Controller {
                 self.cfg.home.to_local_path().unwrap_or_else(|| PathBuf::from(self.cfg.home.path()))
             } else {
                 let p = Path::new(target);
-                if p.is_absolute() {
-                    p.to_path_buf()
-                } else {
-                    self.terminal_cwd.join(p)
-                }
+                if p.is_absolute() { p.to_path_buf() } else { self.terminal_cwd.join(p) }
             };
             match std::fs::canonicalize(&new_path) {
                 Ok(real) if real.is_dir() => {
@@ -2624,11 +2722,7 @@ impl Controller {
         let tx = self.tx.clone();
         let active_loc = self.panes[self.active_pane].tab().location.clone();
         tokio::task::spawn_blocking(move || {
-            let out = std::process::Command::new("sh")
-                .arg("-c")
-                .arg(&cmd_str)
-                .current_dir(&cwd)
-                .output();
+            let out = std::process::Command::new("sh").arg("-c").arg(&cmd_str).current_dir(&cwd).output();
             let text = match out {
                 Ok(o) => {
                     let mut s = String::from_utf8_lossy(&o.stdout).to_string();
@@ -2791,11 +2885,13 @@ impl Controller {
                     count += 1;
                 }
             }
-            let _ = tx.send(Msg::Ev(Event::Op {
-                result: Ok(format!("Successfully renamed {count} files")),
-                reload: vec![loc],
-                select: None,
-            })).await;
+            let _ = tx
+                .send(Msg::Ev(Event::Op {
+                    result: Ok(format!("Successfully renamed {count} files")),
+                    reload: vec![loc],
+                    select: None,
+                }))
+                .await;
         });
     }
 
@@ -2832,11 +2928,20 @@ impl Controller {
                 }
                 (Some(l), Some(r)) => {
                     if l.size == r.size && l.modified == r.modified {
-                        rows.push((format!("[IDENTICAL] {name}"), format!("{} · Same size & mtime", format::size(l.size))));
+                        rows.push((
+                            format!("[IDENTICAL] {name}"),
+                            format!("{} · Same size & mtime", format::size(l.size)),
+                        ));
                     } else if l.modified > r.modified {
-                        rows.push((format!("[NEWER LEFT] {name}"), format!("Left: {} vs Right: {}", format::size(l.size), format::size(r.size))));
+                        rows.push((
+                            format!("[NEWER LEFT] {name}"),
+                            format!("Left: {} vs Right: {}", format::size(l.size), format::size(r.size)),
+                        ));
                     } else {
-                        rows.push((format!("[NEWER RIGHT] {name}"), format!("Right: {} vs Left: {}", format::size(r.size), format::size(l.size))));
+                        rows.push((
+                            format!("[NEWER RIGHT] {name}"),
+                            format!("Right: {} vs Left: {}", format::size(r.size), format::size(l.size)),
+                        ));
                     }
                 }
                 (None, None) => {}
@@ -2860,7 +2965,8 @@ impl Controller {
         self.ui.send(Update::CloseDialog);
         if to_right {
             let left_entries = &self.panes[0].tab().entries;
-            let right_map: BTreeMap<String, &FileEntry> = self.panes[1].tab().entries.iter().map(|e| (e.name.clone(), e)).collect();
+            let right_map: BTreeMap<String, &FileEntry> =
+                self.panes[1].tab().entries.iter().map(|e| (e.name.clone(), e)).collect();
             let mut to_sync = Vec::new();
             for l in left_entries.iter() {
                 match right_map.get(&l.name) {
@@ -2877,7 +2983,8 @@ impl Controller {
             }
         } else {
             let right_entries = &self.panes[1].tab().entries;
-            let left_map: BTreeMap<String, &FileEntry> = self.panes[0].tab().entries.iter().map(|e| (e.name.clone(), e)).collect();
+            let left_map: BTreeMap<String, &FileEntry> =
+                self.panes[0].tab().entries.iter().map(|e| (e.name.clone(), e)).collect();
             let mut to_sync = Vec::new();
             for r in right_entries.iter() {
                 match left_map.get(&r.name) {
@@ -2905,14 +3012,21 @@ impl Controller {
                 let path = match e.uri.scheme() {
                     Scheme::File => e.uri.to_local_path(),
                     Scheme::Gungnir if e.uri.authority().is_empty() => Some(PathBuf::from(e.uri.path())),
-                    Scheme::Gungnir | Scheme::Sftp | Scheme::Smb => None,
+                    Scheme::Trash => backends::local::home_trash()
+                        .ok()
+                        .map(|t| t.join("files").join(e.uri.path().trim_start_matches('/'))),
+                    Scheme::Recent | Scheme::Gungnir | Scheme::Sftp | Scheme::Smb => None,
                 }?;
                 Some((path, e.is_navigable()))
             })
             .collect();
         if local.is_empty() {
             self.say(
-                if targets.is_empty() { "Nothing selected" } else { "Only local files can be opened with an application" },
+                if targets.is_empty() {
+                    "Nothing selected"
+                } else {
+                    "Only local files can be opened with an application"
+                },
                 true,
             );
             return;
@@ -2981,7 +3095,8 @@ impl Controller {
         self.say(format!("Mounting {}…", dev.label), false);
         let tx = self.tx.clone();
         tokio::spawn(async move {
-            let result = crate::drives::mount(&conn, &dev.object).await.map_err(|e| format!("Mount {}: {e}", dev.label));
+            let result =
+                crate::drives::mount(&conn, &dev.object).await.map_err(|e| format!("Mount {}: {e}", dev.label));
             let _ = tx.send(Msg::Ev(Event::Mounted { object: dev.object, result })).await;
         });
     }
@@ -3036,11 +3151,7 @@ impl Controller {
                     let path_part = full_path_str.split_whitespace().next().unwrap_or(full_path_str);
                     let clean_path = path_part.split(':').next().unwrap_or(path_part);
                     let p = Path::new(clean_path);
-                    let target_dir = if p.is_dir() {
-                        p.to_path_buf()
-                    } else {
-                        p.parent().unwrap_or(p).to_path_buf()
-                    };
+                    let target_dir = if p.is_dir() { p.to_path_buf() } else { p.parent().unwrap_or(p).to_path_buf() };
                     if let Ok(uri) = VfsUri::from_local_path(&target_dir) {
                         self.navigate_to(self.active_pane, uri);
                     }
@@ -3252,7 +3363,8 @@ impl Controller {
             }
             Event::Mounted { object, result } => match result {
                 Ok(mp) => {
-                    let label = self.devices.iter().find(|d| d.object == object).map(|d| d.label.clone()).unwrap_or_default();
+                    let label =
+                        self.devices.iter().find(|d| d.object == object).map(|d| d.label.clone()).unwrap_or_default();
                     self.say(format!("Mounted {label} at {mp}"), false);
                     if let Ok(u) = VfsUri::parse(&mp) {
                         let p = self.active_pane;
@@ -3267,8 +3379,13 @@ impl Controller {
                     return;
                 }
                 let n = files.len();
-                let rows = apps.iter().map(|a| (a.name.clone(), a.id.trim_end_matches(".desktop").to_owned())).collect();
-                let what = files.first().and_then(|f| f.file_name()).map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+                let rows =
+                    apps.iter().map(|a| (a.name.clone(), a.id.trim_end_matches(".desktop").to_owned())).collect();
+                let what = files
+                    .first()
+                    .and_then(|f| f.file_name())
+                    .map(|f| f.to_string_lossy().into_owned())
+                    .unwrap_or_default();
                 let what = if n == 1 { what } else { format!("{n} files") };
                 self.dialog = Some(PendingDialog::OpenWith { files, apps });
                 self.ui.send(Update::Dialog(DialogView {
@@ -3333,7 +3450,7 @@ fn build_places(home: &VfsUri, bookmarks: Option<&std::path::Path>) -> (Vec<Plac
         ("Music", format!("{h}/Music"), 7),
         ("Pictures", format!("{h}/Pictures"), 8),
         ("Videos", format!("{h}/Videos"), 4),
-        ("Trash", format!("{h}/.local/share/Trash/files"), 5),
+        ("Trash", "trash:///".to_owned(), 5),
         ("File System", "/".to_owned(), 6),
     ];
     for (label, path, icon) in candidates {

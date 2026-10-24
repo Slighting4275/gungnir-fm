@@ -53,11 +53,7 @@ pub fn compute_hashes(path: &Path) -> Result<FileHashes, std::io::Error> {
     let file = File::open(path)?;
     let metadata = file.metadata()?;
     let file_size = metadata.len();
-    let file_name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("unknown")
-        .to_string();
+    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("unknown").to_string();
 
     let mut reader = BufReader::with_capacity(64 * 1024, file);
     let mut md5_ctx = md5::Context::new();

@@ -367,10 +367,7 @@ pub fn generate_thumbnail_in(
     let stem = target_file.file_stem().and_then(|s| s.to_str()).unwrap_or("thumb");
     let temp_target = cache_dir.join(format!("{stem}.tmp-{}.png", std::process::id()));
 
-    let ext = source_path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(str::to_ascii_lowercase);
+    let ext = source_path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
 
     let result = if is_video || is_video_ext(ext.as_deref()) {
         generate_video_thumbnail(source_path, &temp_target)
@@ -399,12 +396,7 @@ pub fn generate_thumbnail_in(
 
 /// Generates a thumbnail for `source_path` and writes it to the thumbnail cache.
 /// Returns the path to the generated thumbnail on success.
-pub fn generate_thumbnail(
-    source_path: &Path,
-    uri: &str,
-    mtime_secs: i64,
-    is_video: bool,
-) -> Result<PathBuf, String> {
+pub fn generate_thumbnail(source_path: &Path, uri: &str, mtime_secs: i64, is_video: bool) -> Result<PathBuf, String> {
     generate_thumbnail_in(&thumbnail_cache_dir(), source_path, uri, mtime_secs, is_video)
 }
 
@@ -478,11 +470,7 @@ fn generate_raw_thumbnail(source: &Path, target: &Path) -> Result<(), String> {
 
     // 1. Try exiftool to extract embedded JPEG preview (instant, handles CR2, CR3, NEF, ARW, DNG, RAF, etc.)
     for tag in ["-PreviewImage", "-JpgFromRaw", "-ThumbnailImage", "-OtherImage"] {
-        if let Ok(out) = Command::new("exiftool")
-            .arg("-b")
-            .arg(tag)
-            .arg(source)
-            .output()
+        if let Ok(out) = Command::new("exiftool").arg("-b").arg(tag).arg(source).output()
             && out.status.success()
             && !out.stdout.is_empty()
             && let Ok(img) = image::load_from_memory(&out.stdout)

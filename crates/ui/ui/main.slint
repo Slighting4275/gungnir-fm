@@ -99,7 +99,7 @@ export component AppWindow inherits Window {
         { label: "Documents", uri: "/home/user/Documents", icon: 2, active: true },
         { label: "Downloads", uri: "/home/user/Downloads", icon: 3, active: false },
         { label: "Music", uri: "/home/user/Music", icon: 7, active: false },
-        { label: "Trash", uri: "/home/user/.local/share/Trash/files", icon: 5, active: false },
+        { label: "Trash", uri: "trash:///", icon: 5, active: false },
         { label: "File System", uri: "/", icon: 6, active: false },
     ];
     in-out property <[MountItem]> mounts: [
@@ -250,6 +250,8 @@ export component AppWindow inherits Window {
             MenuItem { title: "Copy to Other Pane"; shortcut: @keys(F5); activated => { root.command("copy-to-other"); } }
             MenuItem { title: "Move to Other Pane"; shortcut: @keys(F6); activated => { root.command("move-to-other"); } }
             MenuSeparator { }
+            MenuItem { title: "Restore from Trash"; activated => { root.command("restore"); } }
+            MenuItem { title: "Empty Trash"; activated => { root.command("empty-trash"); } }
             MenuItem { title: "Move to Trash (Delete)"; activated => { root.command("trash"); } }
             MenuItem { title: "Delete Permanently… (Shift+Delete)"; activated => { root.command("delete"); } }
             MenuSeparator { }

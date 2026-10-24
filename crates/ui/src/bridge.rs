@@ -8,7 +8,7 @@ use std::rc::Rc;
 
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
-use crate::rows::{to_file_row, RowItem};
+use crate::rows::{RowItem, to_file_row};
 use crate::{
     AppWindow, Crumb, DialogKind, FileRow, KeyValue, MountItem, PaneInfo, PlaceItem, StatusInfo, TabInfo, TransferRow,
     TreeRow,

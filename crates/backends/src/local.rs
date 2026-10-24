@@ -42,7 +42,21 @@ impl LocalPosixBackend {
 }
 
 fn local(uri: &VfsUri) -> VfsResult<PathBuf> {
-    uri.to_local_path().ok_or_else(|| VfsError::NoBackend(uri.display()))
+    if uri.scheme() == Scheme::Trash {
+        let trash = home_trash()?;
+        let files = trash.join("files");
+        let rel = uri.path().trim_start_matches('/');
+        if rel.is_empty() {
+            if !files.is_dir() {
+                let _ = fs::create_dir_all(&files);
+            }
+            Ok(files)
+        } else {
+            Ok(files.join(rel))
+        }
+    } else {
+        uri.to_local_path().ok_or_else(|| VfsError::NoBackend(uri.display()))
+    }
 }
 
 fn io_err<'a>(op: &'static str, p: &'a Path) -> impl Fn(std::io::Error) -> VfsError + 'a {
@@ -396,14 +410,87 @@ fn transfer_blocking(req: &TransferRequest, ctl: &TransferControl) -> VfsResult<
 fn remove_any(p: &Path) -> VfsResult<()> {
     let md = fs::symlink_metadata(p).map_err(io_err("lstat", p))?;
     if md.is_dir() {
-        fs::remove_dir_all(p).map_err(io_err("rmdir", p)) // never follows symlinks
+        fs::remove_dir_all(p).map_err(io_err("rmdir", p))?; // never follows symlinks
     } else {
-        fs::remove_file(p).map_err(io_err("unlink", p))
+        fs::remove_file(p).map_err(io_err("unlink", p))?;
     }
+    if let Some(name) = p.file_name()
+        && let Some(parent) = p.parent()
+        && parent.ends_with("files")
+        && let Some(trash) = parent.parent()
+    {
+        let info = trash.join("info").join(format!("{}.trashinfo", name.to_string_lossy()));
+        let _ = fs::remove_file(&info);
+    }
+    Ok(())
+}
+
+fn trash_decode(encoded: &str) -> Option<PathBuf> {
+    let mut bytes = Vec::new();
+    let mut chars = encoded.as_bytes().iter();
+    while let Some(&b) = chars.next() {
+        if b == b'%' {
+            let h1 = *chars.next()?;
+            let h2 = *chars.next()?;
+            let hex_bytes = [h1, h2];
+            let hex_str = std::str::from_utf8(&hex_bytes).ok()?;
+            let val = u8::from_str_radix(hex_str, 16).ok()?;
+            bytes.push(val);
+        } else {
+            bytes.push(b);
+        }
+    }
+    use std::os::unix::ffi::OsStringExt;
+    Some(PathBuf::from(std::ffi::OsString::from_vec(bytes)))
+}
+
+fn restore_one(trash: &Path, name: &str) -> VfsResult<PathBuf> {
+    let files = trash.join("files").join(name);
+    let info = trash.join("info").join(format!("{name}.trashinfo"));
+    if !files.exists() && fs::symlink_metadata(&files).is_err() {
+        return Err(VfsError::NotFound(format!("trash item {name}")));
+    }
+    let info_content = fs::read_to_string(&info).map_err(io_err("read", &info))?;
+    let mut orig_path: Option<PathBuf> = None;
+    for line in info_content.lines() {
+        if let Some(rest) = line.strip_prefix("Path=") {
+            orig_path = trash_decode(rest.trim());
+            break;
+        }
+    }
+    let orig = orig_path.ok_or(VfsError::BadRequest)?;
+    if let Some(parent) = orig.parent()
+        && !parent.is_dir()
+    {
+        fs::create_dir_all(parent).map_err(io_err("mkdir", parent))?;
+    }
+    rename_noreplace(&files, &orig).map_err(io_err("restore", &orig))?;
+    let _ = fs::remove_file(&info);
+    Ok(orig)
+}
+
+fn empty_trash_dir(trash: &Path) -> VfsResult<()> {
+    let files_dir = trash.join("files");
+    let info_dir = trash.join("info");
+    if files_dir.is_dir()
+        && let Ok(entries) = fs::read_dir(&files_dir)
+    {
+        for entry in entries.flatten() {
+            let _ = remove_any(&entry.path());
+        }
+    }
+    if info_dir.is_dir()
+        && let Ok(entries) = fs::read_dir(&info_dir)
+    {
+        for entry in entries.flatten() {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+    Ok(())
 }
 
 /// Home trash (`$XDG_DATA_HOME/Trash`, else `~/.local/share/Trash`).
-fn home_trash() -> VfsResult<PathBuf> {
+pub fn home_trash() -> VfsResult<PathBuf> {
     let base = std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
@@ -483,7 +570,7 @@ impl VfsProvider for LocalPosixBackend {
     }
 
     fn handles(&self, uri: &VfsUri) -> bool {
-        uri.scheme() == Scheme::File
+        matches!(uri.scheme(), Scheme::File | Scheme::Trash)
     }
 
     async fn list_dir(
@@ -541,6 +628,29 @@ impl VfsProvider for LocalPosixBackend {
         blocking(move || {
             let trash = home_trash()?;
             paths.iter().try_for_each(|p| trash_one(&trash, p))
+        })
+        .await
+    }
+
+    async fn restore(&self, uris: &[VfsUri]) -> VfsResult<()> {
+        let items: Vec<String> = uris
+            .iter()
+            .map(|u| u.file_name().ok_or(VfsError::BadRequest).map(|s| s.to_owned()))
+            .collect::<VfsResult<_>>()?;
+        blocking(move || {
+            let trash = home_trash()?;
+            for item in items {
+                restore_one(&trash, &item)?;
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    async fn empty_trash(&self) -> VfsResult<()> {
+        blocking(move || {
+            let trash = home_trash()?;
+            empty_trash_dir(&trash)
         })
         .await
     }

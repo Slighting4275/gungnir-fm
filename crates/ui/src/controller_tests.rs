@@ -239,7 +239,10 @@ fn copy_paste_and_cut_paste_between_folders() {
     h.send(Command::Navigate { pane: 0, location: d.join("dst_dir").display().to_string() });
     h.until(Duration::from_secs(5), |u| full_rows(u, 0, 1));
     h.send(Command::Run("paste".into()));
-    h.until(Duration::from_secs(5), |u| matches!(u, Update::Status(s) if s.message.starts_with("Moving") && s.message.contains("finished")));
+    h.until(
+        Duration::from_secs(5),
+        |u| matches!(u, Update::Status(s) if s.message.starts_with("Moving") && s.message.contains("finished")),
+    );
     assert!(d.join("dst_dir/sample_document.pdf").exists() && !d.join("src_dir/sample_document.pdf").exists(), "moved");
     let _ = std::fs::remove_dir_all(&d);
 }
@@ -257,39 +260,55 @@ fn tab_creation_cycling_and_closing() {
 
     // 1. Create a new tab in pane 0
     h.send(Command::TabNew(0));
-    let updates = h.until(Duration::from_secs(5), |u| matches!(u, Update::Pane { pane: 0, view } if view.tabs.len() == 2));
-    let pane_view = updates.into_iter().find_map(|u| match u {
-        Update::Pane { pane: 0, view } if view.tabs.len() == 2 => Some(view),
-        _ => None,
-    }).unwrap_or_else(|| panic!("missing pane view"));
+    let updates =
+        h.until(Duration::from_secs(5), |u| matches!(u, Update::Pane { pane: 0, view } if view.tabs.len() == 2));
+    let pane_view = updates
+        .into_iter()
+        .find_map(|u| match u {
+            Update::Pane { pane: 0, view } if view.tabs.len() == 2 => Some(view),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("missing pane view"));
     assert_eq!(pane_view.tabs.len(), 2);
     assert_eq!(pane_view.active_tab, 1);
 
     // 2. Cycle active tab forward (delta = 1) -> wraps from index 1 back to 0
     h.send(Command::TabCycle { pane: 0, delta: 1 });
-    let updates = h.until(Duration::from_secs(5), |u| matches!(u, Update::Pane { pane: 0, view } if view.active_tab == 0));
-    let pane_view = updates.into_iter().find_map(|u| match u {
-        Update::Pane { pane: 0, view } if view.active_tab == 0 => Some(view),
-        _ => None,
-    }).unwrap_or_else(|| panic!("missing pane view"));
+    let updates =
+        h.until(Duration::from_secs(5), |u| matches!(u, Update::Pane { pane: 0, view } if view.active_tab == 0));
+    let pane_view = updates
+        .into_iter()
+        .find_map(|u| match u {
+            Update::Pane { pane: 0, view } if view.active_tab == 0 => Some(view),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("missing pane view"));
     assert_eq!(pane_view.active_tab, 0);
 
     // 3. Cycle active tab backward (delta = -1) -> wraps from index 0 to 1
     h.send(Command::TabCycle { pane: 0, delta: -1 });
-    let updates = h.until(Duration::from_secs(5), |u| matches!(u, Update::Pane { pane: 0, view } if view.active_tab == 1));
-    let pane_view = updates.into_iter().find_map(|u| match u {
-        Update::Pane { pane: 0, view } if view.active_tab == 1 => Some(view),
-        _ => None,
-    }).unwrap_or_else(|| panic!("missing pane view"));
+    let updates =
+        h.until(Duration::from_secs(5), |u| matches!(u, Update::Pane { pane: 0, view } if view.active_tab == 1));
+    let pane_view = updates
+        .into_iter()
+        .find_map(|u| match u {
+            Update::Pane { pane: 0, view } if view.active_tab == 1 => Some(view),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("missing pane view"));
     assert_eq!(pane_view.active_tab, 1);
 
     // 4. Close the 2nd tab (index 1) -> 1 tab remains, active tab becomes 0
     h.send(Command::TabClose(0, 1));
-    let updates = h.until(Duration::from_secs(5), |u| matches!(u, Update::Pane { pane: 0, view } if view.tabs.len() == 1));
-    let pane_view = updates.into_iter().find_map(|u| match u {
-        Update::Pane { pane: 0, view } if view.tabs.len() == 1 => Some(view),
-        _ => None,
-    }).unwrap_or_else(|| panic!("missing pane view"));
+    let updates =
+        h.until(Duration::from_secs(5), |u| matches!(u, Update::Pane { pane: 0, view } if view.tabs.len() == 1));
+    let pane_view = updates
+        .into_iter()
+        .find_map(|u| match u {
+            Update::Pane { pane: 0, view } if view.tabs.len() == 1 => Some(view),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("missing pane view"));
     assert_eq!(pane_view.tabs.len(), 1);
     assert_eq!(pane_view.active_tab, 0);
 
@@ -316,21 +335,14 @@ fn session_persistence_and_safe_recovery() {
     std::fs::create_dir_all(&valid_tab).ok();
 
     let state = crate::session::SessionState {
-        window: crate::session::WindowState {
-            width: 1440,
-            height: 900,
-            maximized: false,
-        },
+        window: crate::session::WindowState { width: 1440, height: 900, maximized: false },
         split_view: true,
         active_pane: 0,
         primary_pane_tabs: crate::session::PaneTabsState::new(
             vec![valid_tab.display().to_string(), "/nonexistent/inaccessible/path_12345".into()],
             0,
         ),
-        secondary_pane_tabs: Some(crate::session::PaneTabsState::new(
-            vec![home_dir.display().to_string()],
-            0,
-        )),
+        secondary_pane_tabs: Some(crate::session::PaneTabsState::new(vec![home_dir.display().to_string()], 0)),
         show_hidden: true,
         sidebar_visible: true,
         zoom_level: 1.25,
@@ -366,9 +378,10 @@ fn test_remote_connect_dialog_and_crumbs() {
 
     // Trigger connect-server command
     h.send(Command::Run("connect-server".into()));
-    let dialog_updates = h.until(Duration::from_millis(500), |u| {
-        matches!(u, Update::Dialog(d) if matches!(d.kind, crate::DialogKind::ConnectServer))
-    });
+    let dialog_updates = h.until(
+        Duration::from_millis(500),
+        |u| matches!(u, Update::Dialog(d) if matches!(d.kind, crate::DialogKind::ConnectServer)),
+    );
     assert!(!dialog_updates.is_empty(), "connect-server dialog should open");
 
     // Accept SFTP URI
@@ -413,30 +426,27 @@ fn test_terminal_drawer_toggle_and_commands() {
 
     // Toggle terminal open
     h.send(Command::Run("toggle-terminal".into()));
-    let term_updates = h.until(Duration::from_millis(500), |u| {
-        matches!(u, Update::Terminal { open, .. } if *open)
-    });
+    let term_updates = h.until(Duration::from_millis(500), |u| matches!(u, Update::Terminal { open, .. } if *open));
     assert!(!term_updates.is_empty(), "terminal should open");
 
     // Run shell command
     h.send(Command::TerminalRun("echo gungnir_test_output_123".into()));
-    let out_updates = h.until(Duration::from_millis(1500), |u| {
-        matches!(u, Update::Terminal { output, .. } if output.contains("gungnir_test_output_123"))
-    });
+    let out_updates = h.until(
+        Duration::from_millis(1500),
+        |u| matches!(u, Update::Terminal { output, .. } if output.contains("gungnir_test_output_123")),
+    );
     assert!(!out_updates.is_empty(), "terminal should receive output");
 
     // Clear output
     h.send(Command::TerminalClear);
-    let clear_updates = h.until(Duration::from_millis(500), |u| {
-        matches!(u, Update::Terminal { output, .. } if output.is_empty())
-    });
+    let clear_updates =
+        h.until(Duration::from_millis(500), |u| matches!(u, Update::Terminal { output, .. } if output.is_empty()));
     assert!(!clear_updates.is_empty(), "terminal should clear output");
 
     // Test cd command
     h.send(Command::TerminalRun("cd subfolder".into()));
-    let cd_updates = h.until(Duration::from_millis(500), |u| {
-        matches!(u, Update::Terminal { cwd, .. } if cwd.ends_with("subfolder"))
-    });
+    let cd_updates = h
+        .until(Duration::from_millis(500), |u| matches!(u, Update::Terminal { cwd, .. } if cwd.ends_with("subfolder")));
     assert!(!cd_updates.is_empty(), "terminal cwd should update on cd");
 
     let _ = std::fs::remove_dir_all(&tmp);
@@ -456,9 +466,10 @@ fn test_deep_recursive_search_and_grep() {
 
     // Open search dialog
     h.send(Command::Run("deep-search".into()));
-    let search_dialog = h.until(Duration::from_millis(500), |u| {
-        matches!(u, Update::Dialog(d) if matches!(d.kind, crate::DialogKind::Search))
-    });
+    let search_dialog = h.until(
+        Duration::from_millis(500),
+        |u| matches!(u, Update::Dialog(d) if matches!(d.kind, crate::DialogKind::Search)),
+    );
     assert!(!search_dialog.is_empty(), "search dialog should open");
 
     // Search by filename
@@ -469,9 +480,10 @@ fn test_deep_recursive_search_and_grep() {
         extra1: "target".into(),
         extra2: "".into(),
     });
-    let name_results = h.until(Duration::from_millis(1500), |u| {
-        matches!(u, Update::Dialog(d) if d.rows.iter().any(|(name, _)| name == "target_file.txt"))
-    });
+    let name_results = h.until(
+        Duration::from_millis(1500),
+        |u| matches!(u, Update::Dialog(d) if d.rows.iter().any(|(name, _)| name == "target_file.txt")),
+    );
     assert!(!name_results.is_empty(), "should find target_file.txt by filename");
 
     // Search by content grep
@@ -482,9 +494,10 @@ fn test_deep_recursive_search_and_grep() {
         extra1: "magic_marker".into(),
         extra2: "".into(),
     });
-    let grep_results = h.until(Duration::from_millis(1500), |u| {
-        matches!(u, Update::Dialog(d) if d.rows.iter().any(|(_, detail)| detail.contains("magic_marker")))
-    });
+    let grep_results = h.until(
+        Duration::from_millis(1500),
+        |u| matches!(u, Update::Dialog(d) if d.rows.iter().any(|(_, detail)| detail.contains("magic_marker"))),
+    );
     assert!(!grep_results.is_empty(), "should find content match via grep");
 
     let _ = std::fs::remove_dir_all(&tmp);
@@ -509,9 +522,10 @@ fn test_batch_rename_preview_and_apply() {
 
     // Trigger batch rename
     h.send(Command::Run("batch-rename".into()));
-    let rename_dialog = h.until(Duration::from_millis(500), |u| {
-        matches!(u, Update::Dialog(d) if matches!(d.kind, crate::DialogKind::BatchRename))
-    });
+    let rename_dialog = h.until(
+        Duration::from_millis(500),
+        |u| matches!(u, Update::Dialog(d) if matches!(d.kind, crate::DialogKind::BatchRename)),
+    );
     assert!(!rename_dialog.is_empty(), "batch rename dialog should open");
 
     // Preview find/replace
@@ -522,9 +536,10 @@ fn test_batch_rename_preview_and_apply() {
         extra1: "test_item".into(),
         extra2: "renamed_item".into(),
     });
-    let preview_updates = h.until(Duration::from_millis(500), |u| {
-        matches!(u, Update::Dialog(d) if d.rows.iter().any(|(_, new_n)| new_n.starts_with("renamed_item")))
-    });
+    let preview_updates = h.until(
+        Duration::from_millis(500),
+        |u| matches!(u, Update::Dialog(d) if d.rows.iter().any(|(_, new_n)| new_n.starts_with("renamed_item"))),
+    );
     assert!(!preview_updates.is_empty(), "preview should show renamed_item");
 
     // Apply batch rename
@@ -566,9 +581,10 @@ fn test_pane_comparison_and_sync() {
 
     // Open comparison dialog
     h.send(Command::Run("compare-panes".into()));
-    let compare_dialog = h.until(Duration::from_millis(800), |u| {
-        matches!(u, Update::Dialog(d) if matches!(d.kind, crate::DialogKind::ComparePanes))
-    });
+    let compare_dialog = h.until(
+        Duration::from_millis(800),
+        |u| matches!(u, Update::Dialog(d) if matches!(d.kind, crate::DialogKind::ComparePanes)),
+    );
     assert!(!compare_dialog.is_empty(), "compare dialog should open");
 
     // Verify row contents reflect Left and Right differences
@@ -612,9 +628,10 @@ fn test_conflict_detection_and_resolution() {
     h.send(Command::Run("copy-to-other".into()));
 
     // Conflict dialog should appear!
-    let conflict_updates = h.until(Duration::from_millis(1000), |u| {
-        matches!(u, Update::Dialog(d) if matches!(d.kind, crate::DialogKind::Conflict))
-    });
+    let conflict_updates = h.until(
+        Duration::from_millis(1000),
+        |u| matches!(u, Update::Dialog(d) if matches!(d.kind, crate::DialogKind::Conflict)),
+    );
     assert!(!conflict_updates.is_empty(), "collision dialog should be presented");
 
     // Choose replace

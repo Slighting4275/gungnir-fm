@@ -21,12 +21,12 @@
 mod actions;
 mod bridge;
 mod controller;
+#[cfg(test)]
+mod controller_tests;
 mod desktop;
 mod drives;
 mod hash;
 mod init;
-#[cfg(test)]
-mod controller_tests;
 mod rows;
 mod session;
 mod thumbnails;
@@ -139,11 +139,15 @@ fn setup_display_environment() {
     // twm, mwm, openbox, fluxbox, blackbox, icewm, jwm, window maker, afterstep, fvwm, pekwm, kwin, mutter, compiz, etc.)
     if std::env::var_os("RESOURCE_NAME").is_none() {
         // SAFETY: Called synchronously at main entry before worker threads are spawned.
-        unsafe { std::env::set_var("RESOURCE_NAME", "gungnir-fm"); }
+        unsafe {
+            std::env::set_var("RESOURCE_NAME", "gungnir-fm");
+        }
     }
     if std::env::var_os("XCLIENT_NAME").is_none() {
         // SAFETY: Called synchronously at main entry before worker threads are spawned.
-        unsafe { std::env::set_var("XCLIENT_NAME", "gungnir-fm"); }
+        unsafe {
+            std::env::set_var("XCLIENT_NAME", "gungnir-fm");
+        }
     }
 
     // DirectFB / Linux Framebuffer (fbdev / direct DRM/KMS) & kmscon support:
@@ -156,7 +160,9 @@ fn setup_display_environment() {
         let has_fb = (0..8).any(|i| std::path::Path::new(&format!("/dev/fb{i}")).exists());
         if has_drm || has_fb {
             // SAFETY: Called synchronously at main entry before worker threads are spawned.
-            unsafe { std::env::set_var("SLINT_BACKEND", "linuxkms"); }
+            unsafe {
+                std::env::set_var("SLINT_BACKEND", "linuxkms");
+            }
         }
     }
 }
@@ -169,20 +175,23 @@ fn create_app_window() -> Result<AppWindow, Box<dyn std::error::Error>> {
             // often lack hardware GLX/OpenGL support. Fallback to Slint's software renderer.
             let is_software = std::env::var("SLINT_BACKEND").map(|v| v == "winit-software").unwrap_or(false);
             if !is_software {
-                eprintln!("gungnir-fm: default display backend initialization failed ({err}), falling back to software renderer (SLINT_BACKEND=winit-software)");
+                eprintln!(
+                    "gungnir-fm: default display backend initialization failed ({err}), falling back to software renderer (SLINT_BACKEND=winit-software)"
+                );
                 // SAFETY: Called on main thread to switch rendering backend.
-                unsafe { std::env::set_var("SLINT_BACKEND", "winit-software"); }
+                unsafe {
+                    std::env::set_var("SLINT_BACKEND", "winit-software");
+                }
                 match AppWindow::new() {
                     Ok(ui) => Ok(ui),
-                    Err(fallback_err) => {
-                        Err(format!(
-                            "gungnir-fm: failed to initialize display window.\n\
+                    Err(fallback_err) => Err(format!(
+                        "gungnir-fm: failed to initialize display window.\n\
                              Neither hardware nor software display rendering could be started.\n\
                              Primary error: {err}\n\
                              Fallback error: {fallback_err}\n\
                              Ensure a valid display server (Wayland, X11, or DRM/KMS framebuffer) is accessible."
-                        ).into())
-                    }
+                    )
+                    .into()),
                 }
             } else {
                 Err(Box::new(err))
@@ -394,7 +403,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Graceful exit hooks (SIGINT, SIGTERM)
     let sig_tx = tx.clone();
     rt.spawn(async move {
-        use tokio::signal::unix::{signal, SignalKind};
+        use tokio::signal::unix::{SignalKind, signal};
         let mut sigint = match signal(SignalKind::interrupt()) {
             Ok(s) => s,
             Err(_) => return,

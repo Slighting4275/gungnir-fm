@@ -86,6 +86,17 @@ pub trait VfsProvider: Send + Sync + 'static {
         Err(VfsError::Unsupported(format!("{} has no trash", self.kind().badge())))
     }
 
+    /// Restore trashed files back to their original location.
+    async fn restore(&self, uris: &[VfsUri]) -> VfsResult<()> {
+        let _ = uris;
+        Err(VfsError::Unsupported(format!("{} cannot restore", self.kind().badge())))
+    }
+
+    /// Empty the trash.
+    async fn empty_trash(&self) -> VfsResult<()> {
+        Err(VfsError::Unsupported(format!("{} cannot empty trash", self.kind().badge())))
+    }
+
     /// Whether [`VfsProvider::transfer`] of `src` into `dest` can run here. The
     /// controller asks the destination's backend.
     fn can_transfer(&self, src: &VfsUri, dest: &VfsUri) -> bool {

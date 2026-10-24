@@ -52,7 +52,9 @@ pub fn devices_from(objects: &Objects, uid: u32) -> Vec<Device> {
     for (path, ifaces) in objects {
         let (Some(block), Some(fs)) = (ifaces.get(BLOCK), ifaces.get(FILESYSTEM)) else { continue };
         let own_loop = ifaces.get(LOOP).and_then(|l| get::<u32>(l, "SetupByUID")) == Some(uid);
-        if get::<bool>(block, "HintIgnore").unwrap_or(false) || (get::<bool>(block, "HintSystem").unwrap_or(true) && !own_loop) {
+        if get::<bool>(block, "HintIgnore").unwrap_or(false)
+            || (get::<bool>(block, "HintSystem").unwrap_or(true) && !own_loop)
+        {
             continue; // internal disks and hidden helpers stay out of the sidebar
         }
         let size = get::<u64>(block, "Size").unwrap_or(0);
@@ -171,7 +173,11 @@ mod tests {
         let fs = |mounts: Vec<Vec<u8>>| -> Props { [("MountPoints".to_owned(), ov(mounts))].into() };
         objects.insert(
             path("/org/freedesktop/UDisks2/block_devices/sdx1"),
-            [(BLOCK.to_owned(), block("", false, "/org/freedesktop/UDisks2/drives/demo_stick")), (FILESYSTEM.to_owned(), fs(vec![cstr("/run/media/user/STICK")]))].into(),
+            [
+                (BLOCK.to_owned(), block("", false, "/org/freedesktop/UDisks2/drives/demo_stick")),
+                (FILESYSTEM.to_owned(), fs(vec![cstr("/run/media/user/STICK")])),
+            ]
+            .into(),
         );
         objects.insert(
             path("/org/freedesktop/UDisks2/block_devices/nvme0n1p2"),
@@ -183,7 +189,8 @@ mod tests {
         );
         objects.insert(
             path("/org/freedesktop/UDisks2/drives/demo_stick"),
-            [(DRIVE.to_owned(), [("Ejectable".to_owned(), ov(true)), ("CanPowerOff".to_owned(), ov(true))].into())].into(),
+            [(DRIVE.to_owned(), [("Ejectable".to_owned(), ov(true)), ("CanPowerOff".to_owned(), ov(true))].into())]
+                .into(),
         );
         objects.insert(
             path("/org/freedesktop/UDisks2/block_devices/loop7"),

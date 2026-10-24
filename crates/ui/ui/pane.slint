@@ -326,6 +326,8 @@ export component Pane inherits Rectangle {
                     MenuItem { title: "Rename… (F2)"; activated => { root.command("rename"); } }
                     MenuItem { title: "New Folder… (F7)"; activated => { root.command("new-folder"); } }
                     MenuSeparator { }
+                    MenuItem { title: "Restore from Trash"; activated => { root.command("restore"); } }
+                    MenuItem { title: "Empty Trash"; activated => { root.command("empty-trash"); } }
                     MenuItem { title: "Move to Trash"; activated => { root.command("trash"); } }
                     MenuItem { title: "Delete Permanently…"; activated => { root.command("delete"); } }
                     MenuSeparator { }

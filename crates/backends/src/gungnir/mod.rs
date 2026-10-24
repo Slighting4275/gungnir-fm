@@ -61,14 +61,27 @@ fn local_path(uri: &VfsUri) -> VfsResult<PathBuf> {
         Scheme::Gungnir if uri.authority().is_empty() || uri.authority() == "localhost" => {
             Ok(PathBuf::from(uri.path()))
         }
+        Scheme::Trash => {
+            let trash = crate::local::home_trash()?;
+            let files = trash.join("files");
+            let rel = uri.path().trim_start_matches('/');
+            if rel.is_empty() {
+                if !files.is_dir() {
+                    let _ = std::fs::create_dir_all(&files);
+                }
+                Ok(files)
+            } else {
+                Ok(files.join(rel))
+            }
+        }
+        Scheme::Recent => Err(VfsError::Unsupported("recent:// not backed by local path".into())),
         Scheme::Gungnir => Err(VfsError::Unsupported(format!(
             "gungnird serves this machine only; node {:?} needs a newer Gungnir",
             uri.authority()
         ))),
-        Scheme::Sftp | Scheme::Smb => Err(VfsError::Unsupported(format!(
-            "remote uri {} is not handled by gungnird",
-            uri.display()
-        ))),
+        Scheme::Sftp | Scheme::Smb => {
+            Err(VfsError::Unsupported(format!("remote uri {} is not handled by gungnird", uri.display())))
+        }
     }
 }
 
@@ -577,6 +590,14 @@ impl VfsProvider for GungnirVfsBackend {
         }
         // Metadata is keyed by inode, so it stays with the file in the trash.
         self.local.trash(&local).await
+    }
+
+    async fn restore(&self, uris: &[VfsUri]) -> VfsResult<()> {
+        self.local.restore(uris).await
+    }
+
+    async fn empty_trash(&self) -> VfsResult<()> {
+        self.local.empty_trash().await
     }
 
     async fn transfer(&self, req: TransferRequest, ctl: TransferControl) -> VfsResult<()> {

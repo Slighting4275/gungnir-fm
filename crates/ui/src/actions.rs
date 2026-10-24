@@ -4,8 +4,8 @@
 //! (or internal defaults table if directory does not exist).
 //! Matches actions against selected items and executes substituted commands.
 
-use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -153,18 +153,11 @@ pub fn substitute_tokens(template: &str, active_dir: &str, targets: &[TargetItem
         .iter()
         .map(|t| {
             let s = t.path.display().to_string();
-            if s.contains(' ') && !s.starts_with('"') && !s.starts_with('\'') {
-                format!("'{s}'")
-            } else {
-                s
-            }
+            if s.contains(' ') && !s.starts_with('"') && !s.starts_with('\'') { format!("'{s}'") } else { s }
         })
         .collect::<Vec<_>>()
         .join(" ");
-    let first_uri = targets
-        .first()
-        .map(|t| t.uri.clone())
-        .unwrap_or_else(|| format!("file://{active_dir}"));
+    let first_uri = targets.first().map(|t| t.uri.clone()).unwrap_or_else(|| format!("file://{active_dir}"));
 
     let mut out = String::with_capacity(template.len() + 32);
     let mut chars = template.chars().peekable();
@@ -337,7 +330,10 @@ mod tests {
         assert_eq!(substitute_tokens(cmd2, dir, &targets), "code /home/user/project_demo/main.rs");
 
         let cmd3 = "cat %F";
-        assert_eq!(substitute_tokens(cmd3, dir, &targets), "cat /home/user/project_demo/main.rs /home/user/project_demo/lib.rs");
+        assert_eq!(
+            substitute_tokens(cmd3, dir, &targets),
+            "cat /home/user/project_demo/main.rs /home/user/project_demo/lib.rs"
+        );
 
         let cmd4 = "echo %u";
         assert_eq!(substitute_tokens(cmd4, dir, &targets), "echo file:///home/user/project_demo/main.rs");

@@ -140,7 +140,7 @@ export component Sidebar inherits Rectangle {
         { label: "Documents", uri: "/home/user/Documents", icon: 2, active: true },
         { label: "Downloads", uri: "/home/user/Downloads", icon: 3, active: false },
         { label: "Music", uri: "/home/user/Music", icon: 7, active: false },
-        { label: "Trash", uri: "/home/user/.local/share/Trash/files", icon: 5, active: false },
+        { label: "Trash", uri: "trash:///", icon: 5, active: false },
         { label: "File System", uri: "/", icon: 6, active: false },
     ];
     in property <[MountItem]> mounts: [

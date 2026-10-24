@@ -8,7 +8,7 @@ use backends::LocalPosixBackend;
 use common::{TempDir, list};
 use core_vfs::{
     CancellationToken, FileKind, ListOptions, TransferControl, TransferKind, TransferRequest, TransferState, VfsError,
-    VfsProvider, VfsResult, WatchEvent,
+    VfsProvider, VfsResult, VfsUri, WatchEvent,
 };
 use tokio::sync::{mpsc, watch};
 
@@ -178,6 +178,21 @@ async fn trash_follows_the_freedesktop_spec() -> VfsResult<()> {
     let info = std::fs::read_to_string(t.path().join("data/Trash/info/doomed file.txt.trashinfo")).unwrap_or_default();
     assert!(info.starts_with("[Trash Info]\nPath="), "{info}");
     assert!(info.contains("doomed%20file.txt") && info.contains("DeletionDate="), "{info}");
+
+    // Test restore
+    let trash_uri = VfsUri::trash("doomed file.txt")?;
+    b.restore(&[trash_uri]).await?;
+    assert!(t.path().join("doomed file.txt").exists());
+    assert!(!t.path().join("data/Trash/files/doomed file.txt").exists());
+    assert!(!t.path().join("data/Trash/info/doomed file.txt.trashinfo").exists());
+
+    // Test empty trash
+    b.trash(&[t.uri("doomed file.txt")]).await?;
+    assert!(t.path().join("data/Trash/files/doomed file.txt").exists());
+    b.empty_trash().await?;
+    assert!(!t.path().join("data/Trash/files/doomed file.txt").exists());
+    assert!(!t.path().join("data/Trash/info/doomed file.txt.trashinfo").exists());
+
     Ok(())
 }
 

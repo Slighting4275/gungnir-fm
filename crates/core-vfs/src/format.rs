@@ -38,8 +38,8 @@ pub fn category(e: &FileEntry) -> Category {
     }
     let name_lower = e.name.to_ascii_lowercase();
     match name_lower.as_str() {
-        "makefile" | "dockerfile" | "vagrantfile" | "justfile" | "gemfile"
-        | "poscar" | "potcar" | "incar" | "kpoints" => return Category::Code,
+        "makefile" | "dockerfile" | "vagrantfile" | "justfile" | "gemfile" | "poscar" | "potcar" | "incar"
+        | "kpoints" => return Category::Code,
         "perf.data" | "manifest" | "core" => return Category::Document,
         _ => {}
     }
@@ -1447,7 +1447,10 @@ mod tests {
         assert_eq!(type_label(&entry("config.kdl", FileKind::File, 0o644)), "KDL document language");
         assert_eq!(type_label(&entry("analytics.parquet", FileKind::File, 0o644)), "Apache Parquet columnar data");
         assert_eq!(type_label(&entry("db.sqlite3", FileKind::File, 0o644)), "SQLite database");
-        assert_eq!(type_label(&entry("weights.safetensors", FileKind::File, 0o644)), "Safetensors neural model weights");
+        assert_eq!(
+            type_label(&entry("weights.safetensors", FileKind::File, 0o644)),
+            "Safetensors neural model weights"
+        );
         assert_eq!(type_label(&entry("llm.gguf", FileKind::File, 0o644)), "GGUF quantized model weights");
         assert_eq!(type_label(&entry("pqc.mlkem", FileKind::File, 0o644)), "FIPS 203 ML-KEM post-quantum key");
         assert_eq!(type_label(&entry("provenance.c2pa", FileKind::File, 0o644)), "C2PA provenance manifest assertion");
@@ -1477,16 +1480,28 @@ mod tests {
         assert_eq!(type_label(&entry("voyager.spk", FileKind::File, 0o644)), "NASA SPICE Ephemeris Kernel");
         assert_eq!(type_label(&entry("survey.segy", FileKind::File, 0o644)), "SEG-Y seismic reflection survey data");
         assert_eq!(type_label(&entry("capture.sigmf", FileKind::File, 0o644)), "SigMF RF recording");
-        assert_eq!(type_label(&entry("threat.stix", FileKind::File, 0o644)), "OASIS STIX cyber threat intelligence JSON");
-        assert_eq!(type_label(&entry("chart.s57", FileKind::File, 0o644)), "IHO S-57 Electronic Navigational Chart (ENC)");
+        assert_eq!(
+            type_label(&entry("threat.stix", FileKind::File, 0o644)),
+            "OASIS STIX cyber threat intelligence JSON"
+        );
+        assert_eq!(
+            type_label(&entry("chart.s57", FileKind::File, 0o644)),
+            "IHO S-57 Electronic Navigational Chart (ENC)"
+        );
         assert_eq!(type_label(&entry("display.icc", FileKind::File, 0o644)), "ICC color profile");
         assert_eq!(type_label(&entry("bios.fd", FileKind::File, 0o644)), "BIOS / SPI Flash Descriptor image");
         assert_eq!(type_label(&entry("perf.data", FileKind::File, 0o644)), "Linux perf event execution recording");
         assert_eq!(type_label(&entry("table.sst", FileKind::File, 0o644)), "LSM-Tree Sorted String Table (SSTable)");
-        assert_eq!(type_label(&entry("spatial.adm", FileKind::File, 0o644)), "ITU-R Audio Definition Model (ADM) spatial audio");
+        assert_eq!(
+            type_label(&entry("spatial.adm", FileKind::File, 0o644)),
+            "ITU-R Audio Definition Model (ADM) spatial audio"
+        );
         assert_eq!(type_label(&entry("crawl.warc", FileKind::File, 0o644)), "WARC web archive (ISO 28500)");
         assert_eq!(type_label(&entry("contract.sol", FileKind::File, 0o644)), "Solidity smart contract source");
-        assert_eq!(type_label(&entry("data.car", FileKind::File, 0o644)), "IPFS / IPLD Content Addressable Archive (CAR)");
+        assert_eq!(
+            type_label(&entry("data.car", FileKind::File, 0o644)),
+            "IPFS / IPLD Content Addressable Archive (CAR)"
+        );
         assert_eq!(type_label(&entry("a.qux", FileKind::File, 0o644)), "QUX file");
         assert_eq!(extension(".bashrc"), None);
     }

@@ -20,6 +20,8 @@ pub enum Scheme {
     Gungnir,
     Sftp,
     Smb,
+    Trash,
+    Recent,
 }
 
 impl Scheme {
@@ -30,6 +32,8 @@ impl Scheme {
             Scheme::Gungnir => "gungnir",
             Scheme::Sftp => "sftp",
             Scheme::Smb => "smb",
+            Scheme::Trash => "trash",
+            Scheme::Recent => "recent",
         }
     }
 }
@@ -60,6 +64,8 @@ impl VfsUri {
             "gungnir" => Scheme::Gungnir,
             "sftp" | "ssh" => Scheme::Sftp,
             "smb" | "cifs" => Scheme::Smb,
+            "trash" => Scheme::Trash,
+            "recent" => Scheme::Recent,
             other => return Err(VfsError::InvalidUri(format!("unsupported scheme {other}://"))),
         };
         let (authority, path) = match rest.find('/') {
@@ -81,6 +87,12 @@ impl VfsUri {
                     return Err(VfsError::InvalidUri(format!("{}:// missing host or share", scheme.as_str())));
                 }
                 authority
+            }
+            Scheme::Trash | Scheme::Recent => {
+                if !authority.is_empty() && !authority.eq_ignore_ascii_case("localhost") {
+                    return Err(VfsError::InvalidUri(format!("{}:// does not take a host", scheme.as_str())));
+                }
+                String::new()
             }
         };
         Ok(Self { scheme, authority, path: normalize(&percent_decode(path)?)? })
@@ -107,6 +119,24 @@ impl VfsUri {
             "gungnir://{node}{}",
             if path.starts_with('/') { path.to_owned() } else { format!("/{path}") }
         ))
+    }
+
+    /// `trash://<path>`.
+    ///
+    /// # Errors
+    /// [`VfsError::InvalidUri`].
+    pub fn trash(path: &str) -> VfsResult<Self> {
+        let p = if path.starts_with('/') { path.to_owned() } else { format!("/{path}") };
+        Ok(Self { scheme: Scheme::Trash, authority: String::new(), path: normalize(&p)? })
+    }
+
+    /// `recent://<path>`.
+    ///
+    /// # Errors
+    /// [`VfsError::InvalidUri`].
+    pub fn recent(path: &str) -> VfsResult<Self> {
+        let p = if path.starts_with('/') { path.to_owned() } else { format!("/{path}") };
+        Ok(Self { scheme: Scheme::Recent, authority: String::new(), path: normalize(&p)? })
     }
 
     #[must_use]
@@ -182,6 +212,8 @@ impl VfsUri {
             Scheme::Gungnir => format!("gungnir://{}", self.authority),
             Scheme::Sftp => format!("sftp://{}", self.authority),
             Scheme::Smb => format!("smb://{}", self.authority),
+            Scheme::Trash => "trash://".to_owned(),
+            Scheme::Recent => "recent://".to_owned(),
         };
         let mut cur = Self { path: "/".into(), ..self.clone() };
         let mut out = vec![(root_label, cur.clone())];
@@ -200,6 +232,8 @@ impl VfsUri {
             Scheme::Gungnir => format!("gungnir://{}{}", self.authority, self.path),
             Scheme::Sftp => format!("sftp://{}{}", self.authority, self.path),
             Scheme::Smb => format!("smb://{}{}", self.authority, self.path),
+            Scheme::Trash => format!("trash://{}", self.path),
+            Scheme::Recent => format!("recent://{}", self.path),
         }
     }
 
