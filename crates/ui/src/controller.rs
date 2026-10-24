@@ -1823,7 +1823,14 @@ impl Controller {
                     .map(|d| i64::try_from(d.as_secs()).unwrap_or(0))
                     .unwrap_or(0);
                 let uri_str = e.uri.to_uri_string();
-                preview_path = crate::thumbnails::lookup_cached(&uri_str, mtime_secs).or_else(|| e.uri.to_local_path());
+                let is_vid = matches!(cat, core_vfs::format::Category::Video) || crate::thumbnails::is_video_ext(ext.as_deref());
+                preview_path = crate::thumbnails::lookup_cached(&uri_str, mtime_secs)
+                    .or_else(|| {
+                        e.uri.to_local_path().and_then(|lp| {
+                            crate::thumbnails::generate_thumbnail(&lp, &uri_str, mtime_secs, is_vid).ok()
+                        })
+                    })
+                    .or_else(|| if !is_vid { e.uri.to_local_path() } else { None });
             }
             let mut r = vec![
                 ("Name".to_owned(), e.name.clone()),

@@ -160,6 +160,7 @@ pub fn apply(ui: &AppWindow, u: Update) {
             with_vec_model(&files_model(ui, pane), |m| m.extend(file_rows));
         }
         Update::ThumbnailsReady { pane, items } => {
+            let mut any = false;
             with_vec_model(&files_model(ui, pane), |m| {
                 for (name, path) in items {
                     if let Ok(img) = slint::Image::load_from_path(&path) {
@@ -170,12 +171,20 @@ pub fn apply(ui: &AppWindow, u: Update) {
                                 r.thumbnail = img;
                                 r.has_thumbnail = true;
                                 m.set_row_data(i, r);
+                                any = true;
                                 break;
                             }
                         }
                     }
                 }
             });
+            if any {
+                if pane == 0 {
+                    ui.set_left_thumbnail_rev(ui.get_left_thumbnail_rev().wrapping_add(1));
+                } else {
+                    ui.set_right_thumbnail_rev(ui.get_right_thumbnail_rev().wrapping_add(1));
+                }
+            }
         }
         Update::Preview { title, detail, image_path } => {
             let img = image_path.and_then(|p| slint::Image::load_from_path(&p).ok()).unwrap_or_default();

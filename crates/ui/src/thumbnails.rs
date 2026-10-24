@@ -3,26 +3,18 @@
 //! Generates crisp 256x256 thumbnails for images and video frames and caches them
 //! under `~/.cache/gungnir-fm/thumbnails/`.
 
-use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::process::{Command, Stdio};
 
 use core_vfs::format::Category;
-
-static TEST_MODE: AtomicBool = AtomicBool::new(false);
-
-/// Enable test mode with isolated temporary directory support.
-#[cfg(test)]
-pub fn set_test_mode(enabled: bool) {
-    TEST_MODE.store(enabled, Ordering::Relaxed);
-}
 
 /// Directory where thumbnails are cached on disk.
 #[must_use]
 pub fn thumbnail_cache_dir() -> PathBuf {
-    if TEST_MODE.load(Ordering::Relaxed) {
-        return std::env::temp_dir().join("gungnir-test-sandbox").join("thumbnails");
+    if let Ok(dir) = std::env::var("GUNGNIR_THUMBNAIL_CACHE_DIR")
+        && !dir.is_empty()
+    {
+        return PathBuf::from(dir);
     }
     if let Some(mut dir) = dirs::cache_dir() {
         dir.push("gungnir-fm");
@@ -36,10 +28,13 @@ pub fn thumbnail_cache_dir() -> PathBuf {
 /// Computes a deterministic cache filename based on URI and modified timestamp.
 #[must_use]
 pub fn cache_filename(uri: &str, mtime_secs: i64) -> String {
-    let mut hasher = DefaultHasher::new();
-    uri.hash(&mut hasher);
-    mtime_secs.hash(&mut hasher);
-    format!("{:016x}.png", hasher.finish())
+    use sha2::Digest;
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(uri.as_bytes());
+    hasher.update(mtime_secs.to_le_bytes());
+    let hash = hasher.finalize();
+    let slice: [u8; 8] = hash[0..8].try_into().unwrap_or([0; 8]);
+    format!("{:016x}.png", u64::from_le_bytes(slice))
 }
 
 /// Checks if a file is an image or video based on category or extension.
@@ -91,20 +86,26 @@ pub fn is_video_ext(ext: Option<&str>) -> bool {
     )
 }
 
-/// Checks if a cached thumbnail already exists and is valid on disk.
+/// Checks if a cached thumbnail exists in `cache_dir` and is valid on disk.
 #[must_use]
-pub fn lookup_cached(uri: &str, mtime_secs: i64) -> Option<PathBuf> {
-    let cache_dir = thumbnail_cache_dir();
+pub fn lookup_cached_in(cache_dir: &Path, uri: &str, mtime_secs: i64) -> Option<PathBuf> {
     let file = cache_dir.join(cache_filename(uri, mtime_secs));
-    if file.is_file() {
+    if file.is_file() && file.metadata().map(|m| m.len() > 0).unwrap_or(false) {
         return Some(file);
     }
     None
 }
 
-/// Generates a thumbnail for `source_path` and writes it to the thumbnail cache.
+/// Checks if a cached thumbnail already exists and is valid on disk.
+#[must_use]
+pub fn lookup_cached(uri: &str, mtime_secs: i64) -> Option<PathBuf> {
+    lookup_cached_in(&thumbnail_cache_dir(), uri, mtime_secs)
+}
+
+/// Generates a thumbnail for `source_path` and writes it to `cache_dir`.
 /// Returns the path to the generated thumbnail on success.
-pub fn generate_thumbnail(
+pub fn generate_thumbnail_in(
+    cache_dir: &Path,
     source_path: &Path,
     uri: &str,
     mtime_secs: i64,
@@ -114,17 +115,18 @@ pub fn generate_thumbnail(
         return Err(format!("source file does not exist: {}", source_path.display()));
     }
 
-    let cache_dir = thumbnail_cache_dir();
-    if let Err(e) = std::fs::create_dir_all(&cache_dir) {
+    if let Err(e) = std::fs::create_dir_all(cache_dir) {
         return Err(format!("failed to create thumbnail dir {}: {e}", cache_dir.display()));
     }
 
     let target_file = cache_dir.join(cache_filename(uri, mtime_secs));
-    if target_file.is_file() {
+    if target_file.is_file() && target_file.metadata().map(|m| m.len() > 0).unwrap_or(false) {
         return Ok(target_file);
     }
+    let _ = std::fs::remove_file(&target_file);
 
-    let temp_target = target_file.with_extension(format!("tmp-{}", std::process::id()));
+    let stem = target_file.file_stem().and_then(|s| s.to_str()).unwrap_or("thumb");
+    let temp_target = cache_dir.join(format!("{stem}.tmp-{}.png", std::process::id()));
 
     let ext = source_path
         .extension()
@@ -154,6 +156,17 @@ pub fn generate_thumbnail(
     }
 }
 
+/// Generates a thumbnail for `source_path` and writes it to the thumbnail cache.
+/// Returns the path to the generated thumbnail on success.
+pub fn generate_thumbnail(
+    source_path: &Path,
+    uri: &str,
+    mtime_secs: i64,
+    is_video: bool,
+) -> Result<PathBuf, String> {
+    generate_thumbnail_in(&thumbnail_cache_dir(), source_path, uri, mtime_secs, is_video)
+}
+
 fn generate_image_thumbnail(source: &Path, target: &Path) -> Result<(), String> {
     // Primary path: fast in-process image crate
     match image::open(source) {
@@ -164,10 +177,14 @@ fn generate_image_thumbnail(source: &Path, target: &Path) -> Result<(), String> 
                 .map_err(|e| format!("failed to save thumbnail {}: {e}", target.display()))
         }
         Err(err) => {
+            let target_str = target.to_str().unwrap_or("");
+            let target_png = format!("png:{target_str}");
             // Fallback to ImageMagick if installed
             if let Ok(status) = Command::new("magick")
                 .arg(source)
-                .args(["-resize", "256x256", target.to_str().unwrap_or("")])
+                .args(["-resize", "256x256", &target_png])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
                 .status()
                 && status.success()
                 && target.exists()
@@ -176,7 +193,9 @@ fn generate_image_thumbnail(source: &Path, target: &Path) -> Result<(), String> 
             }
             if let Ok(status) = Command::new("convert")
                 .arg(source)
-                .args(["-resize", "256x256", target.to_str().unwrap_or("")])
+                .args(["-resize", "256x256", &target_png])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
                 .status()
                 && status.success()
                 && target.exists()
@@ -190,9 +209,12 @@ fn generate_image_thumbnail(source: &Path, target: &Path) -> Result<(), String> 
 
 fn generate_svg_thumbnail(source: &Path, target: &Path) -> Result<(), String> {
     let target_str = target.to_str().unwrap_or("");
+    let target_png = format!("png:{target_str}");
     if let Ok(status) = Command::new("magick")
         .arg(source)
-        .args(["-background", "none", "-resize", "256x256", target_str])
+        .args(["-background", "none", "-resize", "256x256", &target_png])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .status()
         && status.success()
         && target.exists()
@@ -201,7 +223,9 @@ fn generate_svg_thumbnail(source: &Path, target: &Path) -> Result<(), String> {
     }
     if let Ok(status) = Command::new("convert")
         .arg(source)
-        .args(["-background", "none", "-resize", "256x256", target_str])
+        .args(["-background", "none", "-resize", "256x256", &target_png])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .status()
         && status.success()
         && target.exists()
@@ -212,7 +236,21 @@ fn generate_svg_thumbnail(source: &Path, target: &Path) -> Result<(), String> {
     if let Ok(status) = Command::new("ffmpeg")
         .args(["-y", "-i"])
         .arg(source)
-        .args(["-vf", "scale=256:256:force_original_aspect_ratio=decrease", "-frames:v", "1", "-update", "1", target_str])
+        .args([
+            "-vf",
+            "scale=256:256:force_original_aspect_ratio=decrease",
+            "-frames:v",
+            "1",
+            "-update",
+            "1",
+            "-f",
+            "image2",
+            "-c:v",
+            "png",
+            target_str,
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .status()
         && status.success()
         && target.exists()
@@ -238,15 +276,19 @@ fn generate_video_thumbnail(source: &Path, target: &Path) -> Result<(), String> 
         .arg("-o")
         .arg(target)
         .args(["-s", "256", "-t", "10%"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .status()
         && status.success()
-        && target.exists()
+        && target.is_file()
+        && target.metadata().map(|m| m.len() > 0).unwrap_or(false)
     {
         return Ok(());
     }
+    let _ = std::fs::remove_file(target);
 
-    // Robust ffmpeg fallback
-    let status = Command::new("ffmpeg")
+    // Robust ffmpeg thumbnail extraction using the thumbnail filter
+    if let Ok(status) = Command::new("ffmpeg")
         .args(["-y", "-i"])
         .arg(source)
         .args([
@@ -258,14 +300,42 @@ fn generate_video_thumbnail(source: &Path, target: &Path) -> Result<(), String> 
             "1",
             target_str,
         ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .status()
-        .map_err(|e| format!("failed to spawn ffmpeg: {e}"))?;
-
-    if status.success() && target.exists() {
-        Ok(())
-    } else {
-        Err("ffmpeg video frame extraction failed".to_string())
+        && status.success()
+        && target.is_file()
+        && target.metadata().map(|m| m.len() > 0).unwrap_or(false)
+    {
+        return Ok(());
     }
+    let _ = std::fs::remove_file(target);
+
+    // Single-frame seek fallback if thumbnail filter found no candidate
+    if let Ok(status) = Command::new("ffmpeg")
+        .args(["-y", "-i"])
+        .arg(source)
+        .args([
+            "-vf",
+            "scale=256:256:force_original_aspect_ratio=decrease",
+            "-frames:v",
+            "1",
+            "-update",
+            "1",
+            target_str,
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        && status.success()
+        && target.is_file()
+        && target.metadata().map(|m| m.len() > 0).unwrap_or(false)
+    {
+        return Ok(());
+    }
+    let _ = std::fs::remove_file(target);
+
+    Err("ffmpeg video frame extraction failed".to_string())
 }
 
 #[cfg(test)]
@@ -289,9 +359,9 @@ mod tests {
 
     #[test]
     fn test_image_thumbnail_generation() {
-        set_test_mode(true);
         let sandbox = std::env::temp_dir().join("gungnir-test-sandbox").join("img_test");
         let _ = fs::create_dir_all(&sandbox);
+        let cache_dir = sandbox.join("cache");
 
         let img_path = sandbox.join("sample.png");
         // Create a 16x16 red PNG
@@ -299,18 +369,52 @@ mod tests {
         img.save(&img_path).unwrap_or_else(|e| panic!("{e}"));
 
         let uri = "file:///tmp/sample.png";
-        let res = generate_thumbnail(&img_path, uri, 12345, false);
+        let res = generate_thumbnail_in(&cache_dir, &img_path, uri, 12345, false);
         assert!(res.is_ok(), "thumbnail generation must succeed");
 
         let thumb = res.unwrap_or_else(|e| panic!("{e}"));
         assert!(thumb.is_file(), "thumbnail file must exist");
 
-        let cached = lookup_cached(uri, 12345);
-        assert_eq!(cached, Some(thumb));
+        let cached = lookup_cached_in(&cache_dir, uri, 12345);
+        assert_eq!(cached, Some(thumb.clone()));
+
+        let slint_img = slint::Image::load_from_path(&thumb);
+        assert!(slint_img.is_ok(), "slint must be able to load generated thumbnail: {:?}", slint_img.err());
 
         // Cleanup
         let _ = fs::remove_dir_all(&sandbox);
-        let _ = fs::remove_dir_all(thumbnail_cache_dir());
-        set_test_mode(false);
+    }
+
+    #[test]
+    fn test_video_thumbnail_generation() {
+        let sandbox = std::env::temp_dir().join("gungnir-test-sandbox").join("vid_test");
+        let _ = fs::create_dir_all(&sandbox);
+        let cache_dir = sandbox.join("cache");
+
+        let vid_path = sandbox.join("sample.mp4");
+        // Create a 1-second synthetic MP4 using ffmpeg
+        let status = Command::new("ffmpeg")
+            .args(["-y", "-f", "lavfi", "-i", "testsrc=duration=1:size=320x240:rate=1"])
+            .arg(&vid_path)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+
+        if let Ok(st) = status
+            && st.success()
+            && vid_path.is_file()
+        {
+            let uri = "file:///tmp/sample.mp4";
+            let res = generate_thumbnail_in(&cache_dir, &vid_path, uri, 54321, true);
+            assert!(res.is_ok(), "video thumbnail generation must succeed: {:?}", res.err());
+
+            let thumb = res.unwrap_or_else(|e| panic!("{e}"));
+            assert!(thumb.is_file(), "thumbnail file must exist");
+
+            let slint_img = slint::Image::load_from_path(&thumb);
+            assert!(slint_img.is_ok(), "slint must be able to load video thumbnail: {:?}", slint_img.err());
+        }
+
+        let _ = fs::remove_dir_all(&sandbox);
     }
 }

@@ -163,6 +163,7 @@ export component Pane inherits Rectangle {
         { name: "demo_video.mkv", size-text: "4.3 GB", type-text: "Matroska video", modified-text: "2026-10-23 23:59", perms-text: "-rw-r--r--", status-text: "cached", status: 3, icon: 4, is-dir: false, hidden: false, selected: false },
         { name: ".mixrc", size-text: "312 bytes", type-text: "File", modified-text: "2026-09-30 12:00", perms-text: "-rw-------", status-text: "", status: 0, icon: 1, is-dir: false, hidden: true, selected: false },
     ];
+    in-out property <int> thumbnail-rev: 0;
 
     callback row-clicked(index: int, ctrl: bool, shift: bool);
     callback row-activated(index: int);
@@ -406,15 +407,18 @@ export component Pane inherits Rectangle {
                                 horizontal-stretch: 1;
                                 spacing: 8px;
                                 padding-right: 8px;
-                                if f.has-thumbnail: Image {
+                                Image {
+                                    visible: f.has-thumbnail;
                                     y: (parent.height - self.height) / 2;
-                                    width: 18px;
+                                    width: f.has-thumbnail ? 18px : 0px;
                                     height: 18px;
                                     source: f.thumbnail;
                                     image-fit: contain;
                                 }
-                                if !f.has-thumbnail: FileIcon {
+                                FileIcon {
+                                    visible: !f.has-thumbnail;
                                     y: (parent.height - self.height) / 2;
+                                    width: !f.has-thumbnail ? 16px : 0px;
                                     category: f.icon;
                                 }
                                 if idx != root.renaming-index: Text {
@@ -507,11 +511,13 @@ export component Pane inherits Rectangle {
                 // Grid view: virtualized rows of `grid-cols` cells.
                 grid := ListView {
                     visible: root.view-mode == 2;
+                    property <int> rev: root.thumbnail-rev;
                     for r in (root.view-mode == 2 ? ceil(root.files.length / root.grid-cols) : 0): HorizontalLayout {
                         height: root.grid-cell-h;
                         padding-left: 6px;
                         spacing: 0px;
                         for c in root.grid-cols: cell := Rectangle {
+                            property <int> rev: root.thumbnail-rev;
                             property <int> idx: r * root.grid-cols + c;
                             property <FileRow> f: root.files[cell.idx];
                             width: 108px;
@@ -547,13 +553,17 @@ export component Pane inherits Rectangle {
                                     alignment: start;
                                     HorizontalLayout {
                                         alignment: center;
-                                        if cell.f.has-thumbnail: Image {
-                                            width: 48px;
-                                            height: 48px;
+                                        Image {
+                                            visible: cell.f.has-thumbnail;
+                                            width: cell.f.has-thumbnail ? 48px : 0px;
+                                            height: cell.f.has-thumbnail ? 48px : 0px;
                                             source: cell.f.thumbnail;
                                             image-fit: contain;
                                         }
-                                        if !cell.f.has-thumbnail: FileIcon {
+                                        FileIcon {
+                                            visible: !cell.f.has-thumbnail;
+                                            width: !cell.f.has-thumbnail ? 40px : 0px;
+                                            height: !cell.f.has-thumbnail ? 40px : 0px;
                                             category: cell.f.icon;
                                             large: true;
                                         }

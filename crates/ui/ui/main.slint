@@ -90,6 +90,8 @@ export component AppWindow inherits Window {
         { name: "README.md", size-text: "4.8 kB", type-text: "Markdown", modified-text: "2026-10-01 10:00", perms-text: "-rw-r--r--", status-text: "conflict", status: 5, icon: 6, is-dir: false, hidden: false, selected: false, thumbnail: @image-url(""), has-thumbnail: false },
         { name: "yggdrasil.svg", size-text: "88.1 kB", type-text: "SVG image", modified-text: "2026-06-21 12:00", perms-text: "-rw-r--r--", status-text: "syncing", status: 2, icon: 2, is-dir: false, hidden: false, selected: false, thumbnail: @image-url(""), has-thumbnail: false },
     ];
+    in-out property <int> left-thumbnail-rev: 0;
+    in-out property <int> right-thumbnail-rev: 0;
     in-out property <[PlaceItem]> places: [
         { label: "Home", uri: "/home/user", icon: 0, active: false },
         { label: "Desktop", uri: "/home/user/Desktop", icon: 1, active: false },
@@ -445,6 +447,7 @@ export component AppWindow inherits Window {
                         view-mode: root.view-mode;
                         info: root.left;
                         files: root.left-files;
+                        thumbnail-rev: root.left-thumbnail-rev;
                         custom-actions: root.left-custom-actions;
                         custom-action(id) => { root.custom-action(0, id); }
                         renaming-index: root.renaming-pane == 0 ? root.renaming-index : -1;
@@ -477,6 +480,7 @@ export component AppWindow inherits Window {
                         view-mode: root.view-mode;
                         info: root.right;
                         files: root.right-files;
+                        thumbnail-rev: root.right-thumbnail-rev;
                         custom-actions: root.right-custom-actions;
                         custom-action(id) => { root.custom-action(1, id); }
                         renaming-index: root.renaming-pane == 1 ? root.renaming-index : -1;
