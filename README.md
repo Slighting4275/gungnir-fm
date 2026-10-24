@@ -154,6 +154,14 @@ Gungnir FM is built to run natively across all 24 Linux and BSD init systems and
 - **Transactional Multi-File Batch Renamer (`F2` with 2+ files selected)**: Live preview table displaying Old Name → Proposed Name. Supports Find & Replace, prefix/suffix insertion, and sequential numbering patterns (`#`). Features collision pre-check and transactional execution.
 - **Dual-Pane Directory Comparison & Sync Engine (`Ctrl+Shift+D`)**: Compares files between Left and Right panes, categorizing items into Unique to Left, Unique to Right, Newer/Modified, and Identical. Provides one-click bidirectional synchronization (`Sync Left → Right` and `Sync Right → Left`).
 
+### 🗑️ FreeDesktop.org Trash (1.0) & Recent Items Integration
+- **Full Spec-Compliant Trash Support (`trash:///`)**: Direct navigation to and browsing of `$XDG_DATA_HOME/Trash/files` via canonical `trash:///` URI.
+- **Transactional Restoration**: Right-click or menu "Restore from Trash" decodes original paths from `.trashinfo`, creates any missing parent directories, atomically restores items via non-replacing rename, and purges metadata files.
+- **One-Click Empty Trash**: Instant purging of trash files and matching `.trashinfo` metadata records.
+- **Permanent Deletion Cleanliness**: Unlinking files directly inside the trash automatically cleans up the corresponding `.trashinfo` record.
+- **Sidebar Places & Breadcrumbs**: Native "Trash" entry in sidebar places with custom icon and dynamic active tracking.
+- **Recent Items Support (`recent:///`)**: Canonical scheme handling for recent files.
+
 ### 🔒 File Hashing & Interactive Checksum Verification
 - **Streaming Multi-Hash Engine**: Computes MD5, SHA-1, SHA-256, and SHA-512 concurrently in a single streaming pass over 64 KB buffers without loading entire files into memory.
 - **Interactive Checksum Dialog**: Right-click any file → **"Check File Hash…"** displays all computed digests with an interactive input field. Pasting an expected hash provides immediate visual verification (green on match, red on mismatch).
@@ -186,8 +194,10 @@ Gungnir FM is built to run natively across all 24 Linux and BSD init systems and
 - **Drag-and-Drop & Clipboard**: Seamless drag-and-drop between panes and tabs, plus standard cut/copy/paste (`Ctrl+X`, `Ctrl+C`, `Ctrl+V`).
 
 ### 🔱 Gungnir VFS Companion
-- **Native `gungnir://` Protocol**: Connects to the local `gungnird` daemon via a zero-copy shared-memory ring buffer (protocol v2).
-- **Live Metadata**: Real-time `metadata::*` xattr tags, cluster node routing, and mount-health fail-fast monitoring.
+- **Native `gungnir://` Protocol**: Connects directly to the local `gungnird` daemon via a zero-copy shared-memory ring buffer (protocol v2: 32 slots × 4096B, futex signaling).
+- **Asynchronous File Operations Engine**: Offloads copy, move, delete, and fsync directly into `gungnird`'s `io_uring` engine with progress updates and instant cancellation.
+- **Mount Health Monitoring & Fail-Fast Protection**: Refuses hung or stalled network/FUSE paths at submission without blocking UI threads.
+- **Persistent Inode-Resilient Metadata**: Real-time `metadata::*` xattr tags, birth-time (`btime`) staleness tracking, and SQLite WAL storage.
 - **Mock Mode**: Built-in mock provider for headless development and testing without a live daemon.
 
 ---
