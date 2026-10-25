@@ -74,7 +74,27 @@ sudo emerge --ask dev-lang/rust dev-vcs/git app-arch/libarchive app-arch/zstd de
 nix-shell -p rustc cargo git libarchive zstd libzip fontconfig libxkbcommon wayland xorg.libX11 sqlite pkg-config
 ```
 
-#### 2. Build and Install with `make` (Makefile)
+#### 2. Build & Install Options
+
+You can build and install Gungnir FM using standard `cargo`, GNU `make`, or the automated local installer script:
+
+##### **Option A: Direct Build with Cargo (Standard Rust Workflow)**
+```sh
+# Clone the repository
+git clone https://gitlab.com/exalted6165/gungnir-fm.git
+cd gungnir-fm
+
+# Build the optimized release binary
+cargo build --release
+
+# Run directly
+cargo run --release
+
+# Or execute the compiled binary directly:
+./target/release/gungnir-fm
+```
+
+##### **Option B: Build and Install with `make` (Makefile)**
 
 A standard, comprehensive GNU `Makefile` is provided for traditional UNIX build environments and package maintainers:
 
@@ -99,7 +119,7 @@ sudo make install PREFIX=/usr
 make install DESTDIR=/path/to/staging PREFIX=/usr
 ```
 
-##### Makefile Targets
+###### Makefile Targets
 
 | Target | Description |
 | --- | --- |
@@ -121,9 +141,7 @@ make install DESTDIR=/path/to/staging PREFIX=/usr
 | `make distclean` | Deep clean removing `target/` and `.build/` directories |
 | `make help` | Display built-in target and configuration variable help |
 
----
-
-#### 3. Clone and Install Locally via Helper Script (No Root Required)
+##### **Option C: Automated Local Installer Script (No Root Required)**
 ```sh
 git clone https://gitlab.com/exalted6165/gungnir-fm.git
 cd gungnir-fm
