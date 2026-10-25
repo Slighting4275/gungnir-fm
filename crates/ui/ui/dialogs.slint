@@ -23,6 +23,7 @@ export enum DialogKind {
     search,
     batch-rename,
     compare-panes,
+    compress,
 }
 
 component DialogButton inherits Rectangle {
@@ -89,7 +90,7 @@ export component DialogOverlay inherits Rectangle {
     }
 
     card := Rectangle {
-        width: min(parent.width - 48px, root.kind == DialogKind.preview || root.kind == DialogKind.conflict || root.kind == DialogKind.search || root.kind == DialogKind.batch-rename || root.kind == DialogKind.compare-panes ? 720px : root.kind == DialogKind.properties || root.kind == DialogKind.inspect || root.kind == DialogKind.hash ? 640px : 440px);
+        width: min(parent.width - 48px, root.kind == DialogKind.preview || root.kind == DialogKind.conflict || root.kind == DialogKind.search || root.kind == DialogKind.batch-rename || root.kind == DialogKind.compare-panes || root.kind == DialogKind.compress ? 720px : root.kind == DialogKind.properties || root.kind == DialogKind.inspect || root.kind == DialogKind.hash ? 640px : 440px);
         height: layout.preferred-height;
         x: (parent.width - self.width) / 2;
         y: max(24px, (parent.height - self.height) / 2.4);
@@ -108,7 +109,7 @@ export component DialogOverlay inherits Rectangle {
                 spacing: 10px;
                 Glyph {
                     y: (parent.height - self.height) / 2;
-                    name: root.kind == DialogKind.hash ? "edit" : root.kind == DialogKind.connect-server ? "desktop" : root.kind == DialogKind.preview ? "image" : root.kind == DialogKind.inspect ? "spear" : root.kind == DialogKind.confirm-delete ? "trash" : root.kind == DialogKind.new-folder ? "folder" : root.kind == DialogKind.conflict ? "warning" : root.kind == DialogKind.search ? "search" : root.kind == DialogKind.batch-rename ? "edit" : root.kind == DialogKind.compare-panes ? "split" : "document";
+                    name: root.kind == DialogKind.hash ? "edit" : root.kind == DialogKind.connect-server ? "desktop" : root.kind == DialogKind.preview ? "image" : root.kind == DialogKind.inspect ? "spear" : root.kind == DialogKind.confirm-delete ? "trash" : root.kind == DialogKind.new-folder ? "folder" : root.kind == DialogKind.conflict ? "warning" : root.kind == DialogKind.search ? "search" : root.kind == DialogKind.batch-rename ? "edit" : root.kind == DialogKind.compare-panes ? "split" : root.kind == DialogKind.compress ? "download" : "document";
                     tint: root.kind == DialogKind.hash ? Theme.accent : root.kind == DialogKind.preview ? Theme.accent : root.kind == DialogKind.inspect ? Theme.gold : root.kind == DialogKind.error || root.kind == DialogKind.confirm-delete || root.kind == DialogKind.conflict ? Theme.bad : Theme.accent;
                 }
                 Text {
@@ -309,6 +310,122 @@ export component DialogOverlay inherits Rectangle {
                     }
                 }
             }
+            if root.kind == DialogKind.compress: VerticalLayout {
+                spacing: 12px;
+                VerticalLayout {
+                    spacing: 4px;
+                    Text {
+                        text: "Archive Name:";
+                        color: Theme.text;
+                        font-size: Theme.font-size-small;
+                        font-weight: 600;
+                    }
+                    LineEdit {
+                        height: 32px;
+                        text <=> root.input;
+                        placeholder-text: "archive.tar.zst";
+                        accepted(t) => { root.accept(t); }
+                    }
+                }
+                VerticalLayout {
+                    spacing: 6px;
+                    Text {
+                        text: "Lossless Format (Strict 100% Bit-Perfect):";
+                        color: Theme.text;
+                        font-size: Theme.font-size-small;
+                        font-weight: 600;
+                    }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        DialogButton {
+                            label: ".tar.zst (Zstandard)";
+                            primary: root.extra1 == "tar.zst" || root.extra1 == "";
+                            clicked => { root.extra1 = "tar.zst"; }
+                        }
+                        DialogButton {
+                            label: ".zip (Universal)";
+                            primary: root.extra1 == "zip";
+                            clicked => { root.extra1 = "zip"; }
+                        }
+                        DialogButton {
+                            label: ".tar.xz (LZMA2)";
+                            primary: root.extra1 == "tar.xz";
+                            clicked => { root.extra1 = "tar.xz"; }
+                        }
+                        DialogButton {
+                            label: ".7z (7-Zip)";
+                            primary: root.extra1 == "7z";
+                            clicked => { root.extra1 = "7z"; }
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        DialogButton {
+                            label: ".tar.gz (Gzip)";
+                            primary: root.extra1 == "tar.gz";
+                            clicked => { root.extra1 = "tar.gz"; }
+                        }
+                        DialogButton {
+                            label: ".tar.bz2 (Bzip2)";
+                            primary: root.extra1 == "tar.bz2";
+                            clicked => { root.extra1 = "tar.bz2"; }
+                        }
+                        DialogButton {
+                            label: ".tar.lz4 (Ultra-Fast)";
+                            primary: root.extra1 == "tar.lz4";
+                            clicked => { root.extra1 = "tar.lz4"; }
+                        }
+                        DialogButton {
+                            label: ".tar";
+                            primary: root.extra1 == "tar";
+                            clicked => { root.extra1 = "tar"; }
+                        }
+                    }
+                }
+                VerticalLayout {
+                    spacing: 6px;
+                    Text {
+                        text: "Compression Level:";
+                        color: Theme.text;
+                        font-size: Theme.font-size-small;
+                        font-weight: 600;
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        DialogButton {
+                            label: "Fast";
+                            primary: root.opt1;
+                            clicked => { root.opt1 = true; root.opt2 = false; }
+                        }
+                        DialogButton {
+                            label: "Normal (Default)";
+                            primary: !root.opt1 && !root.opt2;
+                            clicked => { root.opt1 = false; root.opt2 = false; }
+                        }
+                        DialogButton {
+                            label: "Maximum (Ultra)";
+                            primary: root.opt2;
+                            clicked => { root.opt1 = false; root.opt2 = true; }
+                        }
+                    }
+                }
+                VerticalLayout {
+                    spacing: 4px;
+                    Text {
+                        text: "Optional Encryption Password (AES-256 for 7z / ZIP):";
+                        color: Theme.text;
+                        font-size: Theme.font-size-small;
+                        font-weight: 600;
+                    }
+                    LineEdit {
+                        height: 32px;
+                        text <=> root.extra2;
+                        placeholder-text: "Leave blank for unencrypted archive";
+                        input-type: password;
+                        accepted(t) => { root.accept(root.input); }
+                    }
+                }
+            }
             if root.kind == DialogKind.choose || (root.kind == DialogKind.search && root.rows.length > 0): Rectangle {
                 height: min(400px, root.rows.length * 40px + 8px);
                 border-radius: Theme.radius;
@@ -426,7 +543,19 @@ export component DialogOverlay inherits Rectangle {
                         clicked => { root.cancel(); }
                     }
                 }
-                if root.kind != DialogKind.conflict && root.kind != DialogKind.search && root.kind != DialogKind.batch-rename && root.kind != DialogKind.compare-panes: HorizontalLayout {
+                if root.kind == DialogKind.compress: HorizontalLayout {
+                    spacing: 8px;
+                    DialogButton {
+                        label: "Cancel";
+                        clicked => { root.cancel(); }
+                    }
+                    DialogButton {
+                        label: "Compress";
+                        primary: true;
+                        clicked => { root.accept(root.input); }
+                    }
+                }
+                if root.kind != DialogKind.conflict && root.kind != DialogKind.search && root.kind != DialogKind.batch-rename && root.kind != DialogKind.compare-panes && root.kind != DialogKind.compress: HorizontalLayout {
                     spacing: 8px;
                     if root.kind == DialogKind.new-folder || root.kind == DialogKind.confirm-delete || root.kind == DialogKind.connect-server: DialogButton {
                         label: "Cancel";

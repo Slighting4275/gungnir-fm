@@ -334,6 +334,13 @@ export component Pane inherits Rectangle {
                     MenuItem { title: "Properties"; activated => { root.command("properties"); } }
                     MenuItem { title: "Check File Hash…"; activated => { root.command("check-hash"); } }
                     MenuItem { title: "Gungnir VFS Inspect"; activated => { root.command("inspect"); } }
+                    MenuSeparator { }
+                    MenuItem { title: "Compress…"; activated => { root.command("compress"); } }
+                    MenuItem { title: "Quick Compress to .tar.zst"; activated => { root.command("quick-compress-zst"); } }
+                    MenuItem { title: "Quick Compress to .zip"; activated => { root.command("quick-compress-zip"); } }
+                    MenuItem { title: "Extract Here"; activated => { root.command("extract-here"); } }
+                    MenuItem { title: "Extract to Subfolder…"; activated => { root.command("extract-to"); } }
+                    MenuItem { title: "Test Archive Integrity"; activated => { root.command("test-archive"); } }
                     if root.custom-actions.length > 0: MenuSeparator { }
                     for act in root.custom-actions: MenuItem {
                         title: act.title;

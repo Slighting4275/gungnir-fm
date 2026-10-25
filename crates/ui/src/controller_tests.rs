@@ -653,3 +653,69 @@ fn test_conflict_detection_and_resolution() {
 
     let _ = std::fs::remove_dir_all(&tmp);
 }
+
+#[test]
+fn test_lossless_compression_and_extraction_workflow() {
+    let pid = std::process::id();
+    let tmp = std::env::temp_dir().join(format!("gungnir_compress_test_{pid}"));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).unwrap_or_else(|e| panic!("{e}"));
+
+    let src_file = tmp.join("data_sample.txt");
+    std::fs::write(&src_file, b"Bit-perfect lossless verification string 1234567890").unwrap_or_else(|e| panic!("{e}"));
+
+    let h = start(tmp.to_str().unwrap_or(""), tmp.to_str().unwrap_or(""), MockConfig::default());
+    let _ = h.until(Duration::from_millis(2000), |u| matches!(u, Update::Status { .. }));
+
+    // Select all items in left pane
+    h.send(Command::Run("select-all".into()));
+    let _ = h.drain_for(Duration::from_millis(50));
+
+    // Run quick-compress-zst
+    h.send(Command::Run("quick-compress-zst".into()));
+
+    // Wait for the archive to be produced
+    // Wait for the quick-compress operation to complete and auto-select the archive
+    let _ = h.until(
+        Duration::from_millis(4000),
+        |u| matches!(u, Update::Status(s) if s.message.contains("Quick-compressed")),
+    );
+    let _ = h.until(
+        Duration::from_millis(3000),
+        |u| matches!(u, Update::Rows { pane: 0, rows } if rows.iter().any(|r| r.name == "data_sample.txt.tar.zst" && r.selected)),
+    );
+
+    // Test archive integrity
+    h.send(Command::Run("test-archive".into()));
+    let info = h.until(
+        Duration::from_millis(3000),
+        |u| matches!(u, Update::Dialog(d) if d.rows.iter().any(|(_, v)| v.contains("BIT-PERFECT"))),
+    );
+    assert!(!info.is_empty(), "test-archive should verify bit-perfect integrity");
+
+    // Close the info dialog
+    h.send(Command::DialogCancel);
+    let _ = h.drain_for(Duration::from_millis(50));
+
+    // Ensure archive is selected and extract to subfolder
+    h.send(Command::Run("extract-to".into()));
+
+    let extracted_file = tmp.join("data_sample").join("data_sample.txt");
+    let mut extracted = false;
+    for _ in 0..50 {
+        if extracted_file.exists() {
+            extracted = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(40));
+    }
+    assert!(extracted, "extract-to should extract into subfolder");
+
+    let extracted_content = std::fs::read(&extracted_file).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        extracted_content, b"Bit-perfect lossless verification string 1234567890",
+        "Extracted payload must be bit-perfect"
+    );
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}

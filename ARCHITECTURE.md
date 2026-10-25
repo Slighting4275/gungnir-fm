@@ -21,6 +21,8 @@ gungnir-fm/
 │   │       ├── sort.rs        natural, folders-first ordering (sort_order = index permutation)
 │   │       └── format.rs      sizes, ls-style modes, type labels, icon categories
 │   ├── backends/
+│   │   ├── build.rs           links native libarchive
+│   │   ├── src/archive.rs     lossless compression & extraction engine (3-tier hybrid pipeline)
 │   │   ├── src/local.rs       LocalPosixBackend (daily driver)
 │   │   ├── src/mock.rs        MockGungnirBackend (synthetic gungnir:// nodes, stress dirs)
 │   │   ├── src/remote.rs      RemoteVfsBackend (built-in sftp:// and smb://)
@@ -320,3 +322,27 @@ folders open is about 360 MB.
   is refused; the error suggests Shift+Delete.
 - **slint-lsp.** The Live-Preview data was verified with slint-viewer and the compiler,
   which use the same front end as slint-lsp, not inside an editor session.
+
+## Lossless compression architecture & C23 policy
+
+### Strict Architectural Rule
+Every format supported by Gungnir FM's archive engine is strictly 100% BIT-PERFECT LOSSLESS.
+Not a single byte, bit, frame, or audio sample of original data is ever degraded, quantized,
+or discarded. Original checksums (SHA-256 and BLAKE3) remain identical after decode.
+
+### 3-Tier Hybrid Pipeline
+- **Tier 1 (In-Process `libarchive` Core):** Direct dynamic linking to `/usr/lib/libarchive.so`.
+  Auto-detects format signatures via magic bytes. High-performance streaming reading and
+  writing of `.tar.zst`, `.zip`, `.tar.xz`, `.tar.gz`, `.tar.bz2`, `.tar.lz4`, and `.tar`
+  with zero temporary disk footprint.
+- **Tier 2 (In-Process Native Streaming Engines):** Dedicated single-file streaming
+  compressors and decompressors for `.zst`, `.xz`, `.gz`, `.bz2`, `.lz4`, and `.br`.
+- **Tier 3 (Asynchronous Background Worker Fallback):** Non-blocking subprocess execution
+  for solid multi-file 7-Zip (`7z`), proprietary unrar, and specialized domain media
+  transcoding (`ffmpeg` lossless FFV1, FLAC, WavPack, ALAC, JPEG XL modular mode).
+
+### C Standard Compliance Policy
+All C code written, generated, or compiled within the workspace strictly conforms to ISO/IEC 9899:2024
+(C23 standard), utilizing `-std=c23`. All compiler tools (GCC 16.2.1, Clang 23.1.1) enforce C23
+standards, guaranteeing memory safety, standard `nullptr`, modern type inference, and bit-level
+determinism.
