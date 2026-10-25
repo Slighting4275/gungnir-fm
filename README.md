@@ -74,7 +74,56 @@ sudo emerge --ask dev-lang/rust dev-vcs/git app-arch/libarchive app-arch/zstd de
 nix-shell -p rustc cargo git libarchive zstd libzip fontconfig libxkbcommon wayland xorg.libX11 sqlite pkg-config
 ```
 
-#### 2. Clone and Install Locally (No Root Required)
+#### 2. Build and Install with `make` (Makefile)
+
+A standard, comprehensive GNU `Makefile` is provided for traditional UNIX build environments and package maintainers:
+
+```sh
+# Clone repository
+git clone https://gitlab.com/exalted6165/gungnir-fm.git
+cd gungnir-fm
+
+# Build release binary (default target)
+make
+
+# Install locally for the current user (~/.local/bin, no sudo required)
+make install-user
+
+# Or install system-wide (/usr/local/bin, requires sudo)
+sudo make install
+
+# Or install with custom prefix (e.g. /usr)
+sudo make install PREFIX=/usr
+
+# For Linux distribution packaging (staged root directory)
+make install DESTDIR=/path/to/staging PREFIX=/usr
+```
+
+##### Makefile Targets
+
+| Target | Description |
+| --- | --- |
+| `make` / `make release` | Build optimized release binary (`target/release/gungnir-fm`) |
+| `make debug` | Build unoptimized debug binary with debuginfo |
+| `make test` | Run full unit and integration test suite across all workspace crates |
+| `make check` | Run fast `cargo check` across all workspace crates |
+| `make clippy` / `make lint` | Run Clippy linter with strict warning checks |
+| `make fmt` / `make fmt-check` | Format code or verify formatting compliance with `rustfmt` |
+| `make doc` | Generate workspace API documentation |
+| `make install` | Install binary, desktop entry, SVG icon, and AppStream metadata (respects `PREFIX` and `DESTDIR`) |
+| `make uninstall` | Cleanly remove installed files from `$(DESTDIR)$(PREFIX)` |
+| `make install-user` | Install for current user under `~/.local` (no root required) |
+| `make uninstall-user` | Remove user installation from `~/.local` |
+| `make appimage` | Package standalone portable AppImage |
+| `make flatpak` | Validate Flatpak manifest and AppStream metadata |
+| `make gungnird` | Build companion `gungnird` VFS daemon |
+| `make clean` | Remove Cargo build outputs and packaging temporary files |
+| `make distclean` | Deep clean removing `target/` and `.build/` directories |
+| `make help` | Display built-in target and configuration variable help |
+
+---
+
+#### 3. Clone and Install Locally via Helper Script (No Root Required)
 ```sh
 git clone https://gitlab.com/exalted6165/gungnir-fm.git
 cd gungnir-fm
@@ -555,6 +604,10 @@ Gungnir FM includes an enterprise-grade, multi-format lossless compression subsy
 ## Running Tests
 The workspace includes unit and integration tests across all crates (sandboxed and isolated, with zero personal data access):
 ```sh
+# Via Makefile:
+make test
+
+# Or directly with Cargo:
 cargo test --workspace
 cargo clippy --workspace --all-targets
 ```
