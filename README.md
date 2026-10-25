@@ -1,7 +1,7 @@
 # Gungnir FM
 
 A fast dual-pane Linux file manager written in Rust with [Slint](https://slint.dev).
-It combines Nemo's layout and keyboard ergonomics with sub-millisecond responsiveness, a modern dark theme, and an architecture where the UI thread never touches disk or blocking I/O. It serves as the companion GUI for [Gungnir VFS](https://gitlab.com/exalted6165/gungnir-vfs).
+It combines Nemo's layout and keyboard ergonomics with sub-millisecond responsiveness, adaptive dark and light themes with an interactive toolbar toggle, and an architecture where the UI thread never touches disk or blocking I/O. It serves as the companion GUI for [Gungnir VFS](https://gitlab.com/exalted6165/gungnir-vfs).
 
 Source repository & issue tracker: [https://gitlab.com/exalted6165/gungnir-fm](https://gitlab.com/exalted6165/gungnir-fm).
 
@@ -487,13 +487,19 @@ Gungnir FM includes an enterprise-grade, multi-format lossless compression subsy
 ### 💾 Crash-Resilient Session Persistence & Recovery
 - **Automatic State Saving**: Debounced auto-save (500 ms) to `~/.config/gungnir-fm/session.json`.
 - **Atomic Writes**: Writes to temporary files and atomically renames to prevent corruption during unexpected shutdowns or crashes.
-- **Persisted State**: Window size and maximized state, active pane, split view toggle, open tabs per pane, preview zoom level, hidden file visibility (`Ctrl+H`), and sidebar state (`F9`).
+- **Persisted State**: Window size and maximized state, dark/light theme mode, active pane, split view toggle, open tabs per pane, preview zoom level, hidden file visibility (`Ctrl+H`), and sidebar state (`F9`).
 - **Safe Recovery**: Automatically restores open tabs and paths on restart, safely falling back to the user's home directory if any saved path is unmounted or inaccessible.
 
 ### 🔌 Removable Drives & Desktop Integration
 - **Removable Media**: D-Bus and `udisks2` integration displaying removable storage drives, partitions, and mount states in the sidebar.
 - **"Open With…" Chooser**: Freedesktop `.desktop` parser ranking default handlers, explicit associations, and parent MIME handlers.
-- **Drag-and-Drop & Clipboard**: Seamless drag-and-drop between panes and tabs, plus standard cut/copy/paste (`Ctrl+X`, `Ctrl+C`, `Ctrl+V`).
+- **Drag-and-Drop & Clipboard**: Seamless drag-and-drop between panes and tabs, native OS-level drag-and-drop into external terminal emulators and desktop apps with POSIX shell escaping, plus standard cut/copy/paste (`Ctrl+X`, `Ctrl+C`, `Ctrl+V`).
+
+### 🎨 Adaptive Themes & Dark / Light Mode
+- **Dual Visual Modes**: Instant switching between an eye-friendly dark mode and a tailored, soft light mode.
+- **Interactive Toolbar Icon**: Animated full moon icon in the upper-right toolbar reflects the active state and toggles modes on click.
+- **Keyboard & Menu Control**: Toggle instantly with `Ctrl+Shift+T` or through the *View* menu.
+- **Session Persistence**: Color scheme selection persists across restarts in `~/.config/gungnir-fm/session.json`.
 
 ### 🔱 Gungnir VFS Companion
 - **Native `gungnir://` Protocol**: Connects directly to the local `gungnird` daemon via a zero-copy shared-memory ring buffer (protocol v2: 32 slots × 4096B, futex signaling).
@@ -512,6 +518,7 @@ Gungnir FM includes an enterprise-grade, multi-format lossless compression subsy
 | `F4` | Toggle embedded interactive terminal drawer |
 | `Ctrl+Shift+F` | Deep recursive search & content grep |
 | `Ctrl+Shift+D` | Dual-pane directory comparison & sync |
+| `Ctrl+Shift+T` | Toggle dark / light mode |
 | `F9` | Toggle sidebar (Places, Gungnir, Tree, Devices) |
 | `Ctrl+T` | Open new tab in current directory |
 | `Ctrl+W` | Close active tab (collapses secondary pane if last tab) |
