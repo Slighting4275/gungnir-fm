@@ -38,6 +38,17 @@
   </provides>
 
   <releases>
+    <release version="0.1.2" date="2026-10-24">
+      <description>
+        <p>Nemo-style Properties dialog, XDG default application assignment, and external drag-and-drop integration.</p>
+        <ul>
+          <li>Added Nemo-style three-tab Properties dialog (Basic, Permissions, and Open With)</li>
+          <li>Implemented default application management writing to XDG mimeapps.list specifications</li>
+          <li>Added support for custom executable commands and system default reset</li>
+          <li>Enabled direct drag-and-drop of file paths to terminal emulators and external applications</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.1" date="2026-10-24">
       <description>
         <p>Security hardening, CLI switch sanitization, permission isolation, and desktop launch optimizations.</p>
