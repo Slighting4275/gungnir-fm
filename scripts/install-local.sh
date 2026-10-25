@@ -58,14 +58,37 @@ Type=Application
 Name=Gungnir FM
 GenericName=File Manager
 Comment=Fast dual-pane file manager (Gungnir VFS companion)
-Exec=env GIO_EXTRA_MODULES=$HOME/.local/lib/gio/modules GIO_USE_VFS=gungnir GUNGNIR_FM_BACKEND=live-or-off $bin %f
+Exec=env GIO_EXTRA_MODULES=$HOME/.local/lib/gio/modules GIO_USE_VFS=gungnir GUNGNIR_FM_BACKEND=live-or-off $bin %U
 Icon=gungnir-fm
 Terminal=false
 Categories=System;FileTools;FileManager;
-Keywords=files;folders;browser;explorer;gungnir;
+Keywords=files;folders;browser;explorer;gungnir;vfs;manager;filesystem;
+MimeType=inode/directory;application/x-gnome-saved-search;x-scheme-handler/trash;x-scheme-handler/file;
 StartupNotify=false
 StartupWMClass=gungnir-fm
+Actions=open-home;open-trash;NewWindow;
+
+[Desktop Action NewWindow]
+Name=New Window
+Exec=$bin
+
+[Desktop Action open-home]
+Name=Home
+Exec=$bin
+
+[Desktop Action open-trash]
+Name=Trash
+Exec=$bin trash:///
 DESKTOP
+
+if command -v xdg-mime >/dev/null 2>&1; then
+    xdg-mime default gungnir-fm.desktop inode/directory
+    xdg-mime default gungnir-fm.desktop x-scheme-handler/trash
+fi
+if command -v gio >/dev/null 2>&1; then
+    gio mime inode/directory gungnir-fm.desktop 2>/dev/null || true
+    gio mime x-scheme-handler/trash gungnir-fm.desktop 2>/dev/null || true
+fi
 
 if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database "$HOME/.local/share/applications" 2>/dev/null || true
