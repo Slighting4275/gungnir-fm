@@ -202,6 +202,7 @@ pub enum Event {
         success: bool,
         message: String,
     },
+    CustomAppSelected(String),
     Tick,
 }
 
@@ -371,6 +372,15 @@ enum PendingDialog {
         files: Vec<PathBuf>,
         apps: Vec<crate::desktop::App>,
     },
+    Properties {
+        pane: usize,
+        target_name: String,
+        local_path: Option<PathBuf>,
+        mime: String,
+        mime_desc: String,
+        current_tab: i32,
+        selected_app_id: Option<String>,
+    },
     Info,
     Conflict {
         kind: TransferKind,
@@ -397,6 +407,191 @@ enum PendingDialog {
         targets: Vec<PathBuf>,
         base_dir: PathBuf,
     },
+}
+
+fn app_icon_glyph(app: &crate::desktop::App) -> &'static str {
+    let text = format!("{} {} {}", app.id, app.name, app.exec).to_lowercase();
+    if text.contains("player") || text.contains("video") || text.contains("mpv") || text.contains("vlc") {
+        "play"
+    } else if text.contains("audio") || text.contains("music") || text.contains("sound") {
+        "music"
+    } else if text.contains("image") || text.contains("photo") || text.contains("viewer") || text.contains("gimp") {
+        "image"
+    } else if text.contains("edit") || text.contains("text") || text.contains("code") || text.contains("write") {
+        "edit"
+    } else {
+        "desktop"
+    }
+}
+
+fn build_open_with_items(
+    idx: &crate::desktop::DesktopIndex,
+    mime: &str,
+) -> (Vec<crate::OpenWithAppItem>, Option<String>, i32) {
+    let mut items = Vec::new();
+    let mut selected_id = None;
+    let mut selected_index = -1;
+
+    let def_app = idx.default_app_for(mime);
+    let rec_apps = idx.recommended_apps_for(mime);
+    let other_apps = idx.other_apps_for(mime);
+
+    if let Some(def) = def_app {
+        items.push(crate::OpenWithAppItem {
+            id: String::new().into(),
+            name: "Default Application".into(),
+            exec: String::new().into(),
+            icon: String::new().into(),
+            is_default: false,
+            is_recommended: false,
+            is_header: true,
+        });
+        items.push(crate::OpenWithAppItem {
+            id: def.id.clone().into(),
+            name: def.name.clone().into(),
+            exec: def.exec.clone().into(),
+            icon: app_icon_glyph(def).into(),
+            is_default: true,
+            is_recommended: true,
+            is_header: false,
+        });
+        selected_id = Some(def.id.clone());
+        selected_index = 1;
+    }
+
+    if !rec_apps.is_empty() {
+        items.push(crate::OpenWithAppItem {
+            id: String::new().into(),
+            name: "Recommended Applications".into(),
+            exec: String::new().into(),
+            icon: String::new().into(),
+            is_default: false,
+            is_recommended: false,
+            is_header: true,
+        });
+        for app in rec_apps {
+            let idx_pos = items.len() as i32;
+            if selected_id.is_none() {
+                selected_id = Some(app.id.clone());
+                selected_index = idx_pos;
+            }
+            items.push(crate::OpenWithAppItem {
+                id: app.id.clone().into(),
+                name: app.name.clone().into(),
+                exec: app.exec.clone().into(),
+                icon: app_icon_glyph(app).into(),
+                is_default: false,
+                is_recommended: true,
+                is_header: false,
+            });
+        }
+    }
+
+    if !other_apps.is_empty() {
+        items.push(crate::OpenWithAppItem {
+            id: String::new().into(),
+            name: "Other Applications".into(),
+            exec: String::new().into(),
+            icon: String::new().into(),
+            is_default: false,
+            is_recommended: false,
+            is_header: true,
+        });
+        for app in other_apps {
+            let idx_pos = items.len() as i32;
+            if selected_id.is_none() {
+                selected_id = Some(app.id.clone());
+                selected_index = idx_pos;
+            }
+            items.push(crate::OpenWithAppItem {
+                id: app.id.clone().into(),
+                name: app.name.clone().into(),
+                exec: app.exec.clone().into(),
+                icon: app_icon_glyph(app).into(),
+                is_default: false,
+                is_recommended: false,
+                is_header: false,
+            });
+        }
+    }
+
+    (items, selected_id, selected_index)
+}
+
+fn format_perm_bits(bits: u32) -> &'static str {
+    match (bits & 4 != 0, bits & 2 != 0) {
+        (true, true) => "Read and write",
+        (true, false) => "Read-only",
+        (false, true) => "Write-only",
+        (false, false) => "None",
+    }
+}
+
+#[cfg(unix)]
+fn get_user_and_group(path: &Path) -> (String, String) {
+    use std::os::unix::fs::MetadataExt;
+    if let Ok(m) = std::fs::metadata(path) {
+        let uid = m.uid();
+        let gid = m.gid();
+        let user = get_pw_name(uid).unwrap_or_else(|| uid.to_string());
+        let group = get_gr_name(gid).unwrap_or_else(|| gid.to_string());
+        (user, group)
+    } else {
+        ("Owner".to_string(), "Group".to_string())
+    }
+}
+
+#[cfg(not(unix))]
+fn get_user_and_group(_path: &Path) -> (String, String) {
+    ("Owner".to_string(), "Group".to_string())
+}
+
+#[cfg(unix)]
+fn get_pw_name(uid: u32) -> Option<String> {
+    let mut pwd = std::mem::MaybeUninit::<libc::passwd>::uninit();
+    let mut buf = vec![0u8; 1024];
+    let mut result = std::ptr::null_mut();
+    let res = unsafe {
+        libc::getpwuid_r(
+            uid,
+            pwd.as_mut_ptr(),
+            buf.as_mut_ptr() as *mut libc::c_char,
+            buf.len(),
+            &mut result,
+        )
+    };
+    if res == 0 && !result.is_null() {
+        let name_ptr = unsafe { (*result).pw_name };
+        if !name_ptr.is_null() {
+            let cstr = unsafe { std::ffi::CStr::from_ptr(name_ptr) };
+            return Some(cstr.to_string_lossy().into_owned());
+        }
+    }
+    None
+}
+
+#[cfg(unix)]
+fn get_gr_name(gid: u32) -> Option<String> {
+    let mut grp = std::mem::MaybeUninit::<libc::group>::uninit();
+    let mut buf = vec![0u8; 1024];
+    let mut result = std::ptr::null_mut();
+    let res = unsafe {
+        libc::getgrgid_r(
+            gid,
+            grp.as_mut_ptr(),
+            buf.as_mut_ptr() as *mut libc::c_char,
+            buf.len(),
+            &mut result,
+        )
+    };
+    if res == 0 && !result.is_null() {
+        let name_ptr = unsafe { (*result).gr_name };
+        if !name_ptr.is_null() {
+            let cstr = unsafe { std::ffi::CStr::from_ptr(name_ptr) };
+            return Some(cstr.to_string_lossy().into_owned());
+        }
+    }
+    None
 }
 
 fn archive_stem(name: &str) -> String {
@@ -1902,6 +2097,7 @@ impl Controller {
                     opt2: false,
                     extra1: String::new(),
                     extra2: String::new(),
+                    ..Default::default()
                 }));
             }
             "batch-rename" => {
@@ -1926,6 +2122,7 @@ impl Controller {
                     opt2: false,
                     extra1: String::new(),
                     extra2: String::new(),
+                    ..Default::default()
                 }));
             }
             "compare-panes" => {
@@ -2574,90 +2771,191 @@ impl Controller {
     fn properties(&mut self, pane: usize) {
         let t = self.panes[pane].tab();
         let targets = t.targets();
-        let mut preview_path = None;
-        let rows = if let [e] = targets.as_slice() {
-            let cat = format::category(e);
-            let ext = format::extension(&e.name);
-            if crate::thumbnails::is_previewable(cat, ext.as_deref()) {
-                let mtime_secs = e
-                    .modified
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|d| i64::try_from(d.as_secs()).unwrap_or(0))
-                    .unwrap_or(0);
-                let uri_str = e.uri.to_uri_string();
-                let is_vid =
-                    matches!(cat, core_vfs::format::Category::Video) || crate::thumbnails::is_video_ext(ext.as_deref());
-                preview_path = crate::thumbnails::lookup_cached(&uri_str, mtime_secs)
-                    .or_else(|| {
-                        e.uri.to_local_path().and_then(|lp| {
-                            crate::thumbnails::generate_thumbnail(&lp, &uri_str, mtime_secs, is_vid).ok()
-                        })
-                    })
-                    .or_else(|| if !is_vid { e.uri.to_local_path() } else { None });
-            }
-            let mut r = vec![
-                ("Name".to_owned(), e.name.clone()),
-                ("Location".to_owned(), e.uri.parent().map(|p| p.display()).unwrap_or_default()),
-                ("Type".to_owned(), format::type_label(e)),
-                (
-                    "Size".to_owned(),
-                    if e.is_navigable() {
-                        "folder".into()
-                    } else {
-                        format!(
-                            "{} ({} bytes)",
-                            format::size(e.size),
-                            rows::thousands(usize::try_from(e.size).unwrap_or(usize::MAX))
-                        )
-                    },
-                ),
-                ("Modified".to_owned(), backends::time::format_local(e.modified)),
-                ("Permissions".to_owned(), format!("{} ({:o})", format::mode(e.kind, e.mode), e.mode)),
-                (
-                    "VFS status".to_owned(),
-                    if e.vfs.status.label().is_empty() { "local".into() } else { e.vfs.status.label().into() },
-                ),
-                ("Backend".to_owned(), t.backend.map(|b| b.badge().to_owned()).unwrap_or_default()),
-                ("URI".to_owned(), e.uri.to_uri_string()),
-            ];
-            if let Some(local_path) = e.uri.to_local_path()
-                && !e.is_navigable()
-                && e.size <= 256 * 1024 * 1024
-                && let Ok(hashes) = crate::hash::compute_hashes(&local_path)
-            {
-                r.push(("SHA-256".to_owned(), hashes.sha256));
-            }
-            r
-        } else if targets.is_empty() {
-            vec![
-                ("Location".to_owned(), t.location.display()),
-                ("Items".to_owned(), rows::thousands(t.entries.len())),
-                (
-                    "Free".to_owned(),
-                    t.volume
-                        .map(|v| format!("{} of {}", format::size(v.free_bytes), format::size(v.total_bytes)))
-                        .unwrap_or_default(),
-                ),
-            ]
+        if let [e] = targets.as_slice() {
+            let local_path = e.uri.to_local_path();
+            let is_dir = e.is_navigable();
+            let name = e.name.clone();
+            let idx = crate::desktop::DesktopIndex::load(&crate::desktop::Dirs::from_env());
+            let mime = idx.mime_for(&name, is_dir);
+            let mime_desc = crate::desktop::mime_description(&mime);
+            let (_items, selected_app_id, _sel_idx) = build_open_with_items(&idx, &mime);
+            self.dialog = Some(PendingDialog::Properties {
+                pane,
+                target_name: name,
+                local_path,
+                mime,
+                mime_desc,
+                current_tab: 0,
+                selected_app_id,
+            });
+            self.refresh_properties_dialog();
         } else {
-            let bytes: u64 = targets.iter().filter(|e| !e.is_navigable()).map(|e| e.size).sum();
-            vec![
-                ("Items".to_owned(), rows::thousands(targets.len())),
-                ("Folders".to_owned(), targets.iter().filter(|e| e.is_navigable()).count().to_string()),
-                ("Total file size".to_owned(), format::size(bytes)),
-                ("Location".to_owned(), t.location.display()),
-            ]
-        };
-        self.dialog = Some(PendingDialog::Info);
-        self.ui.send(Update::Dialog(DialogView {
-            kind: DialogKind::Properties,
-            title: "Properties".into(),
-            message: String::new(),
-            rows,
-            input: String::new(),
-            preview_path,
-            ..Default::default()
-        }));
+            let rows = if targets.is_empty() {
+                vec![
+                    ("Location".to_owned(), t.location.display()),
+                    ("Items".to_owned(), rows::thousands(t.entries.len())),
+                    (
+                        "Free".to_owned(),
+                        t.volume
+                            .map(|v| format!("{} of {}", format::size(v.free_bytes), format::size(v.total_bytes)))
+                            .unwrap_or_default(),
+                    ),
+                ]
+            } else {
+                let bytes: u64 = targets.iter().filter(|e| !e.is_navigable()).map(|e| e.size).sum();
+                vec![
+                    ("Items".to_owned(), rows::thousands(targets.len())),
+                    ("Folders".to_owned(), targets.iter().filter(|e| e.is_navigable()).count().to_string()),
+                    ("Total file size".to_owned(), format::size(bytes)),
+                    ("Location".to_owned(), t.location.display()),
+                ]
+            };
+            self.dialog = Some(PendingDialog::Info);
+            self.ui.send(Update::Dialog(DialogView {
+                kind: DialogKind::Properties,
+                title: "Properties".into(),
+                message: String::new(),
+                rows,
+                input: String::new(),
+                preview_path: None,
+                ..Default::default()
+            }));
+        }
+    }
+
+    fn refresh_properties_dialog(&mut self) {
+        if let Some(PendingDialog::Properties {
+            pane,
+            target_name,
+            local_path,
+            mime,
+            mime_desc,
+            current_tab,
+            selected_app_id,
+        }) = &mut self.dialog
+        {
+            let p = *pane;
+            let name = target_name.clone();
+            let lp = local_path.clone();
+            let m = mime.clone();
+            let desc = mime_desc.clone();
+            let tab = *current_tab;
+
+            let idx = crate::desktop::DesktopIndex::load(&crate::desktop::Dirs::from_env());
+            let (open_with_apps, new_sel_id, mut selected_app_index) = build_open_with_items(&idx, &m);
+
+            if let Some(sel_id) = selected_app_id {
+                if let Some(pos) = open_with_apps.iter().position(|a| a.id.as_str() == sel_id) {
+                    selected_app_index = pos as i32;
+                }
+            } else {
+                *selected_app_id = new_sel_id;
+            }
+
+            let mut preview_path = None;
+            let mut rows = Vec::new();
+
+            let t = self.panes[p].tab();
+            let maybe_e = t.targets().first().cloned().or_else(|| t.entries.iter().find(|e| e.name == name).cloned());
+            if let Some(ref e) = maybe_e {
+                let cat = format::category(e);
+                let ext = format::extension(&e.name);
+                if crate::thumbnails::is_previewable(cat, ext.as_deref()) {
+                    let mtime_secs = e
+                        .modified
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| i64::try_from(d.as_secs()).unwrap_or(0))
+                        .unwrap_or(0);
+                    let uri_str = e.uri.to_uri_string();
+                    let is_vid = matches!(cat, core_vfs::format::Category::Video)
+                        || crate::thumbnails::is_video_ext(ext.as_deref());
+                    preview_path = crate::thumbnails::lookup_cached(&uri_str, mtime_secs)
+                        .or_else(|| {
+                            e.uri.to_local_path().and_then(|local_p| {
+                                crate::thumbnails::generate_thumbnail(&local_p, &uri_str, mtime_secs, is_vid).ok()
+                            })
+                        })
+                        .or_else(|| if !is_vid { e.uri.to_local_path() } else { None });
+                }
+                rows = vec![
+                    ("Name".to_owned(), e.name.clone()),
+                    ("Location".to_owned(), e.uri.parent().map(|p| p.display()).unwrap_or_default()),
+                    ("Type".to_owned(), format::type_label(e)),
+                    (
+                        "Size".to_owned(),
+                        if e.is_navigable() {
+                            "folder".into()
+                        } else {
+                            format!(
+                                "{} ({} bytes)",
+                                format::size(e.size),
+                                rows::thousands(usize::try_from(e.size).unwrap_or(usize::MAX))
+                            )
+                        },
+                    ),
+                    ("Modified".to_owned(), backends::time::format_local(e.modified)),
+                    ("Permissions".to_owned(), format!("{} ({:o})", format::mode(e.kind, e.mode), e.mode)),
+                    (
+                        "VFS status".to_owned(),
+                        if e.vfs.status.label().is_empty() { "local".into() } else { e.vfs.status.label().into() },
+                    ),
+                    ("Backend".to_owned(), t.backend.map(|b| b.badge().to_owned()).unwrap_or_default()),
+                    ("URI".to_owned(), e.uri.to_uri_string()),
+                ];
+                if let Some(local_p) = e.uri.to_local_path()
+                    && !e.is_navigable()
+                    && e.size <= 256 * 1024 * 1024
+                    && let Ok(hashes) = crate::hash::compute_hashes(&local_p)
+                {
+                    rows.push(("SHA-256".to_owned(), hashes.sha256));
+                }
+            }
+
+            #[cfg(unix)]
+            let current_mode = if let Some(ref local_p) = lp {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::metadata(local_p).map(|m| m.permissions().mode()).unwrap_or(0o644)
+            } else {
+                0o644
+            };
+            #[cfg(not(unix))]
+            let current_mode = 0o644;
+
+            let (perms_owner, perms_group) = if let Some(ref local_p) = lp {
+                let (user, group) = get_user_and_group(local_p);
+                (
+                    format!("{user} ({})", format_perm_bits((current_mode >> 6) & 7)),
+                    format!("{group} ({})", format_perm_bits((current_mode >> 3) & 7)),
+                )
+            } else {
+                (
+                    format!("Owner ({})", format_perm_bits((current_mode >> 6) & 7)),
+                    format!("Group ({})", format_perm_bits((current_mode >> 3) & 7)),
+                )
+            };
+            let perms_others = format_perm_bits(current_mode & 7).to_string();
+            let perms_executable = (current_mode & 0o111) != 0;
+
+            self.ui.send(Update::Dialog(DialogView {
+                kind: DialogKind::Properties,
+                title: format!("{name} Properties"),
+                message: String::new(),
+                rows,
+                input: name,
+                preview_path,
+                properties_tab: tab,
+                open_with_apps,
+                selected_app_index,
+                custom_command: String::new(),
+                mime_type: m,
+                mime_desc: desc,
+                perms_owner,
+                perms_group,
+                perms_others,
+                perms_executable,
+                ..Default::default()
+            }));
+        }
     }
 
     fn new_tab(&mut self, pane: usize, at: Option<VfsUri>) {
@@ -2982,6 +3280,74 @@ impl Controller {
     }
 
     fn dialog_custom_action(&mut self, action: &str, opt1: bool, opt2: bool, extra1: &str, extra2: &str) {
+        if let Some(tab_str) = action.strip_prefix("tab-") {
+            if let Ok(tab) = tab_str.parse::<i32>()
+                && let Some(PendingDialog::Properties { current_tab, .. }) = &mut self.dialog
+            {
+                *current_tab = tab;
+                self.refresh_properties_dialog();
+            }
+            return;
+        }
+
+        if let Some(app_id) = action.strip_prefix("select-app:") {
+            if let Some(PendingDialog::Properties { selected_app_id, .. }) = &mut self.dialog {
+                *selected_app_id = Some(app_id.to_string());
+            }
+            return;
+        }
+
+        if let Some(app_id) = action.strip_prefix("open-with-app:") {
+            self.handle_open_with_app(app_id);
+            return;
+        }
+
+        if let Some(cmd) = action.strip_prefix("open-custom:") {
+            self.handle_open_custom(cmd);
+            return;
+        }
+
+        if action == "open-selected" {
+            self.handle_open_selected();
+            return;
+        }
+
+        if let Some(app_id) = action.strip_prefix("set-default-app:") {
+            self.handle_set_default_app(app_id);
+            return;
+        }
+
+        if let Some(cmd) = action.strip_prefix("set-default-custom:") {
+            self.handle_set_default_custom(cmd);
+            return;
+        }
+
+        if action == "set-default-app" {
+            if !extra1.is_empty() {
+                self.handle_set_default_custom(extra1);
+            } else if let Some(PendingDialog::Properties { selected_app_id: Some(ref id), .. }) = self.dialog {
+                let id = id.clone();
+                self.handle_set_default_app(&id);
+            }
+            return;
+        }
+
+        if action == "reset-default-app" {
+            self.handle_reset_default_app();
+            return;
+        }
+
+        if let Some(exec_str) = action.strip_prefix("apply-permissions:") {
+            let is_exec = exec_str == "exec";
+            self.handle_apply_permissions(is_exec);
+            return;
+        }
+
+        if action == "browse-custom-app" {
+            self.handle_browse_custom_app();
+            return;
+        }
+
         match action {
             "replace" | "replace-if-newer" | "auto-rename" | "skip" => {
                 self.handle_conflict_action(action, opt1);
@@ -3003,6 +3369,157 @@ impl Controller {
             }
             _ => {}
         }
+    }
+
+    fn handle_open_with_app(&mut self, app_id: &str) {
+        if let Some(PendingDialog::Properties { local_path: Some(ref path), .. }) = self.dialog {
+            let path = path.clone();
+            let idx = crate::desktop::DesktopIndex::load(&crate::desktop::Dirs::from_env());
+            if let Some(app) = idx.all_apps().into_iter().find(|a| a.id == app_id) {
+                let _ = crate::desktop::launch(app, &[path]);
+                self.dialog = None;
+                self.ui.send(Update::CloseDialog);
+            }
+        }
+    }
+
+    fn handle_open_custom(&mut self, cmd: &str) {
+        if let Some(PendingDialog::Properties { local_path: Some(ref path), .. }) = self.dialog {
+            let path = path.clone();
+            let trimmed = cmd.trim();
+            if !trimmed.is_empty() {
+                let words: Vec<&str> = trimmed.split_whitespace().collect();
+                if let Some(bin) = words.first() {
+                    let mut c = std::process::Command::new(bin);
+                    c.args(&words[1..]);
+                    c.arg(&path);
+                    let _ = c.spawn();
+                    self.dialog = None;
+                    self.ui.send(Update::CloseDialog);
+                }
+            }
+        }
+    }
+
+    fn handle_open_selected(&mut self) {
+        if let Some(PendingDialog::Properties { selected_app_id: Some(ref id), .. }) = self.dialog {
+            let id = id.clone();
+            self.handle_open_with_app(&id);
+        }
+    }
+
+    fn handle_set_default_app(&mut self, app_id: &str) {
+        if let Some(PendingDialog::Properties { mime, mime_desc, selected_app_id, .. }) = &mut self.dialog {
+            let m = mime.clone();
+            let desc = mime_desc.clone();
+            *selected_app_id = Some(app_id.to_string());
+            match crate::desktop::set_default_app(&m, app_id) {
+                Ok(()) => {
+                    self.say(format!("Set {app_id} as default application for {desc}"), false);
+                    self.refresh_properties_dialog();
+                }
+                Err(e) => {
+                    self.say(format!("Failed to set default application: {e}"), true);
+                }
+            }
+        }
+    }
+
+    fn handle_set_default_custom(&mut self, cmd: &str) {
+        if let Some(PendingDialog::Properties { mime, mime_desc, selected_app_id, .. }) = &mut self.dialog {
+            let m = mime.clone();
+            let desc = mime_desc.clone();
+            let trimmed = cmd.trim();
+            if trimmed.is_empty() {
+                return;
+            }
+            let bin_name = trimmed.split_whitespace().next().unwrap_or(trimmed);
+            let app_name = Path::new(bin_name)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| bin_name.to_string());
+            match crate::desktop::create_custom_desktop_entry(trimmed, &app_name) {
+                Ok(desktop_id) => {
+                    *selected_app_id = Some(desktop_id.clone());
+                    match crate::desktop::set_default_app(&m, &desktop_id) {
+                        Ok(()) => {
+                            self.say(format!("Set {app_name} as default application for {desc}"), false);
+                            self.refresh_properties_dialog();
+                        }
+                        Err(e) => {
+                            self.say(format!("Failed to set default application: {e}"), true);
+                        }
+                    }
+                }
+                Err(e) => {
+                    self.say(format!("Failed to create custom application entry: {e}"), true);
+                }
+            }
+        }
+    }
+
+    fn handle_reset_default_app(&mut self) {
+        if let Some(PendingDialog::Properties { mime, mime_desc, .. }) = &self.dialog {
+            let m = mime.clone();
+            let desc = mime_desc.clone();
+            match crate::desktop::reset_default_app(&m) {
+                Ok(()) => {
+                    self.say(format!("Reset default application for {desc} to system default"), false);
+                    self.refresh_properties_dialog();
+                }
+                Err(e) => {
+                    self.say(format!("Failed to reset default application: {e}"), true);
+                }
+            }
+        }
+    }
+
+    fn handle_apply_permissions(&mut self, is_exec: bool) {
+        let (p, path) = match &self.dialog {
+            Some(PendingDialog::Properties { pane, local_path: Some(path), .. }) => (*pane, path.clone()),
+            _ => return,
+        };
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(meta) = std::fs::metadata(&path) {
+                let mut mode = meta.permissions().mode();
+                if is_exec {
+                    mode |= 0o111;
+                } else {
+                    mode &= !0o111;
+                }
+                if let Err(e) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)) {
+                    self.say(format!("Failed to set permissions: {e}"), true);
+                } else {
+                    self.say(format!("Updated permissions: {:o}", mode & 0o777), false);
+                    self.refresh_properties_dialog();
+                    let loc = self.panes[p].tab().location.clone();
+                    self.load(p, loc, false);
+                }
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (path, is_exec, p);
+        }
+    }
+
+    fn handle_browse_custom_app(&mut self) {
+        let tx = self.tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let out = std::process::Command::new("zenity")
+                .args(["--file-selection", "--title=Select Executable Application", "--filename=/usr/bin/"])
+                .output();
+            if let Ok(o) = out
+                && o.status.success()
+            {
+                let path = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                if !path.is_empty() {
+                    let _ = tx.blocking_send(Msg::Ev(Event::CustomAppSelected(path)));
+                }
+            }
+        });
     }
 
     fn push_terminal(&self) {
@@ -3195,6 +3712,7 @@ impl Controller {
             opt2: false,
             extra1: find_pattern.to_string(),
             extra2: replace_pattern.to_string(),
+            ..Default::default()
         }));
     }
 
@@ -3332,10 +3850,35 @@ impl Controller {
         }
     }
 
-    /// "Open With…": find the applications for the selection's type (blocking work off the
-    /// actor), then show them in a chooser dialog.
+    /// "Open With…": find the applications for the selection's type, opening the Nemo-style
+    /// Open With dialog directly.
     fn open_with(&mut self, pane: usize) {
         let targets = self.panes[pane].tab().targets();
+        if let [e] = targets.as_slice() {
+            let local_path = e.uri.to_local_path();
+            if local_path.is_none() {
+                self.say("Only local files can be opened with an application", true);
+                return;
+            }
+            let is_dir = e.is_navigable();
+            let name = e.name.clone();
+            let idx = crate::desktop::DesktopIndex::load(&crate::desktop::Dirs::from_env());
+            let mime = idx.mime_for(&name, is_dir);
+            let mime_desc = crate::desktop::mime_description(&mime);
+            let (_items, selected_app_id, _sel_idx) = build_open_with_items(&idx, &mime);
+            self.dialog = Some(PendingDialog::Properties {
+                pane,
+                target_name: name,
+                local_path,
+                mime,
+                mime_desc,
+                current_tab: 2,
+                selected_app_id,
+            });
+            self.refresh_properties_dialog();
+            return;
+        }
+
         let local: Vec<(PathBuf, bool)> = targets
             .iter()
             .filter_map(|e| {
@@ -3593,6 +4136,7 @@ impl Controller {
                 });
             }
             PendingDialog::Info
+            | PendingDialog::Properties { .. }
             | PendingDialog::OpenWith { .. }
             | PendingDialog::Conflict { .. }
             | PendingDialog::Search { .. }
@@ -3809,6 +4353,9 @@ impl Controller {
                     });
                     self.say(message, true);
                 }
+            }
+            Event::CustomAppSelected(path) => {
+                self.ui.send(Update::CustomCommand(path));
             }
             Event::Tick => {
                 if self.transfers_dirty {

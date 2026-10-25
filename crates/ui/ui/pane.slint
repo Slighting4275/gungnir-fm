@@ -547,22 +547,38 @@ export component Pane inherits Rectangle {
                                 background: cell.f.selected ? (root.active ? Theme.selection : Theme.selection-inactive) : cell-touch.has-hover ? Theme.hover : transparent;
                                 border-width: cell.idx == root.info.cursor && root.active && !cell.f.selected ? 1px : 0px;
                                 border-color: Theme.border-strong;
-                                cell-touch := TouchArea {
-                                    pointer-event(e) => {
-                                        if e.kind == PointerEventKind.down {
-                                            root.focus-pane();
-                                            if e.button == PointerEventButton.left {
-                                                root.row-clicked(cell.idx, e.modifiers.control, e.modifiers.shift);
-                                            } else if e.button == PointerEventButton.right {
-                                                root.row-context(cell.idx);
-                                                cm.show({
-                                                    x: self.absolute-position.x - cm.absolute-position.x + self.mouse-x,
-                                                    y: self.absolute-position.y - cm.absolute-position.y + self.mouse-y,
-                                                });
+                                cell-drag := DragArea {
+                                    allow-copy: true;
+                                    allow-move: true;
+                                    data: root.drag-data(cell.idx);
+                                    changed dragging => {
+                                        if self.dragging { root.drag-start(cell.idx); } else { root.drag-end(); }
+                                    }
+                                    cell-touch := TouchArea {
+                                        pointer-event(e) => {
+                                            if e.kind == PointerEventKind.down {
+                                                root.focus-pane();
+                                                if e.button == PointerEventButton.left {
+                                                    root.row-clicked(cell.idx, e.modifiers.control, e.modifiers.shift);
+                                                } else if e.button == PointerEventButton.right {
+                                                    root.row-context(cell.idx);
+                                                    cm.show({
+                                                        x: self.absolute-position.x - cm.absolute-position.x + self.mouse-x,
+                                                        y: self.absolute-position.y - cm.absolute-position.y + self.mouse-y,
+                                                    });
+                                                }
                                             }
                                         }
+                                        double-clicked => { root.row-activated(cell.idx); }
                                     }
-                                    double-clicked => { root.row-activated(cell.idx); }
+                                }
+                                cell-drop := DropArea {
+                                    enabled: cell.f.is-dir;
+                                    can-drop(e) => { root.dragging-from-app ? e.proposed-action : DragAction.none }
+                                    dropped(e) => {
+                                        root.drop-on(cell.idx, e.proposed-action == DragAction.copy);
+                                        e.proposed-action
+                                    }
                                 }
                                 VerticalLayout {
                                     padding: 4px;

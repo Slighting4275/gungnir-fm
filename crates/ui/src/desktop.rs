@@ -247,6 +247,64 @@ impl DesktopIndex {
         }
         out
     }
+
+    /// Returns the active default application for `mime`, or the first associated application.
+    #[must_use]
+    pub fn default_app_for(&self, mime: &str) -> Option<&App> {
+        if let Some(ids) = self.defaults.get(mime) {
+            for id in ids {
+                if let Some(app) = self.apps.get(id) {
+                    return Some(app);
+                }
+            }
+        }
+        self.apps_for(mime).first().copied()
+    }
+
+    /// Applications specifically registered/recommended for `mime` (excluding the default).
+    #[must_use]
+    pub fn recommended_apps_for(&self, mime: &str) -> Vec<&App> {
+        let def_id = self.default_app_for(mime).map(|a| a.id.as_str());
+        let mut out = Vec::new();
+        let mut seen = HashSet::new();
+        if let Some(d) = def_id {
+            seen.insert(d);
+        }
+        for app in self.apps_for(mime) {
+            if seen.insert(app.id.as_str()) {
+                out.push(app);
+            }
+        }
+        out
+    }
+
+    /// Other installed system applications not specifically associated with `mime`.
+    #[must_use]
+    pub fn other_apps_for(&self, mime: &str) -> Vec<&App> {
+        let def_id = self.default_app_for(mime).map(|a| a.id.as_str());
+        let mut seen: HashSet<&str> = HashSet::new();
+        if let Some(d) = def_id {
+            seen.insert(d);
+        }
+        for app in self.apps_for(mime) {
+            seen.insert(app.id.as_str());
+        }
+        let mut other: Vec<&App> = self
+            .apps
+            .values()
+            .filter(|a| !a.no_display && !seen.contains(a.id.as_str()))
+            .collect();
+        other.sort_by_key(|a| a.name.to_lowercase());
+        other
+    }
+
+    /// All installed desktop applications.
+    #[must_use]
+    pub fn all_apps(&self) -> Vec<&App> {
+        let mut list: Vec<&App> = self.apps.values().filter(|a| !a.no_display).collect();
+        list.sort_by_key(|a| a.name.to_lowercase());
+        list
+    }
 }
 
 impl Globs {
@@ -542,7 +600,235 @@ pub fn launch(app: &App, files: &[PathBuf]) -> std::io::Result<usize> {
     Ok(n)
 }
 
+/// User-friendly display name for a MIME type matching Nemo / desktop standards.
+#[must_use]
+pub fn mime_description(mime: &str) -> String {
+    match mime {
+        "video/mp4" => "MPEG-4 video".into(),
+        "video/x-matroska" => "Matroska video".into(),
+        "video/webm" => "WebM video".into(),
+        "video/quicktime" => "QuickTime video".into(),
+        "video/x-msvideo" => "AVI video".into(),
+        "video/mpeg" => "MPEG video".into(),
+        "audio/mpeg" => "MP3 audio".into(),
+        "audio/flac" => "FLAC audio".into(),
+        "audio/ogg" => "Ogg Vorbis audio".into(),
+        "audio/opus" => "Opus audio".into(),
+        "audio/wav" => "WAV audio".into(),
+        "audio/x-wavpack" => "WavPack audio".into(),
+        "image/png" => "PNG image".into(),
+        "image/jpeg" => "JPEG image".into(),
+        "image/webp" => "WebP image".into(),
+        "image/svg+xml" => "SVG vector image".into(),
+        "image/gif" => "GIF image".into(),
+        "image/avif" => "AVIF image".into(),
+        "image/jxl" => "JPEG XL image".into(),
+        "application/pdf" => "PDF document".into(),
+        "application/zip" => "Zip archive".into(),
+        "application/x-tar" => "Tar archive".into(),
+        "application/x-7z-compressed" => "7-Zip archive".into(),
+        "application/x-rar" | "application/vnd.rar" => "RAR archive".into(),
+        "application/zstd" => "Zstandard compressed archive".into(),
+        "application/gzip" => "Gzip compressed archive".into(),
+        "application/x-xz" => "XZ compressed archive".into(),
+        "application/x-bzip2" => "Bzip2 compressed archive".into(),
+        "text/plain" => "Plain text document".into(),
+        "text/markdown" => "Markdown document".into(),
+        "text/html" => "HTML document".into(),
+        "text/x-rust" => "Rust source code".into(),
+        "text/x-python" => "Python script".into(),
+        "text/x-c" => "C source code".into(),
+        "text/x-c++" => "C++ source code".into(),
+        "application/json" => "JSON document".into(),
+        "application/toml" => "TOML document".into(),
+        "inode/directory" => "Folder".into(),
+        other => {
+            if let Some((cat, sub)) = other.split_once('/') {
+                let clean_sub = sub.strip_prefix("x-").unwrap_or(sub).replace('-', " ");
+                let clean_cat = cat.replace('-', " ");
+                format!("{clean_sub} ({clean_cat})")
+            } else {
+                other.to_string()
+            }
+        }
+    }
+}
+
+/// Assign `desktop_id` as the default application for `mime` in `config_dir/mimeapps.list`.
+///
+/// # Errors
+/// Standard I/O errors when writing `mimeapps.list`.
+pub fn set_default_app_in(config_dir: &Path, mime: &str, desktop_id: &str) -> std::io::Result<()> {
+    let path = config_dir.join("mimeapps.list");
+    let content = std::fs::read_to_string(&path).unwrap_or_default();
+    let mut lines: Vec<String> = content.lines().map(String::from).collect();
+
+    let id_val = if desktop_id.ends_with(';') { desktop_id.to_string() } else { format!("{desktop_id};") };
+
+    let mut in_default = false;
+    let mut default_header_idx = None;
+    let mut mime_default_idx = None;
+
+    let mut in_added = false;
+    let mut added_header_idx = None;
+    let mut mime_added_idx = None;
+
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if trimmed == "[Default Applications]" {
+            in_default = true;
+            in_added = false;
+            default_header_idx = Some(i);
+        } else if trimmed == "[Added Associations]" {
+            in_added = true;
+            in_default = false;
+            added_header_idx = Some(i);
+        } else if trimmed.starts_with('[') {
+            in_default = false;
+            in_added = false;
+        } else if let Some((k, _)) = trimmed.split_once('=')
+            && k.trim() == mime
+        {
+            if in_default {
+                mime_default_idx = Some(i);
+            } else if in_added {
+                mime_added_idx = Some(i);
+            }
+        }
+    }
+
+    // 1. Update [Default Applications]
+    if let Some(idx) = mime_default_idx {
+        lines[idx] = format!("{mime}={id_val}");
+    } else if let Some(header_idx) = default_header_idx {
+        lines.insert(header_idx + 1, format!("{mime}={id_val}"));
+        if let Some(ref mut a_idx) = added_header_idx
+            && *a_idx > header_idx
+        {
+            *a_idx += 1;
+        }
+    } else {
+        lines.insert(0, "[Default Applications]".to_string());
+        lines.insert(1, format!("{mime}={id_val}"));
+        lines.insert(2, String::new());
+        if let Some(ref mut a_idx) = added_header_idx {
+            *a_idx += 3;
+        }
+    }
+
+    // 2. Update [Added Associations] to also include desktop_id
+    if let Some(idx) = mime_added_idx {
+        let existing = lines[idx].split_once('=').map(|(_, v)| v.trim()).unwrap_or("");
+        if !existing.split(';').any(|x| x.trim() == desktop_id.trim_end_matches(';')) {
+            lines[idx] = format!("{mime}={id_val}{existing}");
+        }
+    } else if let Some(header_idx) = added_header_idx {
+        lines.insert(header_idx + 1, format!("{mime}={id_val}"));
+    } else {
+        lines.push("[Added Associations]".to_string());
+        lines.push(format!("{mime}={id_val}"));
+        lines.push(String::new());
+    }
+
+    let mut out = lines.join("\n");
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let temp = config_dir.join(format!(".mimeapps.tmp.{}", std::process::id()));
+    std::fs::write(&temp, out)?;
+    std::fs::rename(&temp, &path)?;
+    Ok(())
+}
+
+/// Reset any user default application override for `mime` in `config_dir/mimeapps.list`.
+pub fn reset_default_app_in(config_dir: &Path, mime: &str) -> std::io::Result<()> {
+    let path = config_dir.join("mimeapps.list");
+    let Ok(content) = std::fs::read_to_string(&path) else { return Ok(()); };
+    let mut lines = Vec::new();
+    let mut in_target_sec = false;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed == "[Default Applications]" || trimmed == "[Added Associations]" {
+            in_target_sec = true;
+            lines.push(line.to_string());
+            continue;
+        } else if trimmed.starts_with('[') {
+            in_target_sec = false;
+        }
+
+        if in_target_sec && trimmed.split_once('=').map(|(k, _)| k.trim()) == Some(mime) {
+            continue;
+        }
+        lines.push(line.to_string());
+    }
+
+    let mut out = lines.join("\n");
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    let temp = config_dir.join(format!(".mimeapps.tmp.{}", std::process::id()));
+    std::fs::write(&temp, out)?;
+    std::fs::rename(&temp, &path)?;
+    Ok(())
+}
+
+/// Convenience function updating standard user config (`$XDG_CONFIG_HOME/mimeapps.list`).
+pub fn set_default_app(mime: &str, desktop_id: &str) -> std::io::Result<()> {
+    let dirs = Dirs::from_env();
+    if let Some(cfg) = dirs.config.first() {
+        set_default_app_in(cfg, mime, desktop_id)
+    } else {
+        Err(std::io::Error::new(std::io::ErrorKind::NotFound, "no XDG_CONFIG_HOME"))
+    }
+}
+
+/// Convenience function resetting standard user config.
+pub fn reset_default_app(mime: &str) -> std::io::Result<()> {
+    let dirs = Dirs::from_env();
+    if let Some(cfg) = dirs.config.first() {
+        reset_default_app_in(cfg, mime)
+    } else {
+        Ok(())
+    }
+}
+
+/// Creates a user desktop file in `data_dir/applications` for a custom command.
+pub fn create_custom_desktop_entry_in(data_dir: &Path, cmd: &str, name: &str) -> std::io::Result<String> {
+    let app_dir = data_dir.join("applications");
+    std::fs::create_dir_all(&app_dir)?;
+    let safe_name: String = name.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').collect();
+    let safe_name = if safe_name.is_empty() { "custom-app".to_string() } else { safe_name };
+    let id = format!("userapp-{safe_name}.desktop");
+    let path = app_dir.join(&id);
+
+    let content = format!(
+        "[Desktop Entry]\n\
+         Type=Application\n\
+         Name={name}\n\
+         Exec=\"{cmd}\" %f\n\
+         Categories=Other;\n\
+         NoDisplay=true\n"
+    );
+    std::fs::write(&path, content)?;
+    Ok(id)
+}
+
+/// Creates a user desktop file in `$XDG_DATA_HOME/applications` for a custom command.
+pub fn create_custom_desktop_entry(cmd: &str, name: &str) -> std::io::Result<String> {
+    let dirs = Dirs::from_env();
+    if let Some(data) = dirs.data.first() {
+        create_custom_desktop_entry_in(data, cmd, name)
+    } else {
+        Err(std::io::Error::new(std::io::ErrorKind::NotFound, "no XDG_DATA_HOME"))
+    }
+}
+
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
@@ -654,5 +940,43 @@ mod tests {
         assert_eq!(builtin_mime("weights.safetensors"), "application/x-safetensors");
         assert_eq!(builtin_mime("llm.gguf"), "application/x-gguf");
         assert_eq!(builtin_mime("manifest.c2pa"), "application/x-c2pa-manifest");
+    }
+
+    #[test]
+    fn test_set_and_reset_default_app() {
+        let t = Tree::new("mimeapps");
+        let cfg_dir = t.0.join("config");
+        std::fs::create_dir_all(&cfg_dir).unwrap();
+
+        // 1. Assign default app
+        assert!(set_default_app_in(&cfg_dir, "video/mp4", "mpv.desktop").is_ok());
+        let content = std::fs::read_to_string(cfg_dir.join("mimeapps.list")).unwrap();
+        assert!(content.contains("[Default Applications]"));
+        assert!(content.contains("video/mp4=mpv.desktop;"));
+        assert!(content.contains("[Added Associations]"));
+
+        // 2. Change default app
+        assert!(set_default_app_in(&cfg_dir, "video/mp4", "vlc.desktop").is_ok());
+        let content2 = std::fs::read_to_string(cfg_dir.join("mimeapps.list")).unwrap();
+        assert!(content2.contains("video/mp4=vlc.desktop;"));
+        assert!(!content2.contains("video/mp4=mpv.desktop;"));
+
+        // 3. Reset default app
+        assert!(reset_default_app_in(&cfg_dir, "video/mp4").is_ok());
+        let content3 = std::fs::read_to_string(cfg_dir.join("mimeapps.list")).unwrap();
+        assert!(!content3.contains("video/mp4=vlc.desktop;"));
+    }
+
+    #[test]
+    fn test_custom_desktop_entry() {
+        let t = Tree::new("userapp");
+        let data_dir = t.0.join("data");
+        let id = create_custom_desktop_entry_in(&data_dir, "/usr/local/bin/my-player", "My Player").unwrap();
+        assert_eq!(id, "userapp-MyPlayer.desktop");
+        let desktop_file = data_dir.join("applications").join(&id);
+        assert!(desktop_file.exists());
+        let text = std::fs::read_to_string(desktop_file).unwrap();
+        assert!(text.contains("Name=My Player"));
+        assert!(text.contains(r#"Exec="/usr/local/bin/my-player" %f"#));
     }
 }

@@ -2,6 +2,8 @@
 //! so streaming, pre-emption, filtering, sorting and selection are checked exactly as
 //! the UI would receive them.
 
+#![allow(clippy::unwrap_used)]
+
 use std::sync::{Arc, Mutex, PoisonError, mpsc as std_mpsc};
 use std::time::{Duration, Instant};
 
@@ -759,4 +761,100 @@ fn test_package_update_available_and_auto_update_lifecycle() {
         std::env::remove_var("GUNGNIR_TEST_UPDATE_SIMULATE");
         std::env::remove_var("GUNGNIR_PACKAGE_FORMAT");
     }
+}
+
+#[test]
+fn test_nemo_properties_and_open_with_default_application() {
+    let tmp = std::env::temp_dir().join(format!("gungnir-nemo-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).unwrap();
+
+    let sample_file = tmp.join("demo_movie.mp4");
+    std::fs::write(&sample_file, b"sample mp4 header and payload").unwrap();
+
+    let file_uri = VfsUri::from_local_path(&tmp).unwrap().to_uri_string();
+    let h = start(&file_uri, &file_uri, MockConfig::default());
+
+    // Wait until file is loaded
+    h.until(Duration::from_secs(3), |u| {
+        matches!(u, Update::Rows { pane: 0, rows } if rows.iter().any(|r| r.name == "demo_movie.mp4"))
+    });
+
+    // 1. Select the file row
+    h.send(Command::RowClicked { pane: 0, index: 0, ctrl: false, shift: false });
+
+    // 2. Open Properties dialog (Basic tab = 0)
+    h.send(Command::Run("properties".into()));
+    h.until(Duration::from_secs(3), |u| {
+        matches!(u, Update::Dialog(d) if d.kind == crate::DialogKind::Properties && d.properties_tab == 0 && d.title.contains("demo_movie.mp4"))
+    });
+
+    // 3. Switch to Permissions tab (tab-1) and apply executable bit
+    h.send(Command::DialogCustomAction {
+        action: "tab-1".into(),
+        opt1: false,
+        opt2: false,
+        extra1: String::new(),
+        extra2: String::new(),
+    });
+    h.send(Command::DialogCustomAction {
+        action: "apply-permissions:exec".into(),
+        opt1: false,
+        opt2: false,
+        extra1: String::new(),
+        extra2: String::new(),
+    });
+
+    h.until(Duration::from_secs(3), |u| {
+        matches!(u, Update::Dialog(d) if d.kind == crate::DialogKind::Properties && d.perms_executable)
+    });
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let meta = std::fs::metadata(&sample_file).unwrap();
+        assert_eq!(meta.permissions().mode() & 0o111, 0o111);
+    }
+
+    // 4. Switch to Open With tab (tab-2) and test setting & resetting default app
+    h.send(Command::DialogCustomAction {
+        action: "tab-2".into(),
+        opt1: false,
+        opt2: false,
+        extra1: String::new(),
+        extra2: String::new(),
+    });
+    h.until(Duration::from_secs(3), |u| {
+        matches!(u, Update::Dialog(d) if d.kind == crate::DialogKind::Properties && d.properties_tab == 2)
+    });
+
+    h.send(Command::DialogCustomAction {
+        action: "set-default-app:mpv.desktop".into(),
+        opt1: false,
+        opt2: false,
+        extra1: String::new(),
+        extra2: String::new(),
+    });
+
+    h.send(Command::DialogCustomAction {
+        action: "reset-default-app".into(),
+        opt1: false,
+        opt2: false,
+        extra1: String::new(),
+        extra2: String::new(),
+    });
+
+    // 5. Close dialog
+    h.send(Command::DialogCancel);
+    h.until(Duration::from_secs(3), |u| matches!(u, Update::CloseDialog));
+
+    // 6. Open "Open With" dialog directly (opens Properties directly on tab 2)
+    h.send(Command::Run("open-with".into()));
+    h.until(Duration::from_secs(3), |u| {
+        matches!(u, Update::Dialog(d) if d.kind == crate::DialogKind::Properties && d.properties_tab == 2)
+    });
+
+    h.send(Command::DialogCancel);
+
+    let _ = std::fs::remove_dir_all(&tmp);
 }

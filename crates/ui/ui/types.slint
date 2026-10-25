@@ -3,6 +3,7 @@
 
 export struct FileRow {
     name: string,
+    uri: string,
     size-text: string,
     type-text: string,
     modified-text: string,
@@ -110,4 +111,14 @@ export struct KeyValue {
 export struct CustomActionItem {
     id: string,
     title: string,
+}
+
+export struct OpenWithAppItem {
+    id: string,
+    name: string,
+    exec: string,
+    icon: string,
+    is-default: bool,
+    is-recommended: bool,
+    is-header: bool,
 }

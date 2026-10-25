@@ -5,6 +5,8 @@ It combines Nemo's layout and keyboard ergonomics with sub-millisecond responsiv
 
 Source repository & issue tracker: [https://gitlab.com/exalted6165/gungnir-fm](https://gitlab.com/exalted6165/gungnir-fm).
 
+![Gungnir FM](docs/gungnir-fm.png)
+
 ---
 
 ## ⚡ Quick Terminal Installation (Linux & BSD)

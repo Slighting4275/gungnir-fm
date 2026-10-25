@@ -6,7 +6,7 @@
 
 import { LineEdit, Button, ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { FileRow, PaneInfo, TabInfo, Crumb, PlaceItem, MountItem, TreeRow, TransferRow, StatusInfo, KeyValue, DeviceItem, CustomActionItem } from "types.slint";
+import { FileRow, PaneInfo, TabInfo, Crumb, PlaceItem, MountItem, TreeRow, TransferRow, StatusInfo, KeyValue, DeviceItem, CustomActionItem, OpenWithAppItem } from "types.slint";
 import { Glyph, ToolButton, ZoomControl } from "widgets.slint";
 import { PathBar } from "pathbar.slint";
 import { Sidebar } from "sidebar.slint";
@@ -14,7 +14,7 @@ import { Pane } from "pane.slint";
 import { StatusBar, TransferDrawer } from "statusbar.slint";
 import { DialogOverlay, DialogKind } from "dialogs.slint";
 
-export { Theme, FileRow, PaneInfo, TabInfo, Crumb, PlaceItem, MountItem, TreeRow, TransferRow, StatusInfo, KeyValue, DeviceItem, DialogKind, CustomActionItem }
+export { Theme, FileRow, PaneInfo, TabInfo, Crumb, PlaceItem, MountItem, TreeRow, TransferRow, StatusInfo, KeyValue, DeviceItem, DialogKind, CustomActionItem, OpenWithAppItem }
 
 component Separator inherits Rectangle {
     width: 1px;
@@ -150,6 +150,16 @@ export component AppWindow inherits Window {
     in-out property <bool> dialog-opt2: false;
     in-out property <string> dialog-extra1: "";
     in-out property <string> dialog-extra2: "";
+    in-out property <int> dialog-properties-tab: 0;
+    in property <[OpenWithAppItem]> dialog-open-with-apps: [];
+    in-out property <int> dialog-selected-app-index: -1;
+    in-out property <string> dialog-custom-command: "";
+    in property <string> dialog-mime-type: "";
+    in property <string> dialog-mime-desc: "";
+    in property <string> dialog-perms-owner: "";
+    in property <string> dialog-perms-group: "";
+    in property <string> dialog-perms-others: "";
+    in-out property <bool> dialog-perms-executable: false;
 
     // ---- Callbacks to the Rust controller -----------------------------------------
     callback navigate(pane: int, location: string);
@@ -688,6 +698,16 @@ export component AppWindow inherits Window {
             opt2 <=> root.dialog-opt2;
             extra1 <=> root.dialog-extra1;
             extra2 <=> root.dialog-extra2;
+            properties-tab <=> root.dialog-properties-tab;
+            open-with-apps: root.dialog-open-with-apps;
+            selected-app-index <=> root.dialog-selected-app-index;
+            custom-command <=> root.dialog-custom-command;
+            mime-type: root.dialog-mime-type;
+            mime-desc: root.dialog-mime-desc;
+            perms-owner: root.dialog-perms-owner;
+            perms-group: root.dialog-perms-group;
+            perms-others: root.dialog-perms-others;
+            perms-executable <=> root.dialog-perms-executable;
             preview-image: root.preview-image;
             preview-detail: root.preview-detail;
             accept(t) => { root.dialog-accept(t); }

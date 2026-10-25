@@ -4,7 +4,7 @@
 
 import { LineEdit, ScrollView, Button } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { KeyValue } from "types.slint";
+import { KeyValue, OpenWithAppItem } from "types.slint";
 import { Glyph } from "widgets.slint";
 
 export enum DialogKind {
@@ -52,6 +52,30 @@ component DialogButton inherits Rectangle {
     }
 }
 
+component PropertyTabButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> active;
+    callback clicked;
+    height: 30px;
+    width: max(100px, t.preferred-width + 24px);
+    border-radius: Theme.radius-small;
+    background: active ? Theme.overlay : touch.pressed ? Theme.pressed : touch.has-hover ? Theme.hover : Theme.raised;
+    border-width: 1px;
+    border-color: active ? Theme.accent : Theme.border-strong;
+    t := Text {
+        text: root.label;
+        color: root.active ? Theme.text : Theme.text-dim;
+        font-size: Theme.font-size;
+        font-weight: root.active ? 600 : 400;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
 export component DialogOverlay inherits Rectangle {
     in property <DialogKind> kind: DialogKind.inspect;
     in property <string> title: "Gungnir VFS Inspect";
@@ -71,6 +95,16 @@ export component DialogOverlay inherits Rectangle {
     in-out property <bool> opt2: false;
     in-out property <string> extra1: "";
     in-out property <string> extra2: "";
+    in-out property <int> properties-tab: 0;
+    in property <[OpenWithAppItem]> open-with-apps: [];
+    in-out property <int> selected-app-index: -1;
+    in-out property <string> custom-command: "";
+    in property <string> mime-type: "";
+    in property <string> mime-desc: "";
+    in property <string> perms-owner: "";
+    in property <string> perms-group: "";
+    in property <string> perms-others: "";
+    in-out property <bool> perms-executable: false;
     callback accept(text: string);
     callback cancel();
     callback choose(index: int);
@@ -121,6 +155,34 @@ export component DialogOverlay inherits Rectangle {
                     horizontal-stretch: 1;
                 }
             }
+            if root.kind == DialogKind.properties: HorizontalLayout {
+                spacing: 8px;
+                alignment: center;
+                PropertyTabButton {
+                    label: "Basic";
+                    active: root.properties-tab == 0;
+                    clicked => {
+                        root.properties-tab = 0;
+                        root.custom-action("tab-0");
+                    }
+                }
+                PropertyTabButton {
+                    label: "Permissions";
+                    active: root.properties-tab == 1;
+                    clicked => {
+                        root.properties-tab = 1;
+                        root.custom-action("tab-1");
+                    }
+                }
+                PropertyTabButton {
+                    label: "Open With";
+                    active: root.properties-tab == 2;
+                    clicked => {
+                        root.properties-tab = 2;
+                        root.custom-action("tab-2");
+                    }
+                }
+            }
             if root.kind == DialogKind.preview: VerticalLayout {
                 alignment: center;
                 spacing: 10px;
@@ -139,7 +201,7 @@ export component DialogOverlay inherits Rectangle {
                     wrap: word-wrap;
                 }
             }
-            if root.kind == DialogKind.properties && root.preview-image.width > 0: HorizontalLayout {
+            if root.kind == DialogKind.properties && root.properties-tab == 0 && root.preview-image.width > 0: HorizontalLayout {
                 alignment: center;
                 padding-bottom: 6px;
                 Image {
@@ -149,7 +211,7 @@ export component DialogOverlay inherits Rectangle {
                     image-fit: contain;
                 }
             }
-            if root.message != "": Text {
+            if root.message != "" && (root.kind != DialogKind.properties || root.properties-tab == 0): Text {
                 text: root.message;
                 color: root.kind == DialogKind.error ? Theme.bad.brighter(20%) : Theme.text-dim;
                 font-size: Theme.font-size;
@@ -453,7 +515,7 @@ export component DialogOverlay inherits Rectangle {
                     }
                 }
             }
-            if root.rows.length > 0 && root.kind != DialogKind.choose && root.kind != DialogKind.search: Rectangle {
+            if root.rows.length > 0 && root.kind != DialogKind.choose && root.kind != DialogKind.search && (root.kind != DialogKind.properties || root.properties-tab == 0): Rectangle {
                 // Values wrap (long URIs), so size by row count rather than the unwrapped estimate.
                 height: min(400px, max(rows-layout.preferred-height + 2px, root.rows.length * 30px + 18px));
                 border-radius: Theme.radius;
@@ -482,6 +544,268 @@ export component DialogOverlay inherits Rectangle {
                                 horizontal-stretch: 1;
                                 single-line: false;
                             }
+                        }
+                    }
+                }
+            }
+            if root.kind == DialogKind.properties && root.properties-tab == 1: Rectangle {
+                height: 250px;
+                border-radius: Theme.radius;
+                background: Theme.field;
+                border-width: 1px;
+                border-color: Theme.border;
+                VerticalLayout {
+                    padding: 16px;
+                    spacing: 12px;
+                    Text {
+                        text: "File Ownership & Access Control";
+                        font-size: Theme.font-size;
+                        font-weight: 600;
+                        color: Theme.text;
+                    }
+                    HorizontalLayout {
+                        spacing: 12px;
+                        Text {
+                            width: 80px;
+                            text: "Owner:";
+                            color: Theme.gold.darker(8%);
+                            font-weight: 600;
+                            font-size: Theme.font-size;
+                        }
+                        Text {
+                            text: root.perms-owner;
+                            color: Theme.text;
+                            font-size: Theme.font-size;
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 12px;
+                        Text {
+                            width: 80px;
+                            text: "Group:";
+                            color: Theme.gold.darker(8%);
+                            font-weight: 600;
+                            font-size: Theme.font-size;
+                        }
+                        Text {
+                            text: root.perms-group;
+                            color: Theme.text;
+                            font-size: Theme.font-size;
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 12px;
+                        Text {
+                            width: 80px;
+                            text: "Others:";
+                            color: Theme.gold.darker(8%);
+                            font-weight: 600;
+                            font-size: Theme.font-size;
+                        }
+                        Text {
+                            text: root.perms-others;
+                            color: Theme.text;
+                            font-size: Theme.font-size;
+                        }
+                    }
+                    Rectangle {
+                        height: 1px;
+                        background: Theme.border;
+                    }
+                    HorizontalLayout {
+                        spacing: 10px;
+                        alignment: start;
+                        Rectangle {
+                            width: 18px;
+                            height: 18px;
+                            border-radius: 4px;
+                            border-width: 1px;
+                            border-color: root.perms-executable ? Theme.accent : Theme.border-strong;
+                            background: root.perms-executable ? Theme.accent : Theme.field;
+                            Text {
+                                text: root.perms-executable ? "✓" : "";
+                                color: #ffffff;
+                                font-size: 11px;
+                                font-weight: 700;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                            TouchArea { clicked => { root.perms-executable = !root.perms-executable; } }
+                        }
+                        Text {
+                            text: "Allow executing file as program";
+                            color: Theme.text;
+                            font-size: Theme.font-size;
+                            vertical-alignment: center;
+                            TouchArea { clicked => { root.perms-executable = !root.perms-executable; } }
+                        }
+                    }
+                    HorizontalLayout {
+                        alignment: end;
+                        DialogButton {
+                            label: "Apply Permissions";
+                            primary: true;
+                            clicked => {
+                                root.custom-action("apply-permissions:" + (root.perms-executable ? "exec" : "noexec"));
+                            }
+                        }
+                    }
+                }
+            }
+            if root.kind == DialogKind.properties && root.properties-tab == 2: VerticalLayout {
+                spacing: 10px;
+                Text {
+                    text: "Select an application in the list to open\n" + root.input + " and other files of type \"" + (root.mime-desc != "" ? root.mime-desc : root.mime-type) + "\"";
+                    color: Theme.text;
+                    font-size: Theme.font-size;
+                    wrap: word-wrap;
+                }
+                Rectangle {
+                    height: 240px;
+                    border-radius: Theme.radius;
+                    background: Theme.field;
+                    border-width: 1px;
+                    border-color: Theme.border;
+                    ScrollView {
+                        VerticalLayout {
+                            padding: 4px;
+                            spacing: 2px;
+                            for app[i] in root.open-with-apps: Rectangle {
+                                height: app.is-header ? 28px : 36px;
+                                border-radius: Theme.radius-small;
+                                background: app.is-header ? transparent : (i == root.selected-app-index ? #1d4ed8 : item-touch.has-hover ? Theme.hover : transparent);
+
+                                if app.is-header: HorizontalLayout {
+                                    padding-left: 8px;
+                                    padding-right: 8px;
+                                    alignment: start;
+                                    Text {
+                                        text: app.name;
+                                        color: Theme.text;
+                                        font-size: Theme.font-size;
+                                        font-weight: 700;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                if !app.is-header: HorizontalLayout {
+                                    padding-left: 10px;
+                                    padding-right: 10px;
+                                    spacing: 10px;
+                                    alignment: start;
+                                    Glyph {
+                                        y: (parent.height - self.height) / 2;
+                                        name: app.icon != "" ? app.icon : "desktop";
+                                        tint: i == root.selected-app-index ? #ffffff : Theme.accent;
+                                    }
+                                    Text {
+                                        text: app.name;
+                                        color: i == root.selected-app-index ? #ffffff : Theme.text;
+                                        font-size: Theme.font-size;
+                                        font-weight: app.is-default ? 600 : 400;
+                                        vertical-alignment: center;
+                                        horizontal-stretch: 1;
+                                        overflow: elide;
+                                    }
+                                    if app.is-default: Rectangle {
+                                        y: (parent.height - self.height) / 2;
+                                        height: 18px;
+                                        width: badge-t.preferred-width + 12px;
+                                        border-radius: 9px;
+                                        background: i == root.selected-app-index ? #ffffff33 : Theme.accent.with-alpha(0.2);
+                                        border-width: 1px;
+                                        border-color: i == root.selected-app-index ? #ffffff66 : Theme.accent.with-alpha(0.6);
+                                        badge-t := Text {
+                                            text: "Default";
+                                            color: i == root.selected-app-index ? #ffffff : Theme.accent;
+                                            font-size: 10px;
+                                            font-weight: 600;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+
+                                item-touch := TouchArea {
+                                    enabled: !app.is-header;
+                                    mouse-cursor: pointer;
+                                    clicked => {
+                                        root.selected-app-index = i;
+                                        root.custom-action("select-app:" + app.id);
+                                    }
+                                    double-clicked => {
+                                        root.selected-app-index = i;
+                                        root.custom-action("open-with-app:" + app.id);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Text {
+                    text: "You can also type or select a custom executable file to use to open this file type. You can use this command just once, or set it as default for all files of this type.";
+                    color: Theme.text-dim;
+                    font-size: Theme.font-size-small;
+                    wrap: word-wrap;
+                }
+                HorizontalLayout {
+                    spacing: 6px;
+                    cmd-field := LineEdit {
+                        horizontal-stretch: 1;
+                        height: 32px;
+                        text <=> root.custom-command;
+                        placeholder-text: "Custom command or executable path...";
+                        accepted(t) => {
+                            root.custom-action("open-custom:" + t);
+                        }
+                    }
+                    Rectangle {
+                        width: 34px;
+                        height: 32px;
+                        border-radius: Theme.radius-small;
+                        background: browse-touch.pressed ? Theme.pressed : browse-touch.has-hover ? Theme.hover : Theme.field;
+                        border-width: 1px;
+                        border-color: Theme.border;
+                        Glyph {
+                            x: (parent.width - self.width) / 2;
+                            y: (parent.height - self.height) / 2;
+                            name: "folder";
+                            tint: Theme.text-dim;
+                        }
+                        browse-touch := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.custom-action("browse-custom-app"); }
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: end;
+                    DialogButton {
+                        label: "Open";
+                        clicked => {
+                            if root.custom-command != "" {
+                                root.custom-action("open-custom:" + root.custom-command);
+                            } else if root.selected-app-index >= 0 && root.selected-app-index < root.open-with-apps.length {
+                                root.custom-action("open-with-app:" + root.open-with-apps[root.selected-app-index].id);
+                            }
+                        }
+                    }
+                    DialogButton {
+                        label: "Set as default";
+                        primary: true;
+                        clicked => {
+                            if root.custom-command != "" {
+                                root.custom-action("set-default-custom:" + root.custom-command);
+                            } else if root.selected-app-index >= 0 && root.selected-app-index < root.open-with-apps.length {
+                                root.custom-action("set-default-app:" + root.open-with-apps[root.selected-app-index].id);
+                            }
+                        }
+                    }
+                    DialogButton {
+                        label: "Reset to system defaults";
+                        clicked => {
+                            root.custom-action("reset-default-app");
                         }
                     }
                 }

@@ -38,7 +38,7 @@ use backends::gungnir::proto::socket_path_from_env;
 use backends::{GungnirVfsBackend, LocalPosixBackend, MockGungnirBackend, RemoteVfsBackend};
 use core_vfs::{VfsRegistry, VfsUri};
 use init::InitConfig;
-use slint::ComponentHandle;
+use slint::{ComponentHandle, Model};
 use tokio::sync::mpsc;
 
 use bridge::SlintSink;
@@ -117,9 +117,70 @@ fn wire(ui: &AppWindow, tx: &mpsc::Sender<Msg>) {
     });
     on!(on_terminal_run, |cmd| Command::TerminalRun(cmd.to_string()));
     on!(on_terminal_clear, || Command::TerminalClear);
-    // Drag payload: a plain-text tag naming the row (computed on the UI thread, trivial).
-    // `.into()` reaches Slint's data-transfer type through its public `From<SharedString>`.
-    ui.on_drag_data(|p, i| slint::SharedString::from(format!("gungnir-fm:{p}:{i}")).into());
+    // Drag payload: construct full DataTransfer with local file paths and shell-safe plain text.
+    // Enables native drag-and-drop to terminals (pasting paths), editors, web browsers, and file managers.
+    let ui_weak = ui.as_weak();
+    ui.on_drag_data(move |p, i| {
+        let mut dt = slint::DataTransfer::default();
+        let Some(ui) = ui_weak.upgrade() else { return dt };
+        let files = if p == 0 { ui.get_left_files() } else { ui.get_right_files() };
+        let Ok(idx) = usize::try_from(i) else { return dt };
+        let Some(row) = files.row_data(idx) else { return dt };
+
+        let mut local_paths = Vec::new();
+        let mut uri_strings = Vec::new();
+
+        if row.selected {
+            for j in 0..files.row_count() {
+                if let Some(r) = files.row_data(j)
+                    && r.selected
+                {
+                    let u_str = r.uri.to_string();
+                    if let Ok(uri) = core_vfs::VfsUri::parse(&u_str) {
+                        if let Some(lp) = uri.to_local_path() {
+                            local_paths.push(lp);
+                        } else {
+                            uri_strings.push(u_str);
+                        }
+                    } else {
+                        uri_strings.push(u_str);
+                    }
+                }
+            }
+        }
+
+        if local_paths.is_empty() && uri_strings.is_empty() {
+            let u_str = row.uri.to_string();
+            if let Ok(uri) = core_vfs::VfsUri::parse(&u_str) {
+                if let Some(lp) = uri.to_local_path() {
+                    local_paths.push(lp);
+                } else {
+                    uri_strings.push(u_str);
+                }
+            } else {
+                uri_strings.push(u_str);
+            }
+        }
+
+        if !local_paths.is_empty() {
+            dt.set_file_paths(local_paths.iter().map(|p| p.as_path()));
+            let formatted: Vec<String> = local_paths
+                .iter()
+                .map(|p| {
+                    let s = p.to_string_lossy();
+                    if s.contains(' ') || s.contains('\'') || s.contains('\"') {
+                        format!("'{}'", s.replace('\'', "'\\''"))
+                    } else {
+                        s.into_owned()
+                    }
+                })
+                .collect();
+            dt.set_plain_text(slint::SharedString::from(formatted.join(" ")));
+        } else if !uri_strings.is_empty() {
+            dt.set_plain_text(slint::SharedString::from(uri_strings.join(" ")));
+        }
+        dt
+    });
     on!(on_dialog_choose, |i| Command::DialogChoose(index(i)));
     on!(on_device_open, |o| Command::DeviceOpen(o.to_string()));
     on!(on_device_eject, |o| Command::DeviceEject(o.to_string()));

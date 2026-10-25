@@ -80,6 +80,7 @@ pub fn to_file_row(r: &RowItem) -> FileRow {
 
     FileRow {
         name: SharedString::from(r.name.as_str()),
+        uri: SharedString::from(r.uri.as_str()),
         size_text: SharedString::from(r.size_text.as_str()),
         type_text: SharedString::from(r.type_text.as_str()),
         modified_text: SharedString::from(r.modified_text.as_str()),

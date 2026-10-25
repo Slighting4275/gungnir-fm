@@ -43,6 +43,16 @@ pub struct DialogView {
     pub opt2: bool,
     pub extra1: String,
     pub extra2: String,
+    pub properties_tab: i32,
+    pub open_with_apps: Vec<crate::OpenWithAppItem>,
+    pub selected_app_index: i32,
+    pub custom_command: String,
+    pub mime_type: String,
+    pub mime_desc: String,
+    pub perms_owner: String,
+    pub perms_group: String,
+    pub perms_others: String,
+    pub perms_executable: bool,
 }
 
 impl Default for DialogView {
@@ -58,6 +68,16 @@ impl Default for DialogView {
             opt2: false,
             extra1: String::new(),
             extra2: String::new(),
+            properties_tab: 0,
+            open_with_apps: Vec::new(),
+            selected_app_index: -1,
+            custom_command: String::new(),
+            mime_type: String::new(),
+            mime_desc: String::new(),
+            perms_owner: String::new(),
+            perms_group: String::new(),
+            perms_others: String::new(),
+            perms_executable: false,
         }
     }
 }
@@ -72,6 +92,7 @@ pub struct Flags {
     pub zoom_level: f32,
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub enum Update {
     /// Replace every row of a pane.
@@ -120,6 +141,7 @@ pub enum Update {
     Flags(Flags),
     Dialog(DialogView),
     CloseDialog,
+    CustomCommand(String),
     Rename {
         pane: i32,
         index: i32,
@@ -302,6 +324,16 @@ pub fn apply(ui: &AppWindow, u: Update) {
             ui.set_dialog_opt2(d.opt2);
             ui.set_dialog_extra1(SharedString::from(d.extra1));
             ui.set_dialog_extra2(SharedString::from(d.extra2));
+            ui.set_dialog_properties_tab(d.properties_tab);
+            ui.set_dialog_open_with_apps(model(d.open_with_apps));
+            ui.set_dialog_selected_app_index(d.selected_app_index);
+            ui.set_dialog_custom_command(SharedString::from(d.custom_command));
+            ui.set_dialog_mime_type(SharedString::from(d.mime_type));
+            ui.set_dialog_mime_desc(SharedString::from(d.mime_desc));
+            ui.set_dialog_perms_owner(SharedString::from(d.perms_owner));
+            ui.set_dialog_perms_group(SharedString::from(d.perms_group));
+            ui.set_dialog_perms_others(SharedString::from(d.perms_others));
+            ui.set_dialog_perms_executable(d.perms_executable);
             ui.set_dialog_kind(d.kind);
         }
         Update::CloseDialog => {
@@ -312,6 +344,19 @@ pub fn apply(ui: &AppWindow, u: Update) {
             ui.set_dialog_opt2(false);
             ui.set_dialog_extra1(SharedString::new());
             ui.set_dialog_extra2(SharedString::new());
+            ui.set_dialog_properties_tab(0);
+            ui.set_dialog_open_with_apps(model(Vec::new()));
+            ui.set_dialog_selected_app_index(-1);
+            ui.set_dialog_custom_command(SharedString::new());
+            ui.set_dialog_mime_type(SharedString::new());
+            ui.set_dialog_mime_desc(SharedString::new());
+            ui.set_dialog_perms_owner(SharedString::new());
+            ui.set_dialog_perms_group(SharedString::new());
+            ui.set_dialog_perms_others(SharedString::new());
+            ui.set_dialog_perms_executable(false);
+        }
+        Update::CustomCommand(c) => {
+            ui.set_dialog_custom_command(c.into());
         }
         Update::Terminal { open, cwd, output } => {
             ui.set_terminal_open(open);
