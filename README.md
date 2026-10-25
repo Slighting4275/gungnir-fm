@@ -147,6 +147,34 @@ Gungnir FM is built to run natively across all 24 Linux and BSD init systems and
 - **Legacy Daemonization**: Clean `-d / --daemon` and `--pidfile <PATH>` options for traditional SysVinit and BSD `rc.subr` scripts.
 - **POSIX /bin/sh Shell Scripts**: All deployment, installation, and build scripts strictly adhere to POSIX `/bin/sh` syntax.
 
+### 📦 100% Bit-Perfect Lossless Compression & Archiving Engine
+Gungnir FM includes an enterprise-grade, multi-format lossless compression subsystem adhering strictly to **100% bit-perfect reconstruction**: not a single byte, bit, frame, or audio sample of original data is ever degraded, quantized, or discarded. Original checksums (SHA-256 and BLAKE3) remain identical after decode.
+
+- **The Core Suite (Daily Driver & Cold-Storage Standards)**:
+  - **Zstandard (`.zst`, `.tar.zst`)**: State-of-the-art daily driver archive engine scaling from ultra-fast level 1 (>500 MB/s) to levels 19–22 cold archival, with decompression throughput consistently exceeding 1.2 GB/s.
+  - **XZ / LZMA2 (`.xz`, `.tar.xz`)**: Maximum density cold-storage archival for system binaries, firmware, and release tarballs.
+  - **Universal ZIP (`.zip`)**: Interoperable central-directory random-access container with optional password encryption.
+  - **7-Zip (`.7z`)**: Multi-stream encrypted container featuring solid compression and AES-256 header and data encryption.
+  - **Gzip (`.gz`, `.tar.gz`) & Bzip2 (`.bz2`, `.tar.bz2`)**: Legacy Unix, cloud baseline, and Burrows-Wheeler distribution archives.
+- **High-Throughput & Specialized General Engines**:
+  - **LZ4 (`.lz4`, `.tar.lz4`)**: Memory-bus speed streaming compression (400–800 MB/s encode, 3–5 GB/s decode per core).
+  - **Brotli (`.br`, `.tar.br`)**: Context-modeled high-density text, code, JSON, and log archiving.
+  - **LZO (`.lzo`)**: Zero-overhead sliding dictionary compression for real-time block and flash filesystem dumps.
+- **Specialized Domain-Specific Lossless Codecs**:
+  - **Lossless Still Images**: JPEG XL (`.jxl` lossless modular mode), PNG, QOI (Quite OK Image), and OpenEXR (`.exr` 16/32-bit float HDR).
+  - **Lossless Audio**: FLAC, WavPack (`.wv` pure 32-bit float and DSD), ALAC (`.m4a`).
+  - **Lossless Archival Video**: FFV1 intra-frame CABAC international film preservation standard (`.mkv`).
+- **3-Tier Hybrid Architecture**:
+  - *Tier 1 (In-Process `libarchive` Core)*: Auto-detects magic bytes, streaming `.tar.zst`, `.zip`, `.tar.xz`, `.tar.gz`, `.tar.bz2`, `.tar.lz4`, and `.tar` with zero intermediate disk writes.
+  - *Tier 2 (In-Process Native Single-Stream Engines)*: Streaming compressors and decompressors for single-file processing.
+  - *Tier 3 (Asynchronous Non-Blocking CLI Worker Fallback)*: Non-blocking POSIX pipes for solid 7z, unrar, and specialized domain media encoders.
+- **UI Integration & Context Menu Actions**:
+  - **"Compress…"**: In-window modal Lossless Compression Dialog (`DialogKind::Compress`) supporting format selection, Fast / Normal (default) / Maximum levels, and AES-256 password encryption.
+  - **"Quick Compress to .tar.zst"** & **"Quick Compress to .zip"**: Instant 1-click archiving.
+  - **"Extract Here"** & **"Extract to Subfolder…"**: Collision-safe, traversal-protected archive extraction.
+  - **"Test Archive Integrity"**: In-memory bit-perfect header, checksum, and stream integrity verification without disk writes.
+- **C23 Standard Compliance**: Any C code, headers, or compilation tools used across the workspace strictly adhere to ISO/IEC 9899:2024 (C23) via `-std=c23`.
+
 ### 🛠️ Advanced Operations & Utilities
 - **Transfer Collision & Conflict Resolution**: Side-by-side comparison card displaying source vs destination file metadata, timestamps, sizes, thumbnail preview, and badge indicators. Offers `Replace`, `Replace if Newer`, `Auto-Rename` (generating non-colliding copy names), and `Skip`, plus an "Apply to all remaining conflicts" batch checkbox.
 - **Embedded Interactive Terminal Drawer (`F4`)**: In-window collapsible terminal panel above the status bar with bidirectional directory sync: navigating in a pane updates the terminal `cwd`; executing `cd` in the terminal navigates the active pane. Features command execution, log output, and clear actions.
@@ -240,8 +268,10 @@ Gungnir FM is built to run natively across all 24 Linux and BSD init systems and
 ### Build Requirements
 - Linux (x86_64, AArch64)
 - Rust 1.92+ (edition 2024)
+- Native `libarchive` (`libarchive-dev` / `libarchive.so`)
+- C23 compiler (GCC 16+ or Clang 23+ targeting `-std=c23`)
 - Slint runtime dependencies (fontconfig, xkbcommon, X11 or Wayland libraries)
-- Optional tools for preview enhancements: `ffmpegthumbnailer`, `ffmpeg`, `imagemagick`
+- Optional tools for preview enhancements and archive CLI fallbacks: `7z` / `7zz`, `ffmpeg`, `imagemagick`, `flac`, `wavpack`, `libjxl`
 
 ### Compile from Source
 ```sh
