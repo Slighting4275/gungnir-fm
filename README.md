@@ -266,28 +266,224 @@ Gungnir FM includes an enterprise-grade, multi-format lossless compression subsy
 ## Building and Installation
 
 ### Build Requirements
-- Linux (x86_64, AArch64)
-- Rust 1.92+ (edition 2024)
-- Native `libarchive` (`libarchive-dev` / `libarchive.so`)
-- C23 compiler (GCC 16+ or Clang 23+ targeting `-std=c23`)
-- Slint runtime dependencies (fontconfig, xkbcommon, X11 or Wayland libraries)
-- Optional tools for preview enhancements and archive CLI fallbacks: `7z` / `7zz`, `ffmpeg`, `imagemagick`, `flac`, `wavpack`, `libjxl`
+- **Operating Systems**: Linux (x86_64, AArch64, RISC-V), FreeBSD, OpenBSD, NetBSD, DragonFly BSD
+- **Rust Toolchain**: Rust 1.92+ (edition 2024)
+- **C/C++ Compiler**: C23 compiler (GCC 16+ or Clang 23+ targeting `-std=c23`)
+- **System Libraries**: `libarchive` (`libarchive.so`), `libzstd`, `libzip`, `sqlite3`, `pkg-config`
+- **Display & Windowing**: `fontconfig`, `libxkbcommon`, X11 (`libX11`) or Wayland (`libwayland-client`)
+- **Optional Tools for Previews & Formats**: `7z` / `7zz`, `ffmpeg`, `imagemagick`, `flac`, `wavpack`, `libjxl`, `oxipng`
 
-### Compile from Source
+---
+
+### 🐧 Linux Installation via Terminal
+
+#### 1. Install Dependencies for Your Distribution
+
+##### **Arch Linux / Manjaro / EndeavourOS**
 ```sh
-cargo build --release
-target/release/gungnir-fm [LEFT_PATH] [RIGHT_PATH]
+sudo pacman -S --needed rust cargo git libarchive zstd libzip fontconfig libxkbcommon wayland libx11 sqlite pkgconf
 ```
 
-### User Installation
-To install into `~/.local/bin` with the desktop icon and application launcher entry:
+##### **Debian / Ubuntu / Linux Mint / Pop!_OS**
 ```sh
-scripts/install-local.sh
+sudo apt update
+sudo apt install -y rustc cargo git libarchive-dev libzstd-dev libzip-dev libfontconfig1-dev libxkbcommon-dev libwayland-dev libx11-dev libsqlite3-dev pkg-config
 ```
+
+##### **Fedora / RHEL / CentOS Stream**
+```sh
+sudo dnf install -y rust cargo git libarchive-devel libzstd-devel libzip-devel fontconfig-devel libxkbcommon-devel wayland-devel libX11-devel sqlite-devel pkgconf-pkg-config
+```
+
+##### **openSUSE (Tumbleweed / Leap)**
+```sh
+sudo zypper install -y rust cargo git libarchive-devel libzstd-devel libzip-devel fontconfig-devel libxkbcommon-devel wayland-devel libX11-devel sqlite3-devel pkgconf
+```
+
+##### **Alpine Linux**
+```sh
+sudo apk add rust cargo git libarchive-dev zstd-dev libzip-dev fontconfig-dev libxkbcommon-dev wayland-dev libx11-dev sqlite-dev pkgconf
+```
+
+##### **Void Linux**
+```sh
+sudo xbps-install -Sy rust cargo git libarchive-devel libzstd-devel libzip-devel fontconfig-devel libxkbcommon-devel wayland-devel libX11-devel sqlite-devel pkg-config
+```
+
+##### **Gentoo**
+```sh
+sudo emerge --ask dev-lang/rust dev-vcs/git app-arch/libarchive app-arch/zstd dev-libs/libzip media-libs/fontconfig x11-libs/libxkbcommon dev-libs/wayland x11-libs/libX11 dev-db/sqlite virtual/pkgconfig
+```
+
+##### **Nix / NixOS**
+```sh
+nix-shell -p rustc cargo git libarchive zstd libzip fontconfig libxkbcommon wayland xorg.libX11 sqlite pkg-config
+```
+
+#### 2. Clone and Install Locally (No Root Required)
+```sh
+git clone https://gitlab.com/exalted6165/gungnir-fm.git
+cd gungnir-fm
+./scripts/install-local.sh
+```
+This builds an optimized release binary and installs:
+- Executable binary to `~/.local/bin/gungnir-fm`
+- Gungnir VFS daemon to `~/.local/bin/gungnird`
+- GIO VFS extension module to `~/.local/lib/gio/modules/libgiogungnir.so`
+- Desktop entry to `~/.local/share/applications/gungnir-fm.desktop`
+- Scalable SVG icon to `~/.local/share/icons/hicolor/scalable/apps/gungnir-fm.svg`
+
 To uninstall:
 ```sh
-scripts/install-local.sh --uninstall
+./scripts/install-local.sh --uninstall
 ```
+
+---
+
+### 📦 Universal Linux Packages via Terminal
+
+#### **Standalone AppImage (Zero-Install Single Binary)**
+Download the self-contained portable AppImage containing both Gungnir FM and the Gungnir VFS daemon:
+```sh
+# 1. Download the latest AppImage
+curl -fsSLO https://gitlab.com/exalted6165/gungnir-fm/-/releases/permalink/latest/downloads/Gungnir_FM-x86_64.AppImage
+
+# 2. Make it executable
+chmod +x Gungnir_FM-x86_64.AppImage
+
+# 3. Run Gungnir FM
+./Gungnir_FM-x86_64.AppImage
+
+# Optional: Build the AppImage yourself from source
+./packaging/appimage/build-appimage.sh
+```
+
+#### **Flatpak Package**
+```sh
+# Build and install locally for the current user
+flatpak-builder --user --install --force-clean build packaging/flatpak/org.gungnir.GungnirFM.yml
+
+# Run via Flatpak
+flatpak run org.gungnir.GungnirFM
+```
+
+#### **Snap Package**
+```sh
+# Install from Snap Store with classic confinement for full mount management
+sudo snap install gungnir-fm --classic
+
+# Or build locally using snapcraft
+snapcraft
+sudo snap install --classic --dangerous gungnir-fm_*.snap
+```
+
+---
+
+### 😈 BSD Installation via Terminal (FreeBSD, OpenBSD, NetBSD, DragonFly BSD)
+
+Gungnir FM is fully compatible with BSD operating systems using standard POSIX and native BSD package managers.
+
+#### **FreeBSD**
+```sh
+# 1. Install prerequisites via pkg
+sudo pkg install -y rust cargo git libarchive zstd libzip fontconfig libxkbcommon sqlite3 pkgconf
+
+# 2. Clone the repository
+git clone https://gitlab.com/exalted6165/gungnir-fm.git
+cd gungnir-fm
+
+# 3. Build and install for current user
+./scripts/install-local.sh
+
+# 4. Launch Gungnir FM
+~/.local/bin/gungnir-fm
+```
+
+#### **OpenBSD**
+```sh
+# 1. Install prerequisites via pkg_add
+doas pkg_add rust git libarchive zstd libzip fontconfig xkbcommon sqlite3 pkgconf
+
+# 2. Clone the repository
+git clone https://gitlab.com/exalted6165/gungnir-fm.git
+cd gungnir-fm
+
+# 3. Build and install for current user
+./scripts/install-local.sh
+
+# 4. Launch Gungnir FM
+~/.local/bin/gungnir-fm
+```
+
+#### **NetBSD**
+```sh
+# 1. Install prerequisites via pkgin
+sudo pkgin install rust git libarchive zstd libzip fontconfig libxkbcommon sqlite3 pkg-config
+
+# 2. Clone and build
+git clone https://gitlab.com/exalted6165/gungnir-fm.git
+cd gungnir-fm
+./scripts/install-local.sh
+```
+
+#### **DragonFly BSD**
+```sh
+# 1. Install prerequisites via pkg
+sudo pkg install -y rust cargo git libarchive zstd libzip fontconfig libxkbcommon sqlite3 pkgconf
+
+# 2. Clone and build
+git clone https://gitlab.com/exalted6165/gungnir-fm.git
+cd gungnir-fm
+./scripts/install-local.sh
+```
+
+---
+
+### 💻 Running from Terminal and CLI Options
+
+You can launch Gungnir FM directly from any terminal or script:
+
+```sh
+# Open Gungnir FM with the home directory in primary pane
+gungnir-fm
+
+# Open specific folders in dual-pane view
+gungnir-fm ~/Documents ~/Downloads
+
+# Open remote or virtual filesystem URIs
+gungnir-fm gungnir://odin/asgard sftp://user@host/remote/path
+```
+
+#### Command-Line Arguments:
+```
+USAGE:
+    gungnir-fm [OPTIONS] [LEFT_PATH] [RIGHT_PATH]
+
+ARGUMENTS:
+    [LEFT_PATH]     Initial path or URI for the primary (left) pane
+    [RIGHT_PATH]    Initial path or URI for the secondary (right) pane
+
+OPTIONS:
+    -h, --help       Print help message
+    -V, --version    Print version information
+    -f, --foreground Run in foreground (default for process supervisors)
+    -d, --daemon     Fork into background (daemonize for classic SysV/BSD)
+    --pidfile PATH   Write process PID to file
+    --ready-fd FD    Write ready notification byte to inherited file descriptor
+
+DISPLAY BACKENDS:
+    Natively supports Wayland (Hyprland, Sway, GNOME, KDE, River, Wayfire),
+    X11 (X.Org, i3, dwm, bspwm, awesome, xmonad, openbox, fluxbox, cwm),
+    and direct Linux Framebuffer / DRM/KMS (SLINT_BACKEND=linuxkms).
+
+ENVIRONMENT VARIABLES:
+    GUNGNIR_FM_BACKEND  Backend selection: auto, live, mock, off, live-or-off
+    GUNGNIR_SOCKET      Custom gungnird UNIX socket path
+    SLINT_BACKEND       Slint backend: winit, winit-software, linuxkms
+    GUNGNIR_FM_TRACE=1  Log directory listing timings to stderr
+```
+
+---
 
 ### Packaging & Distribution
 
