@@ -38,6 +38,17 @@
   </provides>
 
   <releases>
+    <release version="0.1.4" date="2026-10-25">
+      <description>
+        <p>Dynamic dark/light mode switching, reference-calibrated light theme, and native desktop drag-and-drop to terminal emulators.</p>
+        <ul>
+          <li>Interactive theme switcher with cool silver lunar crater disc in dark mode and clean sun glyph in light mode</li>
+          <li>Calibrated light mode palette using soft sky blue and cyan surfaces with high-contrast text and warm amber folder accents</li>
+          <li>Integrated Qt window backend for native OS-level drag-and-drop file path pasting into external terminal emulators</li>
+          <li>Synchronized Slint standard widget palette to prevent washed-out text on top menus and toolbars</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.3" date="2026-10-24">
       <description>
         <p>Network sidebar integration, network:/// VFS browsing, and child process GIO environment isolation.</p>
