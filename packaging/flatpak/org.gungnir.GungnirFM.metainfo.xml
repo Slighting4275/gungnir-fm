@@ -38,6 +38,17 @@
   </provides>
 
   <releases>
+    <release version="0.1.1" date="2026-10-24">
+      <description>
+        <p>Security hardening, CLI switch sanitization, permission isolation, and desktop launch optimizations.</p>
+        <ul>
+          <li>Sanitized CLI switches and delimiters across archive, transcoding, and updater routines</li>
+          <li>Hardened thumbnail cache directory permissions (0700) and user UID isolation</li>
+          <li>Optimized desktop launch entry with StartupNotify=false and StartupWMClass=gungnir-fm to eliminate cursor spin</li>
+          <li>Updated AppImage, Flatpak, and Snap packaging configurations with full Gungnir VFS bundling</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.0" date="2026-10-24">
       <description>
         <p>Initial release of Gungnir FM featuring complete Gungnir VFS integration, Flatpak, Snap, and AppImage packaging, and automated package self-updater.</p>
