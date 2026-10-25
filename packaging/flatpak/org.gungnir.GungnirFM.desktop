@@ -9,7 +9,8 @@ Terminal=false
 Categories=System;FileTools;FileManager;
 Keywords=files;folders;browser;explorer;gungnir;vfs;manager;
 MimeType=inode/directory;
-StartupNotify=true
+StartupNotify=false
+StartupWMClass=gungnir-fm
 Actions=NewWindow;
 
 [Desktop Action NewWindow]

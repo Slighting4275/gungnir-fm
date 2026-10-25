@@ -63,7 +63,8 @@ Icon=gungnir-fm
 Terminal=false
 Categories=System;FileTools;FileManager;
 Keywords=files;folders;browser;explorer;gungnir;
-StartupNotify=true
+StartupNotify=false
+StartupWMClass=gungnir-fm
 DESKTOP
 
 if command -v update-desktop-database >/dev/null 2>&1; then

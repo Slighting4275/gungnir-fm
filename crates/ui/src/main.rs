@@ -152,6 +152,14 @@ fn setup_display_environment() {
         }
     }
 
+    // Clear DESKTOP_STARTUP_ID so child processes or terminal sessions don't inherit a stale startup ID
+    if std::env::var_os("DESKTOP_STARTUP_ID").is_some() {
+        // SAFETY: Called synchronously at main entry before worker threads are spawned.
+        unsafe {
+            std::env::remove_var("DESKTOP_STARTUP_ID");
+        }
+    }
+
     // DirectFB / Linux Framebuffer (fbdev / direct DRM/KMS) & kmscon support:
     // If neither X11 nor Wayland is running, attempt linuxkms backend if DRM/KMS or framebuffer is present.
     if std::env::var_os("DISPLAY").is_none()
