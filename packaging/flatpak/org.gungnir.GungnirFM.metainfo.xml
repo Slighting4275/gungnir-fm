@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>org.gungnir.GungnirFM</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later AND AGPL-3.0-or-later</project_license>
+  <name>Gungnir FM</name>
+  <summary>Fast dual-pane Linux file manager with Gungnir VFS</summary>
+
+  <description>
+    <p>
+      Gungnir FM is a high-performance dual-pane Linux file manager engineered in Rust
+      and Slint. It is designed from the ground up as a native companion to Gungnir VFS,
+      providing unified access to local filesystems, virtual filesystems, and remote endpoints.
+    </p>
+    <p>Key architectural capabilities include:</p>
+    <ul>
+      <li>Full Gungnir VFS integration with live socket communication and dynamic GIO module</li>
+      <li>Instant dual-pane browsing, folder snapshots, and side-by-side comparison</li>
+      <li>100% bit-perfect lossless compression engine supporting Zstandard, XZ, ZIP, 7-Zip, Gzip, Bzip2, LZ4, and Brotli</li>
+      <li>Hardware-accelerated rendering across Wayland, X11, and Linux DRM/KMS Framebuffer</li>
+      <li>Low-memory footprint, non-blocking asynchronous I/O, and integrated package self-updater</li>
+    </ul>
+  </description>
+
+  <launchable type="desktop-id">org.gungnir.GungnirFM.desktop</launchable>
+
+  <url type="homepage">https://gitlab.com/exalted6165/gungnir-fm</url>
+  <url type="bugtracker">https://gitlab.com/exalted6165/gungnir-fm/-/issues</url>
+  <url type="vcs-browser">https://gitlab.com/exalted6165/gungnir-fm</url>
+
+  <developer id="org.gungnir">
+    <name>Gungnir Developers</name>
+  </developer>
+
+  <provides>
+    <binary>gungnir-fm</binary>
+    <binary>gungnir-fm-wrapper</binary>
+  </provides>
+
+  <releases>
+    <release version="0.1.0" date="2026-10-24">
+      <description>
+        <p>Initial release of Gungnir FM featuring complete Gungnir VFS integration, Flatpak, Snap, and AppImage packaging, and automated package self-updater.</p>
+      </description>
+    </release>
+  </releases>
+
+  <content_rating type="oars-1.1"/>
+</component>

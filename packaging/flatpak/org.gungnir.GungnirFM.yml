@@ -1,0 +1,93 @@
+app-id: org.gungnir.GungnirFM
+runtime: org.freedesktop.Platform
+runtime-version: '24.08'
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+  - org.freedesktop.Sdk.Extension.llvm
+
+command: gungnir-fm-wrapper
+
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin:/usr/lib/sdk/llvm/bin
+  env:
+    CARGO_HOME: /run/build/gungnir-fm/cargo
+    GUNGNIR_FM_BACKEND: live
+    GIO_USE_VFS: gungnir
+    GIO_EXTRA_MODULES: /app/lib/gio/modules
+    GUNGNIR_PACKAGE_FORMAT: flatpak
+
+finish-args:
+  # Host filesystem access required for Linux dual-pane file management
+  - --filesystem=host
+  - --filesystem=xdg-run/gungnir:create
+  # Display servers: Wayland primary, X11 fallback
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --share=ipc
+  # Network for remote VFS endpoints (SFTP/SMB) and package update checks
+  - --share=network
+  # Package self-update portal and system integration
+  - --talk-name=org.freedesktop.portal.Updates
+  - --talk-name=org.freedesktop.portal.Desktop
+  - --talk-name=org.freedesktop.Notifications
+  - --talk-name=org.freedesktop.FileManager1
+  - --system-talk-name=org.freedesktop.UDisks2
+  # Environment configuration ensuring gungnir-vfs is fully wired
+  - --env=GUNGNIR_FM_BACKEND=live
+  - --env=GIO_USE_VFS=gungnir
+  - --env=GIO_EXTRA_MODULES=/app/lib/gio/modules
+  - --env=GUNGNIR_PACKAGE_FORMAT=flatpak
+
+cleanup:
+  - /include
+  - /lib/pkgconfig
+  - /share/pkgconfig
+  - '*.la'
+  - '*.a'
+
+modules:
+  # ---------------------------------------------------------------------------
+  # Module 1: Gungnir VFS (gungnird daemon + libgiogungnir GIO extension module)
+  # ---------------------------------------------------------------------------
+  - name: gungnir-vfs
+    buildsystem: simple
+    build-commands:
+      # 1. Build gungnird Rust daemon
+      - cargo build --release --locked --bin gungnird
+      - install -Dm755 .build/target/release/gungnird /app/bin/gungnird
+      # 2. Build libgiogungnir.so GIO extension module using C23 / Zig
+      - ./zb
+      - install -Dm755 .build/zig-out/lib/libgiogungnir.so /app/lib/gio/modules/libgiogungnir.so
+      # 3. Compile GIO module cache in target prefix
+      - gio-querymodules /app/lib/gio/modules
+      # 4. Install license files
+      - install -Dm644 LICENSES/GPL-3.0-or-later.txt /app/share/licenses/gungnir-vfs/GPL-3.0-or-later.txt
+      - install -Dm644 LICENSES/AGPL-3.0-or-later.txt /app/share/licenses/gungnir-vfs/AGPL-3.0-or-later.txt
+    sources:
+      - type: git
+        url: https://gitlab.com/exalted6165/gungnir-vfs.git
+        branch: main
+
+  # ---------------------------------------------------------------------------
+  # Module 2: Gungnir FM (File Manager Rust + Slint binary & runtime wrapper)
+  # ---------------------------------------------------------------------------
+  - name: gungnir-fm
+    buildsystem: simple
+    build-commands:
+      # 1. Build gungnir-fm release binary
+      - cargo build --release --locked -p gungnir-fm
+      - install -Dm755 target/release/gungnir-fm /app/bin/gungnir-fm
+      # 2. Install wrapper script that manages gungnird and configures live GIO VFS
+      - install -Dm755 packaging/flatpak/gungnir-fm-wrapper.sh /app/bin/gungnir-fm-wrapper
+      # 3. Install desktop entry, metainfo, and icon
+      - install -Dm644 packaging/flatpak/org.gungnir.GungnirFM.desktop /app/share/applications/org.gungnir.GungnirFM.desktop
+      - install -Dm644 packaging/flatpak/org.gungnir.GungnirFM.metainfo.xml /app/share/metainfo/org.gungnir.GungnirFM.metainfo.xml
+      - install -Dm644 crates/ui/assets/gungnir-fm.svg /app/share/icons/hicolor/scalable/apps/org.gungnir.GungnirFM.svg
+      # 4. Install licenses
+      - install -Dm644 LICENSES/GPL-3.0-or-later.txt /app/share/licenses/gungnir-fm/GPL-3.0-or-later.txt
+      - install -Dm644 LICENSES/AGPL-3.0-or-later.txt /app/share/licenses/gungnir-fm/AGPL-3.0-or-later.txt
+    sources:
+      - type: git
+        url: https://gitlab.com/exalted6165/gungnir-fm.git
+        branch: main

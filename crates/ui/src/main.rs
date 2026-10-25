@@ -30,6 +30,7 @@ mod init;
 mod rows;
 mod session;
 mod thumbnails;
+pub mod updater;
 
 use std::sync::Arc;
 
@@ -131,6 +132,7 @@ fn wire(ui: &AppWindow, tx: &mpsc::Sender<Msg>) {
     });
     on!(on_rename_commit, |p, i, n| Command::RenameCommit { pane: pane(p), index: index(i), name: n.to_string() });
     on!(on_rename_cancel, || Command::RenameCancel);
+    on!(on_trigger_update, || Command::TriggerUpdate);
 }
 
 fn setup_display_environment() {

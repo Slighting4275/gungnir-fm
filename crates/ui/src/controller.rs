@@ -116,6 +116,7 @@ pub enum Command {
         name: String,
     },
     RenameCancel,
+    TriggerUpdate,
     Quit,
 }
 
@@ -195,6 +196,11 @@ pub enum Event {
     TerminalOutput {
         text: String,
         reload_loc: VfsUri,
+    },
+    UpdateCheckResult(crate::updater::UpdateCheckResult),
+    UpdateFinished {
+        success: bool,
+        message: String,
     },
     Tick,
 }
@@ -444,6 +450,10 @@ pub struct Controller {
     terminal_cwd: PathBuf,
     terminal_output: String,
     search_task: Option<JoinHandle<()>>,
+    update_available: bool,
+    update_version: String,
+    updating: bool,
+    package_format: crate::updater::PackageFormat,
 }
 
 /// Breadcrumbs as Nemo shows them: a folder below `home` starts at a "Home" crumb, the
@@ -578,6 +588,10 @@ impl Controller {
             terminal_cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
             terminal_output: String::from("Gungnir FM Embedded Terminal (F4)\nType shell commands and press Enter\n"),
             search_task: None,
+            update_available: false,
+            update_version: String::new(),
+            updating: false,
+            package_format: crate::updater::detect_package_format(),
         }
     }
 
@@ -659,6 +673,22 @@ impl Controller {
                 tokio::time::sleep(TICK).await;
                 if tx.send(Msg::Ev(Event::Tick)).await.is_err() {
                     return;
+                }
+            }
+        });
+        // Package update poller.
+        let format = self.package_format;
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            let check = crate::updater::check_for_update(format).await;
+            let _ = tx.send(Msg::Ev(Event::UpdateCheckResult(check))).await;
+
+            loop {
+                tokio::time::sleep(Duration::from_secs(3600)).await;
+                let check = crate::updater::check_for_update(format).await;
+                if tx.send(Msg::Ev(Event::UpdateCheckResult(check))).await.is_err() {
+                    break;
                 }
             }
         });
@@ -2919,6 +2949,27 @@ impl Controller {
             Command::TerminalClear => {
                 self.terminal_clear();
             }
+            Command::TriggerUpdate => {
+                if self.update_available && !self.updating {
+                    self.updating = true;
+                    self.ui.send(Update::PackageStatus {
+                        available: true,
+                        version: self.update_version.clone(),
+                        updating: true,
+                    });
+                    let format = self.package_format;
+                    let ver = self.update_version.clone();
+                    let tx = self.tx.clone();
+                    tokio::spawn(async move {
+                        let res = crate::updater::perform_update(format, &ver).await;
+                        let (success, message) = match res {
+                            Ok(msg) => (true, msg),
+                            Err(err) => (false, err),
+                        };
+                        let _ = tx.send(Msg::Ev(Event::UpdateFinished { success, message })).await;
+                    });
+                }
+            }
         }
     }
 
@@ -3724,6 +3775,32 @@ impl Controller {
                 }
                 self.push_terminal();
                 self.reload_matching(&[reload_loc]);
+            }
+            Event::UpdateCheckResult(res) => {
+                if res.available {
+                    self.update_available = true;
+                    self.update_version = res.version.clone();
+                    self.ui.send(Update::PackageStatus {
+                        available: true,
+                        version: res.version,
+                        updating: self.updating,
+                    });
+                }
+            }
+            Event::UpdateFinished { success, message } => {
+                self.updating = false;
+                if success {
+                    self.update_available = false;
+                    self.ui.send(Update::PackageStatus { available: false, version: String::new(), updating: false });
+                    self.say(message, false);
+                } else {
+                    self.ui.send(Update::PackageStatus {
+                        available: true,
+                        version: self.update_version.clone(),
+                        updating: false,
+                    });
+                    self.say(message, true);
+                }
             }
             Event::Tick => {
                 if self.transfers_dirty {

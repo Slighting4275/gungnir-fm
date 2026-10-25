@@ -289,6 +289,50 @@ To uninstall:
 scripts/install-local.sh --uninstall
 ```
 
+### Packaging & Distribution
+
+Gungnir FM provides first-class, standalone packaging configurations across Linux package ecosystems with **full Gungnir VFS integration** (`gungnird` daemon and `libgiogungnir.so` GIO extension module bundled into every package):
+
+1. **Flatpak Package (`org.gungnir.GungnirFM`)**:
+   - Manifest: `packaging/flatpak/org.gungnir.GungnirFM.yml`
+   - Bundles `gungnird` and `libgiogungnir.so` in `/app/lib/gio/modules`.
+   - Runtime wrapper starts the background daemon and wires `GIO_USE_VFS=gungnir` and `GUNGNIR_FM_BACKEND=live`.
+   - Validate and build:
+     ```sh
+     packaging/flatpak/build-flatpak.sh
+     ```
+
+2. **Snap Package (`snapcraft.yaml`)**:
+   - Manifest: `snap/snapcraft.yaml`
+   - Base `core24`, classic confinement for full filesystem and mount management.
+   - Bundles `gungnird` and `libgiogungnir.so`.
+   - Validate and build:
+     ```sh
+     snap/build-snap.sh
+     ```
+
+3. **AppImage Package (`Gungnir_FM-x86_64.AppImage`)**:
+   - Self-contained, portable single-file executable using standard Type 2 AppImage runtime.
+   - Bundles `gungnird` and `libgiogungnir.so`, configures GIO dynamic VFS, and launches Gungnir FM with live backend.
+   - Validate and build:
+     ```sh
+     packaging/appimage/build-appimage.sh
+     ```
+
+### 🔄 Integrated Automated Package Updater
+
+Gungnir FM features an integrated package updater with a non-intrusive toolbar indicator:
+- **Intelligent Update Detection**: Automatically checks for package updates via Freedesktop Update Portal (`org.freedesktop.portal.Updates`) in Flatpak, `snapd` in Snap, and release channels in AppImage/Native mode.
+- **Top Toolbar "Update Available" Button**: The button appears dynamically in the top toolbar **strictly when a new package version is available**. If no update is available, the button is completely hidden.
+- **One-Click Auto-Update**: Clicking "Update Available" triggers the package updater in the background without freezing the UI.
+- **Automatic Disappearance**: Once the update is applied, the button and status message disappear automatically until the next version release.
+
+### 🔒 Privacy & Data Hygiene Guarantee
+
+Gungnir FM strictly adheres to zero-personal-data policies:
+- No personal usernames, emails, tokens, IP addresses, or private file paths are ever embedded in source files, packaging manifests, AppImage payloads, or build artifacts.
+- All paths utilize standard XDG variables (`$XDG_RUNTIME_DIR`, `$XDG_CONFIG_HOME`, `$XDG_DATA_DIRS`) and POSIX standards.
+
 ### Running Tests
 The workspace includes unit and integration tests across all crates (sandboxed and isolated, with zero personal data access):
 ```sh

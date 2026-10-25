@@ -1,0 +1,17 @@
+[Desktop Entry]
+Type=Application
+Name=Gungnir FM
+GenericName=File Manager
+Comment=Fast dual-pane Linux file manager with Gungnir VFS
+Exec=gungnir-fm-wrapper %U
+Icon=org.gungnir.GungnirFM
+Terminal=false
+Categories=System;FileTools;FileManager;
+Keywords=files;folders;browser;explorer;gungnir;vfs;manager;
+MimeType=inode/directory;
+StartupNotify=true
+Actions=NewWindow;
+
+[Desktop Action NewWindow]
+Name=New Window
+Exec=gungnir-fm-wrapper

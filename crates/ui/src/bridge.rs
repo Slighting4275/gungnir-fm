@@ -133,6 +133,11 @@ pub enum Update {
         cwd: String,
         output: String,
     },
+    PackageStatus {
+        available: bool,
+        version: String,
+        updating: bool,
+    },
     Quit,
 }
 
@@ -323,6 +328,11 @@ pub fn apply(ui: &AppWindow, u: Update) {
             } else {
                 ui.set_right_custom_actions(model(actions));
             }
+        }
+        Update::PackageStatus { available, version, updating } => {
+            ui.set_update_available(available);
+            ui.set_update_version(version.into());
+            ui.set_updating(updating);
         }
         Update::Quit => {
             let _ = slint::quit_event_loop();

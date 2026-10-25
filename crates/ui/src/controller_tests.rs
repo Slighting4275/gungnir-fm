@@ -719,3 +719,44 @@ fn test_lossless_compression_and_extraction_workflow() {
 
     let _ = std::fs::remove_dir_all(&tmp);
 }
+
+#[test]
+fn test_package_update_available_and_auto_update_lifecycle() {
+    // Enable simulation mode for auto update
+    // SAFETY: isolated test process scope
+    unsafe {
+        std::env::set_var("GUNGNIR_TEST_UPDATE_SIMULATE", "1");
+        std::env::set_var("GUNGNIR_PACKAGE_FORMAT", "flatpak");
+    }
+
+    let h = start("file:///", "file:///", MockConfig::default());
+
+    // 1. Initially simulate arrival of update check result: available = true
+    let event = crate::controller::Event::UpdateCheckResult(crate::updater::UpdateCheckResult {
+        available: true,
+        version: "0.2.0".to_string(),
+        format: crate::updater::PackageFormat::Flatpak,
+        details: "New Flatpak package available".to_string(),
+    });
+    h.tx.try_send(Msg::Ev(event)).unwrap_or_else(|e| panic!("{e}"));
+
+    // 2. The controller sends Update::PackageStatus { available: true, version: "0.2.0", updating: false }
+    h.until(
+        Duration::from_secs(3),
+        |u| matches!(u, Update::PackageStatus { available: true, version, updating: false } if version == "0.2.0"),
+    );
+
+    // 3. User clicks the "Update Available" button (trigger-update)
+    h.send(Command::TriggerUpdate);
+
+    // 4. Controller transitions to updating: true
+    h.until(Duration::from_secs(3), |u| matches!(u, Update::PackageStatus { available: true, updating: true, .. }));
+
+    // 5. When auto-update finishes, controller sends available: false, updating: false, message disappears!
+    h.until(Duration::from_secs(3), |u| matches!(u, Update::PackageStatus { available: false, updating: false, .. }));
+
+    unsafe {
+        std::env::remove_var("GUNGNIR_TEST_UPDATE_SIMULATE");
+        std::env::remove_var("GUNGNIR_PACKAGE_FORMAT");
+    }
+}

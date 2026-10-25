@@ -44,6 +44,9 @@ export component AppWindow inherits Window {
     in-out property <int> active-transfers: 2;
     in-out property <int> renaming-pane: -1;
     in-out property <int> renaming-index: -1;
+    in-out property <bool> update-available: false;
+    in-out property <string> update-version: "";
+    in-out property <bool> updating: false;
     in-out property <[CustomActionItem]> left-custom-actions: [];
     in-out property <[CustomActionItem]> right-custom-actions: [];
 
@@ -182,6 +185,7 @@ export component AppWindow inherits Window {
     callback terminal-run(cmd: string);
     callback terminal-clear();
     callback dialog-custom-action(action: string, opt1: bool, opt2: bool, extra1: string, extra2: string);
+    callback trigger-update();
 
     // Internal drag and drop: where the current drag started.
     in-out property <bool> drag-active: false;
@@ -446,6 +450,38 @@ export component AppWindow inherits Window {
                         }
                     }
                     Rectangle { width: 4px; }
+                    if root.update-available : Rectangle {
+                        y: (parent.height - 28px) / 2;
+                        height: 28px;
+                        border-radius: 4px;
+                        background: root.updating ? Theme.accent.darker(30%) : (update-touch.has-hover ? #5fa0ff : Theme.accent);
+                        animate background { duration: 120ms; }
+
+                        update-touch := TouchArea {
+                            enabled: !root.updating;
+                            clicked => { root.trigger-update(); }
+                        }
+
+                        HorizontalLayout {
+                            padding-left: 10px;
+                            padding-right: 10px;
+                            spacing: 6px;
+                            alignment: center;
+                            Glyph {
+                                y: (parent.height - self.height) / 2;
+                                name: "download";
+                                tint: #ffffff;
+                            }
+                            Text {
+                                y: (parent.height - self.height) / 2;
+                                text: root.updating ? "Updating..." : (root.update-version != "" ? "Update Available (" + root.update-version + ")" : "Update Available");
+                                color: #ffffff;
+                                font-size: Theme.font-size - 1px;
+                                font-weight: 700;
+                            }
+                        }
+                    }
+                    if root.update-available : Separator { y: (parent.height - self.height) / 2; }
                     ToolButton { y: (parent.height - self.height) / 2; glyph: "list"; checked: root.view-mode == 0; clicked => { root.view-mode = 0; root.view-mode-changed(0); } }
                     ToolButton { y: (parent.height - self.height) / 2; glyph: "details"; checked: root.view-mode == 1; clicked => { root.view-mode = 1; root.view-mode-changed(1); } }
                     ToolButton { y: (parent.height - self.height) / 2; glyph: "grid"; checked: root.view-mode == 2; clicked => { root.view-mode = 2; root.view-mode-changed(2); } }
