@@ -123,7 +123,14 @@ pub fn save_atomic(path: &Path, state: &SessionState) -> std::io::Result<()> {
 
     {
         use std::io::Write;
-        let mut f = std::fs::File::create(&tmp_path)?;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&tmp_path)?;
         f.write_all(&json_bytes)?;
         f.sync_all()?;
     }

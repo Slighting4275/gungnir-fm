@@ -8,7 +8,6 @@
 //!   - Inherited pipe fd for s6 / dinit (--ready-fd <FD> or $S6_NOTIFICATION_FD)
 //!   - File-based readiness via pidfile
 
-use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -126,8 +125,15 @@ pub fn daemonize_if_requested(cfg: &InitConfig) -> Result<(), Box<dyn std::error
 /// Write PID file if requested and return a guard that deletes it on drop.
 pub fn create_pidfile(path: Option<&Path>) -> Result<PidFileGuard, Box<dyn std::error::Error>> {
     if let Some(p) = path {
+        use std::os::unix::fs::OpenOptionsExt;
         let pid = std::process::id();
-        let mut f = File::create(p)?;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(p)?;
         writeln!(f, "{pid}")?;
         Ok(PidFileGuard { path: Some(p.to_path_buf()) })
     } else {

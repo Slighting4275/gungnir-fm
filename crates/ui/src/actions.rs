@@ -145,26 +145,51 @@ impl CustomAction {
     }
 }
 
-/// Substitute tokens in a command string template.
+/// Shell-escape a string for safe inclusion in POSIX `sh -c` command lines.
+#[must_use]
+pub fn shell_escape(s: &str) -> String {
+    if s.is_empty() {
+        return "''".to_string();
+    }
+    // Safe characters that require no quotes in POSIX sh
+    if s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '/' | ':' | '@')) {
+        return s.to_string();
+    }
+    // Single-quote wrapping with internal single-quotes replaced by '\''
+    let mut out = String::with_capacity(s.len() + 8);
+    out.push('\'');
+    for c in s.chars() {
+        if c == '\'' {
+            out.push_str("'\\''");
+        } else {
+            out.push(c);
+        }
+    }
+    out.push('\'');
+    out
+}
+
+/// Substitute tokens in a command string template with shell-safe escaping.
 #[must_use]
 pub fn substitute_tokens(template: &str, active_dir: &str, targets: &[TargetItem]) -> String {
-    let first_path = targets.first().map(|t| t.path.display().to_string()).unwrap_or_default();
+    let escaped_dir = shell_escape(active_dir);
+    let first_path = targets.first().map(|t| shell_escape(&t.path.display().to_string())).unwrap_or_default();
     let all_paths = targets
         .iter()
-        .map(|t| {
-            let s = t.path.display().to_string();
-            if s.contains(' ') && !s.starts_with('"') && !s.starts_with('\'') { format!("'{s}'") } else { s }
-        })
+        .map(|t| shell_escape(&t.path.display().to_string()))
         .collect::<Vec<_>>()
         .join(" ");
-    let first_uri = targets.first().map(|t| t.uri.clone()).unwrap_or_else(|| format!("file://{active_dir}"));
+    let first_uri = targets
+        .first()
+        .map(|t| shell_escape(&t.uri))
+        .unwrap_or_else(|| shell_escape(&format!("file://{active_dir}")));
 
     let mut out = String::with_capacity(template.len() + 32);
     let mut chars = template.chars().peekable();
     while let Some(c) = chars.next() {
         if c == '%' {
             match chars.next() {
-                Some('d') => out.push_str(active_dir),
+                Some('d') => out.push_str(&escaped_dir),
                 Some('f') => out.push_str(&first_path),
                 Some('F') => out.push_str(&all_paths),
                 Some('u') => out.push_str(&first_uri),
@@ -340,6 +365,45 @@ mod tests {
 
         let cmd5 = "echo 100%% %d";
         assert_eq!(substitute_tokens(cmd5, dir, &targets), "echo 100% /home/user/project_demo");
+    }
+
+    #[test]
+    fn token_substitution_shell_injection_protection() {
+        let dir = "/home/user/my folder with spaces; rm -rf /;";
+        let targets = vec![
+            TargetItem {
+                name: "evil;$(calc)'file.txt".into(),
+                path: PathBuf::from("/home/user/evil;$(calc)'file.txt"),
+                uri: "file:///home/user/evil;$(calc)'file.txt".into(),
+                is_dir: false,
+                mime: Some("text/plain".into()),
+            },
+            TargetItem {
+                name: "normal file.txt".into(),
+                path: PathBuf::from("/home/user/normal file.txt"),
+                uri: "file:///home/user/normal file.txt".into(),
+                is_dir: false,
+                mime: Some("text/plain".into()),
+            },
+        ];
+
+        let cmd = "cat %f";
+        assert_eq!(
+            substitute_tokens(cmd, dir, &targets),
+            "cat '/home/user/evil;$(calc)'\\''file.txt'"
+        );
+
+        let cmd_all = "ls %F";
+        assert_eq!(
+            substitute_tokens(cmd_all, dir, &targets),
+            "ls '/home/user/evil;$(calc)'\\''file.txt' '/home/user/normal file.txt'"
+        );
+
+        let cmd_dir = "cd %d";
+        assert_eq!(
+            substitute_tokens(cmd_dir, dir, &targets),
+            "cd '/home/user/my folder with spaces; rm -rf /;'"
+        );
     }
 
     #[test]

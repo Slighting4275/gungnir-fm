@@ -626,7 +626,21 @@ fn extract_archive_libarchive(archive_path: &Path, target_dir: &Path) -> Result<
                 return Err(ArchiveError::PathTraversal(raw_path.into_owned()));
             }
 
+            for c in Path::new(sanitized).components() {
+                if matches!(
+                    c,
+                    std::path::Component::ParentDir
+                        | std::path::Component::RootDir
+                        | std::path::Component::Prefix(_)
+                ) {
+                    return Err(ArchiveError::PathTraversal(raw_path.into_owned()));
+                }
+            }
+
             let full_out = target_dir.join(sanitized);
+            if !full_out.starts_with(target_dir) {
+                return Err(ArchiveError::PathTraversal(raw_path.into_owned()));
+            }
             if let Some(parent) = full_out.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
@@ -670,6 +684,20 @@ fn extract_archive_libarchive(archive_path: &Path, target_dir: &Path) -> Result<
             } else if ftype == AE_IFDIR {
                 stats.directories_extracted += 1;
             } else if ftype == AE_IFLNK {
+                let symlink_c = archive_entry_symlink(entry);
+                if !symlink_c.is_null() {
+                    let target_str = CStr::from_ptr(symlink_c).to_string_lossy();
+                    for c in Path::new(&*target_str).components() {
+                        if matches!(
+                            c,
+                            std::path::Component::ParentDir
+                                | std::path::Component::RootDir
+                                | std::path::Component::Prefix(_)
+                        ) {
+                            return Err(ArchiveError::PathTraversal(format!("Symlink target traversal: {target_str}")));
+                        }
+                    }
+                }
                 stats.symlinks_extracted += 1;
             }
 
@@ -821,6 +849,7 @@ fn compress_via_7z_cli(
         cmd.arg("-mhe=on");
     }
 
+    cmd.arg("--");
     cmd.arg(dest_path);
     for item in items {
         let rel = item.strip_prefix(base_dir).unwrap_or(item);
@@ -863,6 +892,7 @@ fn extract_via_7z_cli(archive_path: &Path, target_dir: &Path, password: &str) ->
     } else {
         cmd.arg("-p"); // Empty password / non-interactive
     }
+    cmd.arg("--");
     cmd.arg(archive_path);
 
     let output = cmd.output().map_err(|e| {
