@@ -38,6 +38,17 @@
   </provides>
 
   <releases>
+    <release version="0.1.3" date="2026-10-24">
+      <description>
+        <p>Network sidebar integration, network:/// VFS browsing, and child process GIO environment isolation.</p>
+        <ul>
+          <li>Added dedicated collapsible Network section in the sidebar with network share icon</li>
+          <li>Implemented network:/// virtual filesystem URI scheme and RemoteVfsBackend support</li>
+          <li>Added isolated child GIO process environment to prevent backend recursion</li>
+          <li>Updated AppImage, Flatpak, and Snap packaging targets with integrated package self-updater</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.2" date="2026-10-24">
       <description>
         <p>Nemo-style Properties dialog, XDG default application assignment, and external drag-and-drop integration.</p>

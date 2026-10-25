@@ -1,6 +1,6 @@
 name: gungnir-fm
 base: core24
-version: '0.1.2'
+version: '0.1.3'
 summary: Fast dual-pane Linux file manager with Gungnir VFS
 description: |
   Gungnir FM is a high-performance dual-pane Linux file manager engineered in
