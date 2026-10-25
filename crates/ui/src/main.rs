@@ -117,6 +117,8 @@ fn wire(ui: &AppWindow, tx: &mpsc::Sender<Msg>) {
     });
     on!(on_terminal_run, |cmd| Command::TerminalRun(cmd.to_string()));
     on!(on_terminal_clear, || Command::TerminalClear);
+    on!(on_dark_mode_changed, |dark| Command::SetDarkMode(dark));
+    on!(on_toggle_dark_mode, || Command::ToggleDarkMode);
     // Drag payload: construct full DataTransfer with local file paths and shell-safe plain text.
     // Enables native drag-and-drop to terminals (pasting paths), editors, web browsers, and file managers.
     let ui_weak = ui.as_weak();
@@ -168,11 +170,32 @@ fn wire(ui: &AppWindow, tx: &mpsc::Sender<Msg>) {
                 .iter()
                 .map(|p| {
                     let s = p.to_string_lossy();
-                    if s.contains(' ') || s.contains('\'') || s.contains('\"') {
-                        format!("'{}'", s.replace('\'', "'\\''"))
-                    } else {
-                        s.into_owned()
-                    }
+                    let needs_quotes = s.chars().any(|c| {
+                        c.is_whitespace()
+                            || matches!(
+                                c,
+                                '\'' | '\"'
+                                    | '\\'
+                                    | '$'
+                                    | '`'
+                                    | '&'
+                                    | ';'
+                                    | '|'
+                                    | '<'
+                                    | '>'
+                                    | '('
+                                    | ')'
+                                    | '['
+                                    | ']'
+                                    | '{'
+                                    | '}'
+                                    | '*'
+                                    | '?'
+                                    | '~'
+                                    | '!'
+                            )
+                    });
+                    if needs_quotes { format!("'{}'", s.replace('\'', "'\\''")) } else { s.into_owned() }
                 })
                 .collect();
             dt.set_plain_text(slint::SharedString::from(formatted.join(" ")));
@@ -464,6 +487,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ui.window().set_maximized(true);
         }
     }
+    let initial_dark = saved_session.as_ref().map(|s| s.dark_mode).unwrap_or(true);
+    ui.set_dark_mode(initial_dark);
     let sink = Arc::new(SlintSink::attach(&ui));
     let (tx, rx) = mpsc::channel(QUEUE);
     wire(&ui, &tx);

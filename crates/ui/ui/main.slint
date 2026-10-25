@@ -4,10 +4,10 @@
 // window in slint-lsp Live-Preview / slint-viewer with no Rust attached. At runtime
 // the Rust controller (crates/ui/src/controller.rs) replaces it with live models.
 
-import { LineEdit, Button, ScrollView } from "std-widgets.slint";
+import { LineEdit, Button, ScrollView, Palette } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { FileRow, PaneInfo, TabInfo, Crumb, PlaceItem, MountItem, TreeRow, TransferRow, StatusInfo, KeyValue, DeviceItem, CustomActionItem, OpenWithAppItem } from "types.slint";
-import { Glyph, ToolButton, ZoomControl } from "widgets.slint";
+import { Glyph, ToolButton, ZoomControl, ThemeToggle } from "widgets.slint";
 import { PathBar } from "pathbar.slint";
 import { Sidebar } from "sidebar.slint";
 import { Pane } from "pane.slint";
@@ -49,6 +49,7 @@ export component AppWindow inherits Window {
     in-out property <bool> updating: false;
     in-out property <[CustomActionItem]> left-custom-actions: [];
     in-out property <[CustomActionItem]> right-custom-actions: [];
+    in-out property <bool> dark-mode <=> Theme.dark-mode;
 
     in-out property <PaneInfo> left: {
         tabs: [
@@ -200,6 +201,18 @@ export component AppWindow inherits Window {
     callback terminal-clear();
     callback dialog-custom-action(action: string, opt1: bool, opt2: bool, extra1: string, extra2: string);
     callback trigger-update();
+    callback toggle-dark-mode();
+    callback dark-mode-changed(bool);
+
+    toggle-dark-mode => {
+        Theme.dark-mode = !Theme.dark-mode;
+        Palette.color-scheme = Theme.dark-mode ? ColorScheme.dark : ColorScheme.light;
+        root.dark-mode-changed(Theme.dark-mode);
+    }
+
+    changed dark-mode => {
+        Palette.color-scheme = root.dark-mode ? ColorScheme.dark : ColorScheme.light;
+    }
 
     // Internal drag and drop: where the current drag started.
     in-out property <bool> drag-active: false;
@@ -243,6 +256,7 @@ export component AppWindow inherits Window {
     }
 
     init => {
+        Palette.color-scheme = Theme.dark-mode ? ColorScheme.dark : ColorScheme.light;
         key-handler.focus();
     }
 
@@ -300,6 +314,8 @@ export component AppWindow inherits Window {
             MenuItem { title: "Sidebar: Folder Tree"; activated => { root.sidebar-mode = 1; root.sidebar-mode-changed(1); } }
             MenuItem { title: "Transfers"; checkable: true; checked <=> root.transfers-open; }
             MenuSeparator { }
+            MenuItem { title: Theme.dark-mode ? "Switch to Light Mode" : "Switch to Dark Mode"; shortcut: @keys(Control + Shift + T); activated => { root.toggle-dark-mode(); } }
+            MenuSeparator { }
             MenuItem { title: "Reload"; shortcut: @keys(Control + R); activated => { root.nav(root.active-pane, "refresh"); } }
         }
         Menu {
@@ -347,6 +363,7 @@ export component AppWindow inherits Window {
             if e.text == Key.F4 { root.command("toggle-terminal"); return accept; }
             if e.modifiers.control && e.modifiers.shift && (e.text == "f" || e.text == "F") { root.command("deep-search"); return accept; }
             if e.modifiers.control && e.modifiers.shift && (e.text == "d" || e.text == "D") { root.command("compare-panes"); return accept; }
+            if e.modifiers.control && e.modifiers.shift && (e.text == "t" || e.text == "T") { root.toggle-dark-mode(); return accept; }
             if e.modifiers.control && e.text == Key.Tab {
                 root.tab-cycle(p, e.modifiers.shift ? -1 : 1);
                 return accept;
@@ -420,7 +437,7 @@ export component AppWindow inherits Window {
             // ---- Toolbar ----------------------------------------------------------------
             Rectangle {
                 height: Theme.toolbar-height;
-                background: Theme.base;
+                background: Theme.surface;
                 HorizontalLayout {
                     padding-left: 8px;
                     padding-right: 8px;
@@ -511,6 +528,14 @@ export component AppWindow inherits Window {
                     Separator { y: (parent.height - self.height) / 2; }
                     ToolButton { y: (parent.height - self.height) / 2; glyph: "split"; checked: root.dual-pane; clicked => { root.dual-pane = !root.dual-pane; root.command("toggle-dual"); } }
                     ToolButton { y: (parent.height - self.height) / 2; glyph: "sidebar"; checked: root.sidebar-visible; clicked => { root.sidebar-visible = !root.sidebar-visible; root.command("toggle-sidebar"); } }
+                    Separator { y: (parent.height - self.height) / 2; }
+                    ThemeToggle {
+                        y: (parent.height - self.height) / 2;
+                        dark-mode: Theme.dark-mode;
+                        clicked => {
+                            root.toggle-dark-mode();
+                        }
+                    }
                 }
                 Rectangle {
                     y: parent.height - 1px;

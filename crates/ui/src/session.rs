@@ -102,6 +102,8 @@ pub struct SessionState {
     pub sidebar_visible: bool,
     #[serde(default = "default_zoom")]
     pub zoom_level: f32,
+    #[serde(default = "default_true")]
+    pub dark_mode: bool,
 }
 
 fn default_true() -> bool {
@@ -259,6 +261,7 @@ mod tests {
             show_hidden: true,
             sidebar_visible: false,
             zoom_level: 1.5,
+            dark_mode: false,
         };
 
         let json = serde_json::to_string(&state).unwrap_or_else(|e| panic!("{e}"));
@@ -307,6 +310,7 @@ mod tests {
             show_hidden: false,
             sidebar_visible: true,
             zoom_level: 1.0,
+            dark_mode: true,
         };
 
         save_atomic(&session_file, &state).unwrap_or_else(|e| panic!("{e}"));
@@ -340,6 +344,7 @@ mod tests {
             show_hidden: false,
             sidebar_visible: true,
             zoom_level: 1.0,
+            dark_mode: true,
         };
 
         saver.update(state.clone());

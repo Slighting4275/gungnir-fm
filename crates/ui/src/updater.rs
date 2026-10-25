@@ -381,10 +381,11 @@ pub async fn perform_update(format: PackageFormat, target_version: &str) -> Resu
 
                     if let Some(updater) = tool {
                         let pb = path_buf.clone();
-                        let res = tokio::task::spawn_blocking(move || StdCommand::new(updater).arg("--").arg(&pb).output())
-                            .await
-                            .map_err(|e| e.to_string())?
-                            .map_err(|e| e.to_string())?;
+                        let res =
+                            tokio::task::spawn_blocking(move || StdCommand::new(updater).arg("--").arg(&pb).output())
+                                .await
+                                .map_err(|e| e.to_string())?
+                                .map_err(|e| e.to_string())?;
 
                         if res.status.success() {
                             return Ok("AppImage updated via AppImageUpdate tool".to_string());

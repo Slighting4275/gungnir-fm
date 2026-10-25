@@ -90,6 +90,7 @@ pub struct Flags {
     pub show_hidden: bool,
     pub view_mode: i32,
     pub zoom_level: f32,
+    pub dark_mode: bool,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -311,6 +312,7 @@ pub fn apply(ui: &AppWindow, u: Update) {
             ui.set_show_hidden(f.show_hidden);
             ui.set_view_mode(f.view_mode);
             ui.set_zoom_level(f.zoom_level);
+            ui.set_dark_mode(f.dark_mode);
         }
         Update::Dialog(d) => {
             let img = d.preview_path.and_then(|p| slint::Image::load_from_path(&p).ok()).unwrap_or_default();

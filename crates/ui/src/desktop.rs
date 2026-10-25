@@ -289,11 +289,8 @@ impl DesktopIndex {
         for app in self.apps_for(mime) {
             seen.insert(app.id.as_str());
         }
-        let mut other: Vec<&App> = self
-            .apps
-            .values()
-            .filter(|a| !a.no_display && !seen.contains(a.id.as_str()))
-            .collect();
+        let mut other: Vec<&App> =
+            self.apps.values().filter(|a| !a.no_display && !seen.contains(a.id.as_str())).collect();
         other.sort_by_key(|a| a.name.to_lowercase());
         other
     }
@@ -747,7 +744,9 @@ pub fn set_default_app_in(config_dir: &Path, mime: &str, desktop_id: &str) -> st
 /// Reset any user default application override for `mime` in `config_dir/mimeapps.list`.
 pub fn reset_default_app_in(config_dir: &Path, mime: &str) -> std::io::Result<()> {
     let path = config_dir.join("mimeapps.list");
-    let Ok(content) = std::fs::read_to_string(&path) else { return Ok(()); };
+    let Ok(content) = std::fs::read_to_string(&path) else {
+        return Ok(());
+    };
     let mut lines = Vec::new();
     let mut in_target_sec = false;
     for line in content.lines() {
@@ -789,11 +788,7 @@ pub fn set_default_app(mime: &str, desktop_id: &str) -> std::io::Result<()> {
 /// Convenience function resetting standard user config.
 pub fn reset_default_app(mime: &str) -> std::io::Result<()> {
     let dirs = Dirs::from_env();
-    if let Some(cfg) = dirs.config.first() {
-        reset_default_app_in(cfg, mime)
-    } else {
-        Ok(())
-    }
+    if let Some(cfg) = dirs.config.first() { reset_default_app_in(cfg, mime) } else { Ok(()) }
 }
 
 /// Creates a user desktop file in `data_dir/applications` for a custom command.

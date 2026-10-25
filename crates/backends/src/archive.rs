@@ -629,9 +629,7 @@ fn extract_archive_libarchive(archive_path: &Path, target_dir: &Path) -> Result<
             for c in Path::new(sanitized).components() {
                 if matches!(
                     c,
-                    std::path::Component::ParentDir
-                        | std::path::Component::RootDir
-                        | std::path::Component::Prefix(_)
+                    std::path::Component::ParentDir | std::path::Component::RootDir | std::path::Component::Prefix(_)
                 ) {
                     return Err(ArchiveError::PathTraversal(raw_path.into_owned()));
                 }
@@ -1028,7 +1026,14 @@ pub fn compress_single_file(
             };
             (
                 "xz",
-                vec!["-k".to_string(), "-f".to_string(), lvl.to_string(), "-c".to_string(), "--".to_string(), src.display().to_string()],
+                vec![
+                    "-k".to_string(),
+                    "-f".to_string(),
+                    lvl.to_string(),
+                    "-c".to_string(),
+                    "--".to_string(),
+                    src.display().to_string(),
+                ],
             )
         }
         SingleStreamFormat::Gzip => {
@@ -1039,7 +1044,14 @@ pub fn compress_single_file(
             };
             (
                 "gzip",
-                vec!["-k".to_string(), "-f".to_string(), lvl.to_string(), "-c".to_string(), "--".to_string(), src.display().to_string()],
+                vec![
+                    "-k".to_string(),
+                    "-f".to_string(),
+                    lvl.to_string(),
+                    "-c".to_string(),
+                    "--".to_string(),
+                    src.display().to_string(),
+                ],
             )
         }
         SingleStreamFormat::Bzip2 => {
@@ -1050,7 +1062,14 @@ pub fn compress_single_file(
             };
             (
                 "bzip2",
-                vec!["-k".to_string(), "-f".to_string(), lvl.to_string(), "-c".to_string(), "--".to_string(), src.display().to_string()],
+                vec![
+                    "-k".to_string(),
+                    "-f".to_string(),
+                    lvl.to_string(),
+                    "-c".to_string(),
+                    "--".to_string(),
+                    src.display().to_string(),
+                ],
             )
         }
         SingleStreamFormat::Lz4 => {
@@ -1059,7 +1078,16 @@ pub fn compress_single_file(
                 CompressionLevel::Normal => "-4",
                 CompressionLevel::Maximum => "-9",
             };
-            ("lz4", vec!["-f".to_string(), lvl.to_string(), "--".to_string(), src.display().to_string(), dest.display().to_string()])
+            (
+                "lz4",
+                vec![
+                    "-f".to_string(),
+                    lvl.to_string(),
+                    "--".to_string(),
+                    src.display().to_string(),
+                    dest.display().to_string(),
+                ],
+            )
         }
         SingleStreamFormat::Brotli => {
             let lvl = match level {
@@ -1127,19 +1155,47 @@ pub fn decompress_single_file(src: &Path, dest: &Path) -> Result<u64, ArchiveErr
         ),
         "xz" => (
             "xz",
-            vec!["-d".to_string(), "-k".to_string(), "-f".to_string(), "-c".to_string(), "--".to_string(), src.display().to_string()],
+            vec![
+                "-d".to_string(),
+                "-k".to_string(),
+                "-f".to_string(),
+                "-c".to_string(),
+                "--".to_string(),
+                src.display().to_string(),
+            ],
         ),
         "gz" => (
             "gzip",
-            vec!["-d".to_string(), "-k".to_string(), "-f".to_string(), "-c".to_string(), "--".to_string(), src.display().to_string()],
+            vec![
+                "-d".to_string(),
+                "-k".to_string(),
+                "-f".to_string(),
+                "-c".to_string(),
+                "--".to_string(),
+                src.display().to_string(),
+            ],
         ),
         "bz2" => (
             "bzip2",
-            vec!["-d".to_string(), "-k".to_string(), "-f".to_string(), "-c".to_string(), "--".to_string(), src.display().to_string()],
+            vec![
+                "-d".to_string(),
+                "-k".to_string(),
+                "-f".to_string(),
+                "-c".to_string(),
+                "--".to_string(),
+                src.display().to_string(),
+            ],
         ),
-        "lz4" => {
-            ("lz4", vec!["-d".to_string(), "-f".to_string(), "--".to_string(), src.display().to_string(), dest.display().to_string()])
-        }
+        "lz4" => (
+            "lz4",
+            vec![
+                "-d".to_string(),
+                "-f".to_string(),
+                "--".to_string(),
+                src.display().to_string(),
+                dest.display().to_string(),
+            ],
+        ),
         "br" => (
             "brotli",
             vec![

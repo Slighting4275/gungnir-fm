@@ -248,10 +248,8 @@ impl VfsProvider for RemoteVfsBackend {
             return Ok(());
         }
         tokio::task::spawn_blocking(move || {
-            let status = gio_cmd()
-                .args(["mkdir", "--", &uri_str])
-                .status()
-                .map_err(|e| VfsError::Transport(e.to_string()))?;
+            let status =
+                gio_cmd().args(["mkdir", "--", &uri_str]).status().map_err(|e| VfsError::Transport(e.to_string()))?;
             if status.success() { Ok(()) } else { Err(VfsError::Transport(format!("failed to create dir {uri_str}"))) }
         })
         .await

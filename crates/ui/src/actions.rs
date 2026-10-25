@@ -174,15 +174,9 @@ pub fn shell_escape(s: &str) -> String {
 pub fn substitute_tokens(template: &str, active_dir: &str, targets: &[TargetItem]) -> String {
     let escaped_dir = shell_escape(active_dir);
     let first_path = targets.first().map(|t| shell_escape(&t.path.display().to_string())).unwrap_or_default();
-    let all_paths = targets
-        .iter()
-        .map(|t| shell_escape(&t.path.display().to_string()))
-        .collect::<Vec<_>>()
-        .join(" ");
-    let first_uri = targets
-        .first()
-        .map(|t| shell_escape(&t.uri))
-        .unwrap_or_else(|| shell_escape(&format!("file://{active_dir}")));
+    let all_paths = targets.iter().map(|t| shell_escape(&t.path.display().to_string())).collect::<Vec<_>>().join(" ");
+    let first_uri =
+        targets.first().map(|t| shell_escape(&t.uri)).unwrap_or_else(|| shell_escape(&format!("file://{active_dir}")));
 
     let mut out = String::with_capacity(template.len() + 32);
     let mut chars = template.chars().peekable();
@@ -388,10 +382,7 @@ mod tests {
         ];
 
         let cmd = "cat %f";
-        assert_eq!(
-            substitute_tokens(cmd, dir, &targets),
-            "cat '/home/user/evil;$(calc)'\\''file.txt'"
-        );
+        assert_eq!(substitute_tokens(cmd, dir, &targets), "cat '/home/user/evil;$(calc)'\\''file.txt'");
 
         let cmd_all = "ls %F";
         assert_eq!(
@@ -400,10 +391,7 @@ mod tests {
         );
 
         let cmd_dir = "cd %d";
-        assert_eq!(
-            substitute_tokens(cmd_dir, dir, &targets),
-            "cd '/home/user/my folder with spaces; rm -rf /;'"
-        );
+        assert_eq!(substitute_tokens(cmd_dir, dir, &targets), "cd '/home/user/my folder with spaces; rm -rf /;'");
     }
 
     #[test]

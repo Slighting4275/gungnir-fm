@@ -38,7 +38,7 @@ export component FileIcon {
             viewbox-width: 16;
             viewbox-height: 16;
             commands: "M 3 1.5 L 10 1.5 L 13.5 5 L 13.5 14.5 L 3 14.5 Z";
-            fill: #c9d1dc;
+            fill: Theme.dark-mode ? #c9d1dc : #bdddf9;
             stroke: transparent;
         }
         Path {
@@ -47,7 +47,7 @@ export component FileIcon {
             viewbox-width: 16;
             viewbox-height: 16;
             commands: "M 10 1.5 L 10 5 L 13.5 5 Z";
-            fill: #8e99a8;
+            fill: Theme.dark-mode ? #8e99a8 : #94c9f5;
             stroke: transparent;
         }
         Rectangle {
@@ -102,6 +102,8 @@ export component Glyph inherits Path {
         : name == "eject" ? "M 3 9.5 L 8 3.5 L 13 9.5 Z M 3 12.5 L 13 12.5"
         : name == "spear" ? "M 2.5 13.5 L 11.5 4.5 M 9 2 L 14 2 L 14 7 M 3.5 10 L 6 12.5"
         : name == "network" ? "M 1.5 2.5 L 7 2.5 L 7 7.5 L 1.5 7.5 Z M 9 2.5 L 14.5 2.5 L 14.5 7.5 L 9 7.5 Z M 4.25 7.5 L 4.25 13.5 M 11.75 7.5 L 11.75 13.5 M 2 10.5 L 14 10.5"
+        : name == "moon" ? "M 9.5 2.5 A 6 6 0 0 0 9.5 13.5 A 7 7 0 0 1 9.5 2.5 Z"
+        : name == "sun" ? "M 11.2 8 A 3.2 3.2 0 1 1 4.8 8 A 3.2 3.2 0 1 1 11.2 8 M 8 1.5 L 8 3.5 M 8 12.5 L 8 14.5 M 1.5 8 L 3.5 8 M 12.5 8 L 14.5 8 M 3.2 3.2 L 4.6 4.6 M 12.8 3.2 L 11.4 4.6 M 3.2 12.8 L 4.6 11.4 M 12.8 12.8 L 11.4 11.4"
         : "";
 }
 
@@ -144,6 +146,114 @@ export component ToolButton inherits Rectangle {
         enabled: root.enabled;
         mouse-cursor: root.enabled ? pointer : default;
         clicked => { root.clicked(); }
+    }
+}
+
+// Interactive theme toggle button with glowing moon in night mode and clean sun in light mode.
+export component ThemeToggle inherits Rectangle {
+    in property <bool> dark-mode: true;
+    in property <string> tooltip: dark-mode ? "Dark Mode (click for Light Mode)" : "Light Mode (click for Dark Mode)";
+    callback clicked;
+
+    width: 30px;
+    height: 28px;
+    border-radius: Theme.radius-small;
+    background: touch.pressed ? Theme.pressed : touch.has-hover ? Theme.hover : transparent;
+    animate background { duration: Theme.fast; }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+
+    if root.dark-mode : Rectangle {
+        width: 22px;
+        height: 22px;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+
+        // Ambient outer cool moonlight glow (cool silver-blue, not solar yellow)
+        Rectangle {
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            width: touch.has-hover ? 18px : 15px;
+            height: touch.has-hover ? 18px : 15px;
+            border-radius: self.width / 2;
+            background: touch.has-hover ? #94a3b826 : #94a3b814;
+            drop-shadow-blur: touch.has-hover ? 8px : 5px;
+            drop-shadow-color: touch.has-hover ? #cbd5e199 : #94a3b866;
+            animate width, height, background, drop-shadow-blur, drop-shadow-color { duration: 150ms; }
+        }
+
+        // Cool silver Full Moon disc with realistic lunar maria (seas) and craters
+        Rectangle {
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            width: 14px;
+            height: 14px;
+            border-radius: 7px;
+            background: #e2e8f0;
+            border-width: 0.8px;
+            border-color: #94a3b8;
+            clip: true;
+
+            // Mare Imbrium / Oceanus Procellarum (upper-left dark lunar basalt plain)
+            Rectangle {
+                x: 2px;
+                y: 2.2px;
+                width: 4.5px;
+                height: 4px;
+                border-radius: 2px;
+                background: #64748b66;
+            }
+
+            // Mare Serenitatis / Tranquillitatis (mid-right dark lunar mare)
+            Rectangle {
+                x: 7.8px;
+                y: 4.2px;
+                width: 4px;
+                height: 3.5px;
+                border-radius: 1.8px;
+                background: #64748b59;
+            }
+
+            // Tycho crater & Mare Nubium (lower lunar impact basin)
+            Rectangle {
+                x: 4.5px;
+                y: 8.5px;
+                width: 3.5px;
+                height: 3px;
+                border-radius: 1.5px;
+                background: #47556973;
+
+                // Bright central impact peak
+                Rectangle {
+                    x: 1.2px;
+                    y: 1px;
+                    width: 1px;
+                    height: 1px;
+                    border-radius: 0.5px;
+                    background: #f8fafc;
+                }
+            }
+
+            // Small crater patch (upper-right rim)
+            Rectangle {
+                x: 8.5px;
+                y: 1.8px;
+                width: 2px;
+                height: 1.8px;
+                border-radius: 1px;
+                background: #64748b4d;
+            }
+        }
+    }
+
+    if !root.dark-mode : Glyph {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        name: "sun";
+        tint: Theme.text-dim;
     }
 }
 

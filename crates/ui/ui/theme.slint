@@ -1,47 +1,50 @@
-// Gungnir FM theme: deep slate dark mode, crisp 1px borders, one blue accent and a
-// Gungnir gold for VFS elements. Every component reads colours from here.
+// Gungnir FM theme: deep slate dark mode or crisp modern light mode, 1px borders,
+// blue accent, and Gungnir gold for VFS elements. Every component reads colours from here.
 
 export global Theme {
+    in-out property <bool> dark-mode: true;
+
     // Surfaces, darkest to lightest.
-    out property <color> window: #0d1015;
-    out property <color> base: #11151c;
-    out property <color> surface: #151a22;
-    out property <color> raised: #1b212b;
-    out property <color> overlay: #222936;
-    out property <color> field: #0f1319;
+    // In light mode: soft sky blue and cyan surfaces from lightmode.png palette, gentle on eyes (not blinding white).
+    out property <color> window: dark-mode ? #0d1015 : #d8eaf8;
+    out property <color> base: dark-mode ? #11151c : #ffffff;
+    out property <color> surface: dark-mode ? #151a22 : #e6f3fc;
+    out property <color> raised: dark-mode ? #1b212b : #ffffff;
+    out property <color> overlay: dark-mode ? #222936 : #ffffff;
+    out property <color> field: dark-mode ? #0f1319 : #ffffff;
 
     // Lines.
-    out property <color> border: #252c38;
-    out property <color> border-strong: #323c4d;
-    out property <color> divider: #1d232d;
+    out property <color> border: dark-mode ? #252c38 : #b6d5f0;
+    out property <color> border-strong: dark-mode ? #323c4d : #82b7e6;
+    out property <color> divider: dark-mode ? #1d232d : #c8e0f5;
 
     // Text.
-    out property <color> text: #e4e8ef;
-    out property <color> text-dim: #a2abb9;
-    out property <color> text-faint: #6d7787;
+    out property <color> text: dark-mode ? #e4e8ef : #000000;
+    out property <color> text-dim: dark-mode ? #a2abb9 : #1e293b;
+    out property <color> text-faint: dark-mode ? #6d7787 : #475569;
     out property <color> text-on-accent: #ffffff;
 
     // Accents.
-    out property <color> accent: #4c8dff;
-    out property <color> accent-dim: #4c8dff33;
-    out property <color> accent-soft: #4c8dff1f;
-    out property <color> gold: #e2b457;
-    out property <color> gold-soft: #e2b45724;
+    out property <color> accent: dark-mode ? #4c8dff : #1d76c9;
+    out property <color> accent-dim: dark-mode ? #4c8dff33 : #94c9f566;
+    out property <color> accent-soft: dark-mode ? #4c8dff1f : #b7e4fa55;
+    out property <color> gold: dark-mode ? #e2b457 : #bd7129;
+    out property <color> gold-soft: dark-mode ? #e2b45724 : #bd712929;
 
     // Interaction.
-    out property <color> hover: #ffffff09;
-    out property <color> pressed: #ffffff14;
-    out property <color> selection: #27425f;
-    out property <color> selection-inactive: #2b3442;
-    out property <color> stripe: #ffffff04;
+    out property <color> hover: dark-mode ? #ffffff09 : #88d2df26;
+    out property <color> pressed: dark-mode ? #ffffff14 : #88d2df4d;
+    out property <color> selection: dark-mode ? #27425f : #94c9f5;
+    out property <color> selection-inactive: dark-mode ? #2b3442 : #cbe3f7;
+    out property <color> stripe: dark-mode ? #ffffff04 : #88d2df0d;
 
     // States.
-    out property <color> ok: #3fb950;
-    out property <color> warn: #d6a33a;
-    out property <color> bad: #f05a4f;
-    out property <color> info: #58a6ff;
-    out property <color> violet: #a37cf0;
-    out property <color> orange: #ee8a3c;
+    out property <color> ok: dark-mode ? #3fb950 : #16a34a;
+    out property <color> warn: dark-mode ? #d6a33a : #ca8a04;
+    out property <color> bad: dark-mode ? #f05a4f : #dc2626;
+    out property <color> info: dark-mode ? #58a6ff : #1d76c9;
+    out property <color> violet: dark-mode ? #a37cf0 : #7c3aed;
+    out property <color> orange: dark-mode ? #ee8a3c : #ea580c;
 
     // Metrics.
     out property <length> radius: 6px;
@@ -76,16 +79,30 @@ export global Theme {
 
     // Icon colour per file category (core_vfs::format::Category).
     public pure function category-color(code: int) -> color {
-        if code == 0 { return #d9a845; }     // folder
-        if code == 2 { return #3fb9a4; }     // image
-        if code == 3 { return #c678dd; }     // audio
-        if code == 4 { return #f06b7f; }     // video
-        if code == 5 { return #d69b4c; }     // archive
-        if code == 6 { return #6fa8ff; }     // code / text
-        if code == 7 { return #e06c5f; }     // document
-        if code == 8 { return #7ccf61; }     // executable
-        if code == 9 { return #8fa0b8; }     // link
-        if code == 10 { return #9a7f6a; }    // special
-        return #9aa6b8;                      // generic file
+        if dark-mode {
+            if code == 0 { return #d9a845; }     // folder
+            if code == 2 { return #3fb9a4; }     // image
+            if code == 3 { return #c678dd; }     // audio
+            if code == 4 { return #f06b7f; }     // video
+            if code == 5 { return #d69b4c; }     // archive
+            if code == 6 { return #6fa8ff; }     // code / text
+            if code == 7 { return #e06c5f; }     // document
+            if code == 8 { return #7ccf61; }     // executable
+            if code == 9 { return #8fa0b8; }     // link
+            if code == 10 { return #9a7f6a; }    // special
+            return #9aa6b8;                      // generic file
+        } else {
+            if code == 0 { return #bd7129; }     // folder (warm amber gold from lightmode.png)
+            if code == 2 { return #0d9488; }     // image
+            if code == 3 { return #8b5cf6; }     // audio
+            if code == 4 { return #e11d48; }     // video
+            if code == 5 { return #c2410c; }     // archive
+            if code == 6 { return #1d76c9; }     // code / text
+            if code == 7 { return #dc2626; }     // document
+            if code == 8 { return #16a34a; }     // executable
+            if code == 9 { return #475569; }     // link
+            if code == 10 { return #78350f; }    // special
+            return #334a65;                      // generic file
+        }
     }
 }

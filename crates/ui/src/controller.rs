@@ -117,6 +117,8 @@ pub enum Command {
     },
     RenameCancel,
     TriggerUpdate,
+    SetDarkMode(bool),
+    ToggleDarkMode,
     Quit,
 }
 
@@ -637,6 +639,7 @@ pub struct Controller {
     update_version: String,
     updating: bool,
     package_format: crate::updater::PackageFormat,
+    pub dark_mode: bool,
 }
 
 /// Breadcrumbs as Nemo shows them: a folder below `home` starts at a "Home" crumb, the
@@ -669,33 +672,15 @@ impl Controller {
     #[must_use]
     pub fn new(registry: VfsRegistry, ui: Arc<dyn UiSink>, tx: MsgTx, cfg: Config) -> Self {
         let mut next_tab = 1;
-        let (panes, active_pane, dual, show_hidden, sidebar, zoom_level) = if let Some(ref s) = cfg.initial_session {
-            let p0_paths = s.primary_pane_tabs.get_paths();
-            let p0_tabs: Vec<Tab> = if p0_paths.is_empty() {
-                let id = next_tab;
-                next_tab += 1;
-                vec![Tab::new(id, cfg.left.clone())]
-            } else {
-                p0_paths
-                    .into_iter()
-                    .map(|p| {
-                        let id = next_tab;
-                        next_tab += 1;
-                        let uri = crate::session::resolve_path_with_fallback(&p, &cfg.home);
-                        Tab::new(id, uri)
-                    })
-                    .collect()
-            };
-            let p0_active = s.primary_pane_tabs.get_active_index().min(p0_tabs.len().saturating_sub(1));
-
-            let p1_tabs: Vec<Tab> = if let Some(ref sec) = s.secondary_pane_tabs {
-                let p1_paths = sec.get_paths();
-                if p1_paths.is_empty() {
+        let (panes, active_pane, dual, show_hidden, sidebar, zoom_level, dark_mode) =
+            if let Some(ref s) = cfg.initial_session {
+                let p0_paths = s.primary_pane_tabs.get_paths();
+                let p0_tabs: Vec<Tab> = if p0_paths.is_empty() {
                     let id = next_tab;
                     next_tab += 1;
-                    vec![Tab::new(id, cfg.right.clone())]
+                    vec![Tab::new(id, cfg.left.clone())]
                 } else {
-                    p1_paths
+                    p0_paths
                         .into_iter()
                         .map(|p| {
                             let id = next_tab;
@@ -704,36 +689,56 @@ impl Controller {
                             Tab::new(id, uri)
                         })
                         .collect()
-                }
-            } else {
-                let id = next_tab;
-                next_tab += 1;
-                vec![Tab::new(id, cfg.right.clone())]
-            };
-            let p1_active = s
-                .secondary_pane_tabs
-                .as_ref()
-                .map(|sec| sec.get_active_index().min(p1_tabs.len().saturating_sub(1)))
-                .unwrap_or(0);
+                };
+                let p0_active = s.primary_pane_tabs.get_active_index().min(p0_tabs.len().saturating_sub(1));
 
-            let dual = s.split_view;
-            let active_pane = if s.active_pane == 1 && dual { 1 } else { 0 };
-            (
-                [Pane { tabs: p0_tabs, active: p0_active }, Pane { tabs: p1_tabs, active: p1_active }],
-                active_pane,
-                dual,
-                s.show_hidden,
-                s.sidebar_visible,
-                s.zoom_level,
-            )
-        } else {
-            let panes = [
-                Pane { tabs: vec![Tab::new(1, cfg.left.clone())], active: 0 },
-                Pane { tabs: vec![Tab::new(2, cfg.right.clone())], active: 0 },
-            ];
-            next_tab = 3;
-            (panes, 0, false, false, true, 1.0)
-        };
+                let p1_tabs: Vec<Tab> = if let Some(ref sec) = s.secondary_pane_tabs {
+                    let p1_paths = sec.get_paths();
+                    if p1_paths.is_empty() {
+                        let id = next_tab;
+                        next_tab += 1;
+                        vec![Tab::new(id, cfg.right.clone())]
+                    } else {
+                        p1_paths
+                            .into_iter()
+                            .map(|p| {
+                                let id = next_tab;
+                                next_tab += 1;
+                                let uri = crate::session::resolve_path_with_fallback(&p, &cfg.home);
+                                Tab::new(id, uri)
+                            })
+                            .collect()
+                    }
+                } else {
+                    let id = next_tab;
+                    next_tab += 1;
+                    vec![Tab::new(id, cfg.right.clone())]
+                };
+                let p1_active = s
+                    .secondary_pane_tabs
+                    .as_ref()
+                    .map(|sec| sec.get_active_index().min(p1_tabs.len().saturating_sub(1)))
+                    .unwrap_or(0);
+
+                let dual = s.split_view;
+                let active_pane = if s.active_pane == 1 && dual { 1 } else { 0 };
+                (
+                    [Pane { tabs: p0_tabs, active: p0_active }, Pane { tabs: p1_tabs, active: p1_active }],
+                    active_pane,
+                    dual,
+                    s.show_hidden,
+                    s.sidebar_visible,
+                    s.zoom_level,
+                    s.dark_mode,
+                )
+            } else {
+                let panes = [
+                    Pane { tabs: vec![Tab::new(1, cfg.left.clone())], active: 0 },
+                    Pane { tabs: vec![Tab::new(2, cfg.right.clone())], active: 0 },
+                ];
+                next_tab = 3;
+                (panes, 0, false, false, true, 1.0, true)
+            };
 
         let actions = crate::actions::ActionRegistry::load_or_default(cfg.actions_dir.as_deref());
 
@@ -776,6 +781,7 @@ impl Controller {
             update_version: String::new(),
             updating: false,
             package_format: crate::updater::detect_package_format(),
+            dark_mode,
         }
     }
 
@@ -888,6 +894,7 @@ impl Controller {
             show_hidden: self.show_hidden,
             view_mode: self.view_mode,
             zoom_level: self.zoom_level,
+            dark_mode: self.dark_mode,
         }));
     }
 
@@ -986,6 +993,7 @@ impl Controller {
             show_hidden: self.show_hidden,
             sidebar_visible: self.sidebar,
             zoom_level: self.zoom_level,
+            dark_mode: self.dark_mode,
         }
     }
 
@@ -2622,6 +2630,11 @@ impl Controller {
                 }
                 self.trigger_save_session();
             }
+            "toggle-theme" => {
+                self.dark_mode = !self.dark_mode;
+                self.push_flags();
+                self.trigger_save_session();
+            }
             "select-all" => {
                 let t = self.panes[p].tab();
                 let all: HashSet<String> =
@@ -3188,6 +3201,16 @@ impl Controller {
             }
             Command::PaneFocused(p) => self.focus_pane(p),
             Command::Run(name) => self.run_command(&name),
+            Command::SetDarkMode(dark) => {
+                self.dark_mode = dark;
+                self.push_flags();
+                self.trigger_save_session();
+            }
+            Command::ToggleDarkMode => {
+                self.dark_mode = !self.dark_mode;
+                self.push_flags();
+                self.trigger_save_session();
+            }
             Command::ViewMode(m) => self.view_mode = m,
             Command::Zoom(z) => {
                 self.zoom_level = z.clamp(0.5, 3.5);

@@ -351,6 +351,7 @@ fn session_persistence_and_safe_recovery() {
         show_hidden: true,
         sidebar_visible: true,
         zoom_level: 1.25,
+        dark_mode: true,
     };
 
     // Save atomically
@@ -809,16 +810,14 @@ fn test_nemo_properties_and_open_with_default_application() {
     std::fs::write(&sample_file, b"sample mp4 header and payload").unwrap();
 
     let file_uri = VfsUri::from_local_path(&tmp).unwrap().to_uri_string();
-    let h = start(&file_uri, &file_uri, MockConfig::default());
+    let h = start(&file_uri, "gungnir://odin/asgard", MockConfig::default());
 
     // Wait until file is loaded
-    h.until(
-        Duration::from_secs(3),
-        |u| matches!(u, Update::Rows { pane: 0, rows } if rows.iter().any(|r| r.name == "demo_movie.mp4")),
-    );
+    h.until(Duration::from_secs(3), |u| full_rows(u, 0, 1));
 
     // 1. Select the file row
     h.send(Command::RowClicked { pane: 0, index: 0, ctrl: false, shift: false });
+    h.until(Duration::from_secs(3), |u| matches!(u, Update::Selection { pane: 0, .. }));
 
     // 2. Open Properties dialog (Basic tab = 0)
     h.send(Command::Run("properties".into()));
@@ -890,11 +889,35 @@ fn test_nemo_properties_and_open_with_default_application() {
     // 6. Open "Open With" dialog directly (opens Properties directly on tab 2)
     h.send(Command::Run("open-with".into()));
     h.until(
-        Duration::from_secs(3),
+        Duration::from_secs(5),
         |u| matches!(u, Update::Dialog(d) if d.kind == crate::DialogKind::Properties && d.properties_tab == 2),
     );
 
     h.send(Command::DialogCancel);
 
     let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn test_theme_mode_toggle_and_persistence() {
+    let h = start("gungnir://odin/asgard", "gungnir://odin/valhalla", MockConfig::default());
+
+    // Initial state: dark mode is enabled by default
+    h.until(Duration::from_secs(5), |u| matches!(u, Update::Flags(f) if f.dark_mode));
+
+    // 1. Switch to Light Mode via Command::ToggleDarkMode
+    h.send(Command::ToggleDarkMode);
+    h.until(Duration::from_secs(5), |u| matches!(u, Update::Flags(f) if !f.dark_mode));
+
+    // 2. Switch back to Dark Mode via Command::Run("toggle-theme")
+    h.send(Command::Run("toggle-theme".into()));
+    h.until(Duration::from_secs(5), |u| matches!(u, Update::Flags(f) if f.dark_mode));
+
+    // 3. Switch to Light Mode via Command::SetDarkMode(false)
+    h.send(Command::SetDarkMode(false));
+    h.until(Duration::from_secs(5), |u| matches!(u, Update::Flags(f) if !f.dark_mode));
+
+    // 4. Switch to Dark Mode via Command::SetDarkMode(true)
+    h.send(Command::SetDarkMode(true));
+    h.until(Duration::from_secs(5), |u| matches!(u, Update::Flags(f) if f.dark_mode));
 }
