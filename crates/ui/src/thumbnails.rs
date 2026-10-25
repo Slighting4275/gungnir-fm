@@ -21,7 +21,13 @@ pub fn thumbnail_cache_dir() -> PathBuf {
         dir.push("thumbnails");
         dir
     } else {
-        std::env::temp_dir().join("gungnir-fm-thumbnails")
+        let uid = unsafe { libc::getuid() };
+        let run_dir = PathBuf::from(format!("/run/user/{uid}/gungnir-fm/thumbnails"));
+        if run_dir.parent().map(|p| p.exists()).unwrap_or(false) {
+            run_dir
+        } else {
+            std::env::temp_dir().join(format!("gungnir-fm-thumbnails-{uid}"))
+        }
     }
 }
 
@@ -354,7 +360,11 @@ pub fn generate_thumbnail_in(
         return Err(format!("source file does not exist: {}", source_path.display()));
     }
 
-    if let Err(e) = std::fs::create_dir_all(cache_dir) {
+    use std::os::unix::fs::DirBuilderExt;
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    builder.mode(0o700);
+    if let Err(e) = builder.create(cache_dir) {
         return Err(format!("failed to create thumbnail dir {}: {e}", cache_dir.display()));
     }
 
@@ -364,8 +374,21 @@ pub fn generate_thumbnail_in(
     }
     let _ = std::fs::remove_file(&target_file);
 
+    static THUMB_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let count = THUMB_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let stem = target_file.file_stem().and_then(|s| s.to_str()).unwrap_or("thumb");
-    let temp_target = cache_dir.join(format!("{stem}.tmp-{}.png", std::process::id()));
+    let temp_target = cache_dir.join(format!("{stem}.tmp-{}-{count}.png", std::process::id()));
+
+    // Ensure source path is absolute to prevent any switch injection vulnerabilities in external CLI tools
+    let abs_source;
+    let source_path = if source_path.is_absolute() {
+        source_path
+    } else if let Ok(cwd) = std::env::current_dir() {
+        abs_source = cwd.join(source_path);
+        &abs_source
+    } else {
+        source_path
+    };
 
     let ext = source_path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
 
@@ -381,6 +404,8 @@ pub fn generate_thumbnail_in(
 
     match result {
         Ok(()) => {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&temp_target, std::fs::Permissions::from_mode(0o600));
             if let Err(e) = std::fs::rename(&temp_target, &target_file) {
                 let _ = std::fs::remove_file(&temp_target);
                 return Err(format!("failed to store thumbnail {}: {e}", target_file.display()));
@@ -438,7 +463,7 @@ fn generate_image_thumbnail(source: &Path, target: &Path) -> Result<(), String> 
 
             // Fallback to ffmpeg for specialized/video-like formats
             if let Ok(status) = Command::new("ffmpeg")
-                .args(["-y", "-i"])
+                .args(["-nostdin", "-y", "-i"])
                 .arg(source)
                 .args([
                     "-vf",
@@ -470,7 +495,7 @@ fn generate_raw_thumbnail(source: &Path, target: &Path) -> Result<(), String> {
 
     // 1. Try exiftool to extract embedded JPEG preview (instant, handles CR2, CR3, NEF, ARW, DNG, RAF, etc.)
     for tag in ["-PreviewImage", "-JpgFromRaw", "-ThumbnailImage", "-OtherImage"] {
-        if let Ok(out) = Command::new("exiftool").arg("-b").arg(tag).arg(source).output()
+        if let Ok(out) = Command::new("exiftool").arg("-b").arg(tag).arg("--").arg(source).output()
             && out.status.success()
             && !out.stdout.is_empty()
             && let Ok(img) = image::load_from_memory(&out.stdout)
@@ -508,7 +533,7 @@ fn generate_raw_thumbnail(source: &Path, target: &Path) -> Result<(), String> {
 
     // 3. Try ffmpeg as final fallback
     if let Ok(status) = Command::new("ffmpeg")
-        .args(["-y", "-i"])
+        .args(["-nostdin", "-y", "-i"])
         .arg(source)
         .args([
             "-vf",
@@ -559,7 +584,7 @@ fn generate_svg_thumbnail(source: &Path, target: &Path) -> Result<(), String> {
     }
     // As a fallback, try ffmpeg
     if let Ok(status) = Command::new("ffmpeg")
-        .args(["-y", "-i"])
+        .args(["-nostdin", "-y", "-i"])
         .arg(source)
         .args([
             "-vf",
@@ -614,7 +639,7 @@ fn generate_video_thumbnail(source: &Path, target: &Path) -> Result<(), String> 
 
     // Robust ffmpeg thumbnail extraction using the thumbnail filter
     if let Ok(status) = Command::new("ffmpeg")
-        .args(["-y", "-i"])
+        .args(["-nostdin", "-y", "-i"])
         .arg(source)
         .args([
             "-vf",
@@ -638,7 +663,7 @@ fn generate_video_thumbnail(source: &Path, target: &Path) -> Result<(), String> 
 
     // Single-frame seek fallback if thumbnail filter found no candidate
     if let Ok(status) = Command::new("ffmpeg")
-        .args(["-y", "-i"])
+        .args(["-nostdin", "-y", "-i"])
         .arg(source)
         .args([
             "-vf",

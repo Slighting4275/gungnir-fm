@@ -937,6 +937,7 @@ fn compress_via_brotli_cli(
         .arg("-f")
         .arg("-o")
         .arg(dest_path)
+        .arg("--")
         .arg(&temp_tar)
         .status()
         .map_err(|e| {
@@ -1014,6 +1015,7 @@ pub fn compress_single_file(
                     "-f".to_string(),
                     "-o".to_string(),
                     dest.display().to_string(),
+                    "--".to_string(),
                     src.display().to_string(),
                 ],
             )
@@ -1026,7 +1028,7 @@ pub fn compress_single_file(
             };
             (
                 "xz",
-                vec!["-k".to_string(), "-f".to_string(), lvl.to_string(), "-c".to_string(), src.display().to_string()],
+                vec!["-k".to_string(), "-f".to_string(), lvl.to_string(), "-c".to_string(), "--".to_string(), src.display().to_string()],
             )
         }
         SingleStreamFormat::Gzip => {
@@ -1037,7 +1039,7 @@ pub fn compress_single_file(
             };
             (
                 "gzip",
-                vec!["-k".to_string(), "-f".to_string(), lvl.to_string(), "-c".to_string(), src.display().to_string()],
+                vec!["-k".to_string(), "-f".to_string(), lvl.to_string(), "-c".to_string(), "--".to_string(), src.display().to_string()],
             )
         }
         SingleStreamFormat::Bzip2 => {
@@ -1048,7 +1050,7 @@ pub fn compress_single_file(
             };
             (
                 "bzip2",
-                vec!["-k".to_string(), "-f".to_string(), lvl.to_string(), "-c".to_string(), src.display().to_string()],
+                vec!["-k".to_string(), "-f".to_string(), lvl.to_string(), "-c".to_string(), "--".to_string(), src.display().to_string()],
             )
         }
         SingleStreamFormat::Lz4 => {
@@ -1057,7 +1059,7 @@ pub fn compress_single_file(
                 CompressionLevel::Normal => "-4",
                 CompressionLevel::Maximum => "-9",
             };
-            ("lz4", vec!["-f".to_string(), lvl.to_string(), src.display().to_string(), dest.display().to_string()])
+            ("lz4", vec!["-f".to_string(), lvl.to_string(), "--".to_string(), src.display().to_string(), dest.display().to_string()])
         }
         SingleStreamFormat::Brotli => {
             let lvl = match level {
@@ -1073,6 +1075,7 @@ pub fn compress_single_file(
                     "-f".to_string(),
                     "-o".to_string(),
                     dest.display().to_string(),
+                    "--".to_string(),
                     src.display().to_string(),
                 ],
             )
@@ -1118,23 +1121,24 @@ pub fn decompress_single_file(src: &Path, dest: &Path) -> Result<u64, ArchiveErr
                 "-f".to_string(),
                 "-o".to_string(),
                 dest.display().to_string(),
+                "--".to_string(),
                 src.display().to_string(),
             ],
         ),
         "xz" => (
             "xz",
-            vec!["-d".to_string(), "-k".to_string(), "-f".to_string(), "-c".to_string(), src.display().to_string()],
+            vec!["-d".to_string(), "-k".to_string(), "-f".to_string(), "-c".to_string(), "--".to_string(), src.display().to_string()],
         ),
         "gz" => (
             "gzip",
-            vec!["-d".to_string(), "-k".to_string(), "-f".to_string(), "-c".to_string(), src.display().to_string()],
+            vec!["-d".to_string(), "-k".to_string(), "-f".to_string(), "-c".to_string(), "--".to_string(), src.display().to_string()],
         ),
         "bz2" => (
             "bzip2",
-            vec!["-d".to_string(), "-k".to_string(), "-f".to_string(), "-c".to_string(), src.display().to_string()],
+            vec!["-d".to_string(), "-k".to_string(), "-f".to_string(), "-c".to_string(), "--".to_string(), src.display().to_string()],
         ),
         "lz4" => {
-            ("lz4", vec!["-d".to_string(), "-f".to_string(), src.display().to_string(), dest.display().to_string()])
+            ("lz4", vec!["-d".to_string(), "-f".to_string(), "--".to_string(), src.display().to_string(), dest.display().to_string()])
         }
         "br" => (
             "brotli",
@@ -1143,6 +1147,7 @@ pub fn decompress_single_file(src: &Path, dest: &Path) -> Result<u64, ArchiveErr
                 "-f".to_string(),
                 "-o".to_string(),
                 dest.display().to_string(),
+                "--".to_string(),
                 src.display().to_string(),
             ],
         ),
@@ -1189,6 +1194,7 @@ pub enum LosslessAudioFormat {
 /// Transcode audio bit-perfect losslessly to FLAC, WavPack, or ALAC.
 pub fn transcode_lossless_audio(src: &Path, dest: &Path, format: LosslessAudioFormat) -> Result<u64, ArchiveError> {
     let mut cmd = std::process::Command::new("ffmpeg");
+    cmd.arg("-nostdin");
     cmd.arg("-y");
     cmd.arg("-i").arg(src);
     match format {
@@ -1203,6 +1209,7 @@ pub fn transcode_lossless_audio(src: &Path, dest: &Path, format: LosslessAudioFo
             cmd.arg("-c:a").arg("alac");
         }
     }
+    cmd.arg("--");
     cmd.arg(dest);
 
     let output = cmd.output().map_err(|e| {
@@ -1228,11 +1235,13 @@ pub fn transcode_lossless_audio(src: &Path, dest: &Path, format: LosslessAudioFo
 /// Transcode video to strictly lossless FFV1 archival format.
 pub fn encode_lossless_video_ffv1(src: &Path, dest: &Path) -> Result<u64, ArchiveError> {
     let mut cmd = std::process::Command::new("ffmpeg");
+    cmd.arg("-nostdin");
     cmd.arg("-y");
     cmd.arg("-i").arg(src);
     cmd.arg("-c:v").arg("ffv1");
     cmd.arg("-level").arg("3");
     cmd.arg("-c:a").arg("copy");
+    cmd.arg("--");
     cmd.arg(dest);
 
     let output = cmd.output().map_err(|e| {
@@ -1258,10 +1267,11 @@ pub fn encode_lossless_video_ffv1(src: &Path, dest: &Path) -> Result<u64, Archiv
 /// Convert photographic image to lossless JPEG XL (modular mode `cjxl -d 0`).
 pub fn encode_lossless_jxl(src: &Path, dest: &Path) -> Result<u64, ArchiveError> {
     let mut cmd = std::process::Command::new("cjxl");
-    cmd.arg(src);
-    cmd.arg(dest);
     cmd.arg("-d").arg("0"); // 0 distance = mathematically lossless
     cmd.arg("-e").arg("7"); // Effort 7
+    cmd.arg("--");
+    cmd.arg(src);
+    cmd.arg(dest);
 
     let output = cmd.output().map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {

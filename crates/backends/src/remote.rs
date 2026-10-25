@@ -82,7 +82,7 @@ impl VfsProvider for RemoteVfsBackend {
 
         tokio::task::spawn_blocking(move || {
             let output = Command::new("gio")
-                .args(["list", "-l", &uri_str])
+                .args(["list", "-l", "--", &uri_str])
                 .output()
                 .map_err(|e| VfsError::Transport(format!("gio list failed: {e}")))?;
 
@@ -174,7 +174,7 @@ impl VfsProvider for RemoteVfsBackend {
 
         tokio::task::spawn_blocking(move || {
             let output = Command::new("gio")
-                .args(["info", &uri_str])
+                .args(["info", "--", &uri_str])
                 .output()
                 .map_err(|e| VfsError::Transport(format!("gio info failed: {e}")))?;
 
@@ -214,7 +214,7 @@ impl VfsProvider for RemoteVfsBackend {
         }
         tokio::task::spawn_blocking(move || {
             let status = Command::new("gio")
-                .args(["mkdir", &uri_str])
+                .args(["mkdir", "--", &uri_str])
                 .status()
                 .map_err(|e| VfsError::Transport(e.to_string()))?;
             if status.success() { Ok(()) } else { Err(VfsError::Transport(format!("failed to create dir {uri_str}"))) }
@@ -235,7 +235,7 @@ impl VfsProvider for RemoteVfsBackend {
 
         tokio::task::spawn_blocking(move || {
             let status = Command::new("gio")
-                .args(["rename", &uri_str, &new_name_owned])
+                .args(["rename", "--", &uri_str, &new_name_owned])
                 .status()
                 .map_err(|e| VfsError::Transport(e.to_string()))?;
             if status.success() { Ok(new_uri) } else { Err(VfsError::Transport(format!("failed to rename {uri_str}"))) }
@@ -251,7 +251,7 @@ impl VfsProvider for RemoteVfsBackend {
         let uri_strings: Vec<String> = uris.iter().map(VfsUri::to_uri_string).collect();
         tokio::task::spawn_blocking(move || {
             for s in &uri_strings {
-                let _ = Command::new("gio").args(["remove", s]).status();
+                let _ = Command::new("gio").args(["remove", "--", s]).status();
             }
             Ok(())
         })
@@ -287,7 +287,7 @@ impl VfsProvider for RemoteVfsBackend {
                     return Err(VfsError::Cancelled);
                 }
                 let status = Command::new("gio")
-                    .args([cmd_name, s, &dest_str])
+                    .args([cmd_name, "--", s, &dest_str])
                     .status()
                     .map_err(|e| VfsError::Transport(e.to_string()))?;
                 if !status.success() {
@@ -307,7 +307,7 @@ impl VfsProvider for RemoteVfsBackend {
         }
 
         tokio::task::spawn_blocking(move || {
-            let output = Command::new("gio").args(["info", "-f", &uri_str]).output().ok();
+            let output = Command::new("gio").args(["info", "-f", "--", &uri_str]).output().ok();
             let mut free = 0;
             let mut total = 0;
             if let Some(out) = output {
@@ -338,7 +338,7 @@ impl VfsProvider for RemoteVfsBackend {
 
         tokio::task::spawn_blocking(move || {
             let output = Command::new("gio")
-                .args(["info", &uri_str])
+                .args(["info", "--", &uri_str])
                 .output()
                 .map_err(|e| VfsError::Transport(format!("gio info failed: {e}")))?;
 

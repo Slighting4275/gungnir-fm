@@ -1481,6 +1481,14 @@ impl Controller {
             self.say(format!("{} lives on a remote/cluster node and cannot be opened locally yet", e.name), true);
             return;
         };
+        // Guarantee path is absolute so xdg-open never interprets it as a switch flag
+        let path = if path.is_absolute() {
+            path
+        } else if let Ok(cwd) = std::env::current_dir() {
+            cwd.join(path)
+        } else {
+            path
+        };
         let tx = self.tx.clone();
         let name = e.name.clone();
         tokio::task::spawn_blocking(move || {

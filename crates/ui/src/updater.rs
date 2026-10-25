@@ -261,12 +261,12 @@ async fn query_release_version_with_timeout(url: &str, timeout: Duration) -> Res
         return parse_remote_tags_json(&content);
     }
 
-    // Spawn curl with timeout
+    // Spawn curl with timeout and -- switch terminator to prevent URL parameter injection
     let u = url.to_string();
     let res = tokio::time::timeout(
         timeout,
         tokio::task::spawn_blocking(move || {
-            StdCommand::new("curl").args(["-fsSL", "--connect-timeout", "2", "--max-time", "3", &u]).output()
+            StdCommand::new("curl").args(["-fsSL", "--connect-timeout", "2", "--max-time", "3", "--", &u]).output()
         }),
     )
     .await
@@ -381,7 +381,7 @@ pub async fn perform_update(format: PackageFormat, target_version: &str) -> Resu
 
                     if let Some(updater) = tool {
                         let pb = path_buf.clone();
-                        let res = tokio::task::spawn_blocking(move || StdCommand::new(updater).arg(&pb).output())
+                        let res = tokio::task::spawn_blocking(move || StdCommand::new(updater).arg("--").arg(&pb).output())
                             .await
                             .map_err(|e| e.to_string())?
                             .map_err(|e| e.to_string())?;
