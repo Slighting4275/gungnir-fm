@@ -5,7 +5,15 @@ It combines Nemo's layout and keyboard ergonomics with sub-millisecond responsiv
 
 Source repository & issue tracker: [https://gitlab.com/exalted6165/gungnir-fm](https://gitlab.com/exalted6165/gungnir-fm).
 
-![Gungnir FM](docs/gungnir-fm.png)
+| **Dark Mode (Original)** | **Light Mode** |
+| :---: | :---: |
+| [![Gungnir FM - Dark Mode](docs/gungnir-fm.png)](docs/gungnir-fm.png) | [![Gungnir FM - Light Mode](docs/gungnir-fm-light.png)](docs/gungnir-fm-light.png) |
+
+> **Seamless Theme Switching**: Switch between Dark Mode and Light Mode on the fly at any time:
+> - **Interactive Toolbar Icon**: Click the celestial full moon / sun icon in the upper-right corner of the toolbar.
+> - **Keyboard Shortcut**: Press `Ctrl+Shift+T`.
+> - **Application Menu**: Select **View** → **Switch to Light Mode** (or **Switch to Dark Mode**).
+> - **Persistent Session**: Your active theme is automatically preserved in `~/.config/gungnir-fm/session.json` and restored on next launch.
 
 ---
 

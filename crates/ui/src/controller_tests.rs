@@ -817,7 +817,7 @@ fn test_nemo_properties_and_open_with_default_application() {
 
     // 1. Select the file row
     h.send(Command::RowClicked { pane: 0, index: 0, ctrl: false, shift: false });
-    h.until(Duration::from_secs(3), |u| matches!(u, Update::Selection { pane: 0, .. }));
+    h.until(Duration::from_secs(3), |u| matches!(u, Update::Status(s) if s.selection.starts_with("1 selected")));
 
     // 2. Open Properties dialog (Basic tab = 0)
     h.send(Command::Run("properties".into()));
