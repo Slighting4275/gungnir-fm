@@ -434,16 +434,70 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let args = positional_args;
     // Arguments may be URIs, absolute paths, or paths relative to the working directory.
-    let arg_uri = |i: usize| {
-        let a = args.get(i)?;
+    let resolve_arg = |i: usize| -> (Option<VfsUri>, Option<String>) {
+        let Some(a) = args.get(i) else {
+            return (None, None);
+        };
         let parsed = if a.starts_with('/') || a.contains("://") {
             VfsUri::parse(a)
         } else {
-            let abs = std::env::current_dir().ok()?.join(a);
+            let abs = match std::env::current_dir() {
+                Ok(cwd) => cwd.join(a),
+                Err(_) => std::path::PathBuf::from(a),
+            };
             VfsUri::from_local_path(&std::fs::canonicalize(&abs).unwrap_or(abs))
         };
-        parsed.map_err(|e| eprintln!("gungnir-fm: {a}: {e}")).ok()
+        let uri = match parsed {
+            Ok(u) => u,
+            Err(e) => {
+                eprintln!("gungnir-fm: {a}: {e}");
+                return (None, None);
+            }
+        };
+
+        // If the argument points to a file, open its containing folder and select the file,
+        // matching standard desktop file manager behavior.
+        if uri.scheme() == core_vfs::Scheme::File
+            && let Some(local_path) = uri.to_local_path()
+        {
+            if local_path.is_file() {
+                if let Some(parent) = local_path.parent()
+                    && let Ok(parent_uri) = VfsUri::from_local_path(parent)
+                {
+                    let filename = local_path.file_name().and_then(|n| n.to_str()).map(str::to_owned);
+                    return (Some(parent_uri), filename);
+                }
+            } else if !local_path.exists()
+                && let Some(parent) = local_path.parent()
+                && parent.is_dir()
+            {
+                if let Some(requested_name) = local_path.file_name().and_then(|n| n.to_str()) {
+                    let req_lower = requested_name.to_lowercase();
+                    if let Ok(entries) = std::fs::read_dir(parent) {
+                        for entry in entries.flatten() {
+                            let actual_name = entry.file_name();
+                            if actual_name.to_string_lossy().to_lowercase() == req_lower
+                                && let Ok(parent_uri) = VfsUri::from_local_path(parent)
+                            {
+                                return (Some(parent_uri), Some(actual_name.to_string_lossy().into_owned()));
+                            }
+                        }
+                    }
+                    if local_path.extension().is_some()
+                        && let Ok(parent_uri) = VfsUri::from_local_path(parent)
+                    {
+                        return (Some(parent_uri), Some(requested_name.to_owned()));
+                    }
+                }
+            }
+        }
+
+        (Some(uri), None)
     };
+
+    let (left_arg, left_select) = resolve_arg(0);
+    let (right_arg, right_select) = resolve_arg(1);
+
     let config_dir = std::env::var_os("XDG_CONFIG_HOME")
         .map(std::path::PathBuf::from)
         .filter(|p| p.is_absolute())
@@ -453,14 +507,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let saved_session = crate::session::load(&session_file).ok();
 
     let cfg = Config {
-        left: arg_uri(0).unwrap_or_else(|| {
+        left: left_arg.unwrap_or_else(|| {
             saved_session
                 .as_ref()
                 .and_then(|s| s.primary_pane_tabs.get_paths().first().cloned())
                 .map(|p| crate::session::resolve_path_with_fallback(&p, &home))
                 .unwrap_or_else(|| home.clone())
         }),
-        right: arg_uri(1).unwrap_or_else(|| {
+        right: right_arg.unwrap_or_else(|| {
             saved_session
                 .as_ref()
                 .and_then(|s| s.secondary_pane_tabs.as_ref())
@@ -468,6 +522,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .map(|p| crate::session::resolve_path_with_fallback(&p, &home))
                 .unwrap_or(right_default)
         }),
+        left_select,
+        right_select,
         home,
         gungnir_root,
         gungnir_label,

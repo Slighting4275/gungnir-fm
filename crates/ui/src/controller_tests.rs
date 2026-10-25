@@ -50,6 +50,8 @@ fn start(left: &str, right: &str, mock: MockConfig) -> Harness {
     let cfg = Config {
         left: uri(left),
         right: uri(right),
+        left_select: None,
+        right_select: None,
         home: uri("/"),
         gungnir_root: uri("gungnir://odin/"),
         gungnir_label: "TEST".into(),

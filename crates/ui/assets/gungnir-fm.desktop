@@ -10,7 +10,7 @@ StartupNotify=false
 StartupWMClass=gungnir-fm
 Categories=System;FileTools;FileManager;
 Keywords=files;folders;browser;explorer;gungnir;vfs;manager;filesystem;
-MimeType=inode/directory;application/x-gnome-saved-search;x-scheme-handler/trash;x-scheme-handler/file;
+MimeType=inode/directory;application/x-gnome-saved-search;x-scheme-handler/trash;
 Actions=open-home;open-trash;NewWindow;
 
 [Desktop Action NewWindow]

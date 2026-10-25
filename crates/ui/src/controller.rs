@@ -221,6 +221,8 @@ pub type MsgTx = mpsc::Sender<Msg>;
 pub struct Config {
     pub left: VfsUri,
     pub right: VfsUri,
+    pub left_select: Option<String>,
+    pub right_select: Option<String>,
     pub home: VfsUri,
     pub gungnir_root: VfsUri,
     pub gungnir_label: String,
@@ -732,10 +734,17 @@ impl Controller {
                     s.dark_mode,
                 )
             } else {
-                let panes = [
-                    Pane { tabs: vec![Tab::new(1, cfg.left.clone())], active: 0 },
-                    Pane { tabs: vec![Tab::new(2, cfg.right.clone())], active: 0 },
-                ];
+                let mut t0 = Tab::new(1, cfg.left.clone());
+                if let Some(ref sel) = cfg.left_select {
+                    t0.pending_select = Some(sel.clone());
+                    t0.selected = [sel.clone()].into();
+                }
+                let mut t1 = Tab::new(2, cfg.right.clone());
+                if let Some(ref sel) = cfg.right_select {
+                    t1.pending_select = Some(sel.clone());
+                    t1.selected = [sel.clone()].into();
+                }
+                let panes = [Pane { tabs: vec![t0], active: 0 }, Pane { tabs: vec![t1], active: 0 }];
                 next_tab = 3;
                 (panes, 0, false, false, true, 1.0, true)
             };
