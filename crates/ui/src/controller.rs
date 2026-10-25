@@ -552,13 +552,7 @@ fn get_pw_name(uid: u32) -> Option<String> {
     let mut buf = vec![0u8; 1024];
     let mut result = std::ptr::null_mut();
     let res = unsafe {
-        libc::getpwuid_r(
-            uid,
-            pwd.as_mut_ptr(),
-            buf.as_mut_ptr() as *mut libc::c_char,
-            buf.len(),
-            &mut result,
-        )
+        libc::getpwuid_r(uid, pwd.as_mut_ptr(), buf.as_mut_ptr() as *mut libc::c_char, buf.len(), &mut result)
     };
     if res == 0 && !result.is_null() {
         let name_ptr = unsafe { (*result).pw_name };
@@ -576,13 +570,7 @@ fn get_gr_name(gid: u32) -> Option<String> {
     let mut buf = vec![0u8; 1024];
     let mut result = std::ptr::null_mut();
     let res = unsafe {
-        libc::getgrgid_r(
-            gid,
-            grp.as_mut_ptr(),
-            buf.as_mut_ptr() as *mut libc::c_char,
-            buf.len(),
-            &mut result,
-        )
+        libc::getgrgid_r(gid, grp.as_mut_ptr(), buf.as_mut_ptr() as *mut libc::c_char, buf.len(), &mut result)
     };
     if res == 0 && !result.is_null() {
         let name_ptr = unsafe { (*result).gr_name };
@@ -668,6 +656,7 @@ pub(crate) fn crumb_views(u: &VfsUri, home: &VfsUri) -> Vec<Crumb> {
                 (0, Scheme::Sftp | Scheme::Smb) => (uri.authority().to_owned(), 2),
                 (0, Scheme::Trash) => ("Trash".to_owned(), 5),
                 (0, Scheme::Recent) => ("Recent".to_owned(), 4),
+                (0, Scheme::Network) => ("Network".to_owned(), 6),
                 _ => (label, 0),
             };
             let label = if icon == 3 && label.is_empty() { "gungnir".to_owned() } else { label };
@@ -1049,6 +1038,7 @@ impl Controller {
                 BackendKind::GungnirLive => 2,
                 BackendKind::Sftp => 3,
                 BackendKind::Smb => 4,
+                BackendKind::Network => 5,
             },
             message: message.into(),
             message_is_error: is_err,
@@ -1070,6 +1060,13 @@ impl Controller {
             p.active = p.uri.as_str() == loc;
         }
         self.ui.send(Update::Places(places));
+        let network_places = vec![PlaceItem {
+            label: "Network".into(),
+            uri: "network:///".into(),
+            icon: 9,
+            active: loc == "network:///" || loc.starts_with("network:///"),
+        }];
+        self.ui.send(Update::NetworkPlaces(network_places));
         let items = self
             .mounts
             .iter()
@@ -1670,7 +1667,7 @@ impl Controller {
             Scheme::Trash => {
                 backends::local::home_trash().ok().map(|t| t.join("files").join(e.uri.path().trim_start_matches('/')))
             }
-            Scheme::Recent | Scheme::Gungnir | Scheme::Sftp | Scheme::Smb => None,
+            Scheme::Recent | Scheme::Network | Scheme::Gungnir | Scheme::Sftp | Scheme::Smb => None,
         };
         let Some(path) = path else {
             self.say(format!("{} lives on a remote/cluster node and cannot be opened locally yet", e.name), true);
@@ -3888,7 +3885,7 @@ impl Controller {
                     Scheme::Trash => backends::local::home_trash()
                         .ok()
                         .map(|t| t.join("files").join(e.uri.path().trim_start_matches('/'))),
-                    Scheme::Recent | Scheme::Gungnir | Scheme::Sftp | Scheme::Smb => None,
+                    Scheme::Recent | Scheme::Network | Scheme::Gungnir | Scheme::Sftp | Scheme::Smb => None,
                 }?;
                 Some((path, e.is_navigable()))
             })

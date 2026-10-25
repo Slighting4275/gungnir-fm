@@ -115,6 +115,10 @@ export component AppWindow inherits Window {
     in-out property <[DeviceItem]> devices: [
         { label: "BACKUP_01", uri: "/run/media/user/BACKUP_01", object: "/demo/sdb1", mounted: true, size-text: "64.0 GB", active: false },
     ];
+    in-out property <[PlaceItem]> network-places: [
+        { label: "Network", uri: "network:///", icon: 9, active: false },
+    ];
+    in-out property <bool> network-open: true;
     in-out property <[TreeRow]> tree: [
         { label: "/", uri: "/", depth: 0, expanded: true, has-children: true, active: false },
         { label: "home", uri: "/home", depth: 1, expanded: true, has-children: true, active: false },
@@ -525,6 +529,8 @@ export component AppWindow inherits Window {
                     mode: root.sidebar-mode;
                     gungnir-label: root.gungnir-label;
                     devices: root.devices;
+                    network-places: root.network-places;
+                    network-open <=> root.network-open;
                     device-open(o) => { root.device-open(o); }
                     device-eject(o) => { root.device-eject(o); }
                     open(uri) => { root.sidebar-open(uri); }

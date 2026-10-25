@@ -368,6 +368,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     registry.register(Arc::new(LocalPosixBackend::new()));
     registry.register(Arc::new(RemoteVfsBackend::sftp()));
     registry.register(Arc::new(RemoteVfsBackend::smb()));
+    registry.register(Arc::new(RemoteVfsBackend::network()));
     let mode = match mode.as_str() {
         "auto" | "live" | "mock" | "off" | "live-or-off" => mode,
         other => {

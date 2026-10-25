@@ -42,6 +42,9 @@ fn start(left: &str, right: &str, mock: MockConfig) -> Harness {
     let mut reg = VfsRegistry::new();
     reg.register(Arc::new(LocalPosixBackend::new()));
     reg.register(Arc::new(MockGungnirBackend::new(mock)));
+    reg.register(Arc::new(backends::RemoteVfsBackend::sftp()));
+    reg.register(Arc::new(backends::RemoteVfsBackend::smb()));
+    reg.register(Arc::new(backends::RemoteVfsBackend::network()));
     let (utx, urx) = std_mpsc::channel();
     let (tx, rx) = mpsc::channel(4096);
     let cfg = Config {
@@ -402,6 +405,39 @@ fn test_remote_connect_dialog_and_crumbs() {
     let smb_crumbs = crate::controller::crumb_views(&smb_uri, &home);
     assert_eq!(smb_crumbs[0].label.as_str(), "nas.local");
     assert_eq!(smb_crumbs[0].icon, 2);
+
+    backends::remote::set_remote_test_mode(false);
+}
+
+#[test]
+fn test_network_sidebar_and_navigation() {
+    backends::remote::set_remote_test_mode(true);
+    let h = start("/", "/", MockConfig::default());
+
+    // Initially at "/" so network place is inactive
+    let initial_places = h.until(
+        Duration::from_millis(500),
+        |u| matches!(u, Update::NetworkPlaces(np) if !np.is_empty() && !np[0].active),
+    );
+    assert!(!initial_places.is_empty(), "Network places update should be broadcast");
+
+    // Open network:/// from sidebar
+    h.send(Command::SidebarOpen("network:///".into()));
+
+    // Network places should now be active
+    let active_places = h.until(
+        Duration::from_millis(500),
+        |u| matches!(u, Update::NetworkPlaces(np) if !np.is_empty() && np[0].active),
+    );
+    assert!(!active_places.is_empty(), "Network place should become active when navigating to network:///");
+
+    // Check breadcrumb
+    let net_uri = VfsUri::parse("network:///").unwrap_or_else(|e| panic!("{e}"));
+    let home = VfsUri::parse("/home/user").unwrap_or_else(|e| panic!("{e}"));
+    let crumbs = crate::controller::crumb_views(&net_uri, &home);
+    assert_eq!(crumbs.len(), 1);
+    assert_eq!(crumbs[0].label.as_str(), "Network");
+    assert_eq!(crumbs[0].icon, 6);
 
     backends::remote::set_remote_test_mode(false);
 }
@@ -776,9 +812,10 @@ fn test_nemo_properties_and_open_with_default_application() {
     let h = start(&file_uri, &file_uri, MockConfig::default());
 
     // Wait until file is loaded
-    h.until(Duration::from_secs(3), |u| {
-        matches!(u, Update::Rows { pane: 0, rows } if rows.iter().any(|r| r.name == "demo_movie.mp4"))
-    });
+    h.until(
+        Duration::from_secs(3),
+        |u| matches!(u, Update::Rows { pane: 0, rows } if rows.iter().any(|r| r.name == "demo_movie.mp4")),
+    );
 
     // 1. Select the file row
     h.send(Command::RowClicked { pane: 0, index: 0, ctrl: false, shift: false });
@@ -805,9 +842,10 @@ fn test_nemo_properties_and_open_with_default_application() {
         extra2: String::new(),
     });
 
-    h.until(Duration::from_secs(3), |u| {
-        matches!(u, Update::Dialog(d) if d.kind == crate::DialogKind::Properties && d.perms_executable)
-    });
+    h.until(
+        Duration::from_secs(3),
+        |u| matches!(u, Update::Dialog(d) if d.kind == crate::DialogKind::Properties && d.perms_executable),
+    );
 
     #[cfg(unix)]
     {
@@ -824,9 +862,10 @@ fn test_nemo_properties_and_open_with_default_application() {
         extra1: String::new(),
         extra2: String::new(),
     });
-    h.until(Duration::from_secs(3), |u| {
-        matches!(u, Update::Dialog(d) if d.kind == crate::DialogKind::Properties && d.properties_tab == 2)
-    });
+    h.until(
+        Duration::from_secs(3),
+        |u| matches!(u, Update::Dialog(d) if d.kind == crate::DialogKind::Properties && d.properties_tab == 2),
+    );
 
     h.send(Command::DialogCustomAction {
         action: "set-default-app:mpv.desktop".into(),
@@ -850,9 +889,10 @@ fn test_nemo_properties_and_open_with_default_application() {
 
     // 6. Open "Open With" dialog directly (opens Properties directly on tab 2)
     h.send(Command::Run("open-with".into()));
-    h.until(Duration::from_secs(3), |u| {
-        matches!(u, Update::Dialog(d) if d.kind == crate::DialogKind::Properties && d.properties_tab == 2)
-    });
+    h.until(
+        Duration::from_secs(3),
+        |u| matches!(u, Update::Dialog(d) if d.kind == crate::DialogKind::Properties && d.properties_tab == 2),
+    );
 
     h.send(Command::DialogCancel);
 

@@ -114,6 +114,7 @@ pub enum BackendKind {
     GungnirLive,
     Sftp,
     Smb,
+    Network,
 }
 
 impl BackendKind {
@@ -125,6 +126,7 @@ impl BackendKind {
             BackendKind::GungnirLive => "GUNGNIR-VFS",
             BackendKind::Sftp => "SFTP / SSH",
             BackendKind::Smb => "SMB / CIFS",
+            BackendKind::Network => "NETWORK",
         }
     }
 }

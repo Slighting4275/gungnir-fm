@@ -22,7 +22,7 @@ component CrumbButton inherits Rectangle {
         spacing: 6px;
         if root.crumb.icon != 0: Glyph {
             y: (parent.height - self.height) / 2;
-            name: root.crumb.icon == 1 ? "home" : root.crumb.icon == 2 ? "drive" : "spear";
+            name: root.crumb.icon == 1 ? "home" : root.crumb.icon == 2 ? "drive" : root.crumb.icon == 6 ? "network" : "spear";
             tint: root.crumb.icon == 3 ? Theme.gold : root.last ? Theme.text : Theme.text-dim;
         }
         if root.crumb.label != "": Text {

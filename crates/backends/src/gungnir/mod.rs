@@ -75,6 +75,7 @@ fn local_path(uri: &VfsUri) -> VfsResult<PathBuf> {
             }
         }
         Scheme::Recent => Err(VfsError::Unsupported("recent:// not backed by local path".into())),
+        Scheme::Network => Err(VfsError::Unsupported("network:// not backed by local path".into())),
         Scheme::Gungnir => Err(VfsError::Unsupported(format!(
             "gungnird serves this machine only; node {:?} needs a newer Gungnir",
             uri.authority()

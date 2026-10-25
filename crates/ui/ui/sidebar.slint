@@ -163,6 +163,10 @@ export component Sidebar inherits Rectangle {
         { label: "32.0 GB Volume", uri: "", object: "/demo/sdc1", mounted: false, size-text: "32.0 GB", active: false },
     ];
     in-out property <bool> devices-open: true;
+    in property <[PlaceItem]> network-places: [
+        { label: "Network", uri: "network:///", icon: 9, active: false },
+    ];
+    in-out property <bool> network-open: true;
     callback device-open(object: string);
     callback device-eject(object: string);
     in-out property <int> mode: 0;
@@ -180,6 +184,7 @@ export component Sidebar inherits Rectangle {
         if icon == 6 { return "drive"; }
         if icon == 7 { return "music"; }
         if icon == 8 { return "image"; }
+        if icon == 9 { return "network"; }
         return "folder";
     }
 
@@ -210,6 +215,13 @@ export component Sidebar inherits Rectangle {
                     item: d;
                     open => { root.device-open(d.object); }
                     eject => { root.device-eject(d.object); }
+                } }
+                SectionHeader { text: "NETWORK"; open <=> root.network-open; }
+                if root.network-open: VerticalLayout { spacing: 1px; for n in root.network-places: SideItem {
+                    label: n.label;
+                    glyph: root.place-glyph(n.icon);
+                    active: n.active;
+                    clicked => { root.open(n.uri); }
                 } }
                 // Hidden entirely when Gungnir is off (empty label).
                 if root.gungnir-label != "": SectionHeader { text: root.gungnir-label; tint: Theme.gold.darker(10%); open <=> root.gungnir-open; }

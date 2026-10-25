@@ -22,6 +22,7 @@ pub enum Scheme {
     Smb,
     Trash,
     Recent,
+    Network,
 }
 
 impl Scheme {
@@ -34,6 +35,7 @@ impl Scheme {
             Scheme::Smb => "smb",
             Scheme::Trash => "trash",
             Scheme::Recent => "recent",
+            Scheme::Network => "network",
         }
     }
 }
@@ -66,6 +68,7 @@ impl VfsUri {
             "smb" | "cifs" => Scheme::Smb,
             "trash" => Scheme::Trash,
             "recent" => Scheme::Recent,
+            "network" => Scheme::Network,
             other => return Err(VfsError::InvalidUri(format!("unsupported scheme {other}://"))),
         };
         let (authority, path) = match rest.find('/') {
@@ -88,7 +91,7 @@ impl VfsUri {
                 }
                 authority
             }
-            Scheme::Trash | Scheme::Recent => {
+            Scheme::Trash | Scheme::Recent | Scheme::Network => {
                 if !authority.is_empty() && !authority.eq_ignore_ascii_case("localhost") {
                     return Err(VfsError::InvalidUri(format!("{}:// does not take a host", scheme.as_str())));
                 }
@@ -137,6 +140,15 @@ impl VfsUri {
     pub fn recent(path: &str) -> VfsResult<Self> {
         let p = if path.starts_with('/') { path.to_owned() } else { format!("/{path}") };
         Ok(Self { scheme: Scheme::Recent, authority: String::new(), path: normalize(&p)? })
+    }
+
+    /// `network://<path>`.
+    ///
+    /// # Errors
+    /// [`VfsError::InvalidUri`].
+    pub fn network(path: &str) -> VfsResult<Self> {
+        let p = if path.starts_with('/') { path.to_owned() } else { format!("/{path}") };
+        Ok(Self { scheme: Scheme::Network, authority: String::new(), path: normalize(&p)? })
     }
 
     #[must_use]
@@ -214,6 +226,7 @@ impl VfsUri {
             Scheme::Smb => format!("smb://{}", self.authority),
             Scheme::Trash => "trash://".to_owned(),
             Scheme::Recent => "recent://".to_owned(),
+            Scheme::Network => "network://".to_owned(),
         };
         let mut cur = Self { path: "/".into(), ..self.clone() };
         let mut out = vec![(root_label, cur.clone())];
@@ -234,6 +247,7 @@ impl VfsUri {
             Scheme::Smb => format!("smb://{}{}", self.authority, self.path),
             Scheme::Trash => format!("trash://{}", self.path),
             Scheme::Recent => format!("recent://{}", self.path),
+            Scheme::Network => format!("network://{}", self.path),
         }
     }
 
@@ -364,6 +378,25 @@ mod tests {
 
         let cifs = u("cifs://winserver/public");
         assert_eq!(cifs.scheme(), Scheme::Smb);
+    }
+
+    #[test]
+    fn network_uris() {
+        let net = u("network:///");
+        assert_eq!(net.scheme(), Scheme::Network);
+        assert_eq!(net.authority(), "");
+        assert_eq!(net.path(), "/");
+        assert_eq!(net.display(), "network:///");
+        assert_eq!(net.to_uri_string(), "network:///");
+
+        let net_child = u("network:///smb-root");
+        assert_eq!(net_child.scheme(), Scheme::Network);
+        assert_eq!(net_child.path(), "/smb-root");
+        assert_eq!(net_child.display(), "network:///smb-root");
+        let crumbs = net_child.crumbs();
+        assert_eq!(crumbs.len(), 2);
+        assert_eq!(crumbs[0].0, "network://");
+        assert_eq!(crumbs[1].0, "smb-root");
     }
 
     #[test]

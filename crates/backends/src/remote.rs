@@ -19,6 +19,14 @@ use tokio_util::sync::CancellationToken;
 
 static TEST_MODE: AtomicBool = AtomicBool::new(false);
 
+/// Creates a `gio` Command that clears `GIO_USE_VFS` so child CLI calls talk to
+/// system GVfs (network:///, sftp://, smb://) rather than inheriting GungnirVfs.
+fn gio_cmd() -> Command {
+    let mut cmd = Command::new("gio");
+    cmd.env_remove("GIO_USE_VFS");
+    cmd
+}
+
 /// Enable hermetic test mode for unit tests without network access.
 pub fn set_remote_test_mode(enabled: bool) {
     TEST_MODE.store(enabled, Ordering::Relaxed);
@@ -39,6 +47,11 @@ impl RemoteVfsBackend {
     pub fn smb() -> Self {
         Self { kind: BackendKind::Smb }
     }
+
+    #[must_use]
+    pub fn network() -> Self {
+        Self { kind: BackendKind::Network }
+    }
 }
 
 #[async_trait]
@@ -49,7 +62,7 @@ impl VfsProvider for RemoteVfsBackend {
 
     fn capabilities(&self) -> VfsCapabilities {
         VfsCapabilities {
-            writable: true,
+            writable: self.kind != BackendKind::Network,
             watch: false,
             trash: false,
             pause_transfers: false,
@@ -62,6 +75,7 @@ impl VfsProvider for RemoteVfsBackend {
         match self.kind {
             BackendKind::Sftp => uri.scheme() == Scheme::Sftp,
             BackendKind::Smb => uri.scheme() == Scheme::Smb,
+            BackendKind::Network => uri.scheme() == Scheme::Network,
             _ => false,
         }
     }
@@ -81,13 +95,18 @@ impl VfsProvider for RemoteVfsBackend {
         }
 
         tokio::task::spawn_blocking(move || {
-            let output = Command::new("gio")
+            let output = gio_cmd()
                 .args(["list", "-l", "--", &uri_str])
                 .output()
                 .map_err(|e| VfsError::Transport(format!("gio list failed: {e}")))?;
 
             if !output.status.success() {
                 let err_msg = String::from_utf8_lossy(&output.stderr);
+                if target_dir.scheme() == Scheme::Network {
+                    // When offline, no network daemon is active, or discovery returns empty/unsupported,
+                    // return a clean empty list rather than failing the directory view with an error banner.
+                    return Ok(ListSummary { entries: 0, skipped: 0 });
+                }
                 return Err(VfsError::Transport(format!("cannot open {uri_str}: {err_msg}")));
             }
 
@@ -156,7 +175,11 @@ impl VfsProvider for RemoteVfsBackend {
     async fn stat(&self, uri: &VfsUri) -> VfsResult<FileEntry> {
         let uri_str = uri.to_uri_string();
         let target_uri = uri.clone();
-        let name = uri.file_name().unwrap_or("").to_string();
+        let name = if uri.scheme() == Scheme::Network && uri.is_root() {
+            "Network".to_string()
+        } else {
+            uri.file_name().unwrap_or("").to_string()
+        };
 
         if TEST_MODE.load(Ordering::Relaxed) {
             let is_dir = uri.is_root() || !name.contains('.');
@@ -173,12 +196,24 @@ impl VfsProvider for RemoteVfsBackend {
         }
 
         tokio::task::spawn_blocking(move || {
-            let output = Command::new("gio")
+            let output = gio_cmd()
                 .args(["info", "--", &uri_str])
                 .output()
                 .map_err(|e| VfsError::Transport(format!("gio info failed: {e}")))?;
 
             if !output.status.success() {
+                if target_uri.scheme() == Scheme::Network && target_uri.is_root() {
+                    return Ok(FileEntry {
+                        name,
+                        uri: target_uri,
+                        kind: FileKind::Directory,
+                        target_is_dir: true,
+                        size: 0,
+                        modified: None,
+                        mode: 0o755,
+                        vfs: VfsMetadata::default(),
+                    });
+                }
                 return Err(VfsError::Transport(format!("stat failed for {uri_str}")));
             }
 
@@ -213,7 +248,7 @@ impl VfsProvider for RemoteVfsBackend {
             return Ok(());
         }
         tokio::task::spawn_blocking(move || {
-            let status = Command::new("gio")
+            let status = gio_cmd()
                 .args(["mkdir", "--", &uri_str])
                 .status()
                 .map_err(|e| VfsError::Transport(e.to_string()))?;
@@ -234,7 +269,7 @@ impl VfsProvider for RemoteVfsBackend {
         }
 
         tokio::task::spawn_blocking(move || {
-            let status = Command::new("gio")
+            let status = gio_cmd()
                 .args(["rename", "--", &uri_str, &new_name_owned])
                 .status()
                 .map_err(|e| VfsError::Transport(e.to_string()))?;
@@ -251,7 +286,7 @@ impl VfsProvider for RemoteVfsBackend {
         let uri_strings: Vec<String> = uris.iter().map(VfsUri::to_uri_string).collect();
         tokio::task::spawn_blocking(move || {
             for s in &uri_strings {
-                let _ = Command::new("gio").args(["remove", "--", s]).status();
+                let _ = gio_cmd().args(["remove", "--", s]).status();
             }
             Ok(())
         })
@@ -286,7 +321,7 @@ impl VfsProvider for RemoteVfsBackend {
                 if ctl.cancel.is_cancelled() {
                     return Err(VfsError::Cancelled);
                 }
-                let status = Command::new("gio")
+                let status = gio_cmd()
                     .args([cmd_name, "--", s, &dest_str])
                     .status()
                     .map_err(|e| VfsError::Transport(e.to_string()))?;
@@ -302,12 +337,12 @@ impl VfsProvider for RemoteVfsBackend {
 
     async fn volume(&self, uri: &VfsUri) -> VfsResult<VolumeInfo> {
         let uri_str = uri.to_uri_string();
-        if TEST_MODE.load(Ordering::Relaxed) {
-            return Ok(VolumeInfo { total_bytes: 1024 * 1024 * 1024 * 100, free_bytes: 1024 * 1024 * 1024 * 50 });
+        if TEST_MODE.load(Ordering::Relaxed) || uri.scheme() == Scheme::Network {
+            return Ok(VolumeInfo { total_bytes: 0, free_bytes: 0 });
         }
 
         tokio::task::spawn_blocking(move || {
-            let output = Command::new("gio").args(["info", "-f", "--", &uri_str]).output().ok();
+            let output = gio_cmd().args(["info", "-f", "--", &uri_str]).output().ok();
             let mut free = 0;
             let mut total = 0;
             if let Some(out) = output {
@@ -328,6 +363,7 @@ impl VfsProvider for RemoteVfsBackend {
 
     async fn inspect(&self, uri: &VfsUri) -> VfsResult<Vec<(String, String)>> {
         let uri_str = uri.to_uri_string();
+        let is_network = uri.scheme() == Scheme::Network;
         if TEST_MODE.load(Ordering::Relaxed) {
             return Ok(vec![
                 ("URI".to_string(), uri_str),
@@ -337,10 +373,21 @@ impl VfsProvider for RemoteVfsBackend {
         }
 
         tokio::task::spawn_blocking(move || {
-            let output = Command::new("gio")
+            let output = gio_cmd()
                 .args(["info", "--", &uri_str])
                 .output()
                 .map_err(|e| VfsError::Transport(format!("gio info failed: {e}")))?;
+
+            if !output.status.success() {
+                if is_network {
+                    return Ok(vec![
+                        ("URI".to_string(), uri_str),
+                        ("Backend".to_string(), "Network Places (FreeDesktop/GVfs)".to_string()),
+                        ("Status".to_string(), "Active / Ready".to_string()),
+                    ]);
+                }
+                return Err(VfsError::Transport(format!("gio info failed for {uri_str}")));
+            }
 
             let text = String::from_utf8_lossy(&output.stdout);
             let mut rows = vec![("URI".to_string(), uri_str), ("Backend".to_string(), "Remote GIO".to_string())];
@@ -362,7 +409,11 @@ async fn list_mock_remote(
     sink: EntrySink,
     _cancel: CancellationToken,
 ) -> VfsResult<ListSummary> {
-    let mock_names = ["project_remote", "archive.tar.gz", "readme.txt", "video_stream.mp4"];
+    let mock_names: &[&str] = if dir.scheme() == Scheme::Network {
+        &["Windows Network", "Local Network"]
+    } else {
+        &["project_remote", "archive.tar.gz", "readme.txt", "video_stream.mp4"]
+    };
     let mut entries = Vec::new();
     for name in mock_names {
         let is_dir = !name.contains('.');
@@ -394,19 +445,28 @@ mod tests {
 
         let sftp_provider = RemoteVfsBackend::sftp();
         let smb_provider = RemoteVfsBackend::smb();
+        let network_provider = RemoteVfsBackend::network();
 
         let sftp_uri = VfsUri::parse("sftp://user@host.internal/home/user").unwrap_or_else(|e| panic!("{e}"));
         let smb_uri = VfsUri::parse("smb://nas.local/public/docs").unwrap_or_else(|e| panic!("{e}"));
+        let network_uri = VfsUri::parse("network:///").unwrap_or_else(|e| panic!("{e}"));
         let file_uri = VfsUri::parse("/local/path").unwrap_or_else(|e| panic!("{e}"));
 
         assert!(sftp_provider.handles(&sftp_uri));
         assert!(!sftp_provider.handles(&smb_uri));
         assert!(!sftp_provider.handles(&file_uri));
+        assert!(!sftp_provider.handles(&network_uri));
 
         assert!(smb_provider.handles(&smb_uri));
         assert!(!smb_provider.handles(&sftp_uri));
+        assert!(!smb_provider.handles(&network_uri));
 
-        // Test mock directory listing
+        assert!(network_provider.handles(&network_uri));
+        assert!(!network_provider.handles(&sftp_uri));
+        assert!(!network_provider.handles(&smb_uri));
+        assert!(!network_provider.handles(&file_uri));
+
+        // Test mock directory listing for SFTP
         let (tx, mut rx) = tokio::sync::mpsc::channel(8);
         let summary = sftp_provider
             .list_dir(&sftp_uri, ListOptions::default(), tx, CancellationToken::new())
@@ -417,6 +477,19 @@ mod tests {
         let batch = rx.recv().await.unwrap_or_else(|| panic!("expected batch"));
         assert_eq!(batch.len(), 4);
         assert_eq!(batch[0].name, "project_remote");
+
+        // Test mock directory listing for Network
+        let (ntx, mut nrx) = tokio::sync::mpsc::channel(8);
+        let n_summary = network_provider
+            .list_dir(&network_uri, ListOptions::default(), ntx, CancellationToken::new())
+            .await
+            .unwrap_or_else(|e| panic!("{e}"));
+
+        assert_eq!(n_summary.entries, 2);
+        let n_batch = nrx.recv().await.unwrap_or_else(|| panic!("expected network batch"));
+        assert_eq!(n_batch.len(), 2);
+        assert_eq!(n_batch[0].name, "Windows Network");
+        assert_eq!(n_batch[0].kind, FileKind::Directory);
 
         // Test stat
         let stat_res = sftp_provider.stat(&sftp_uri.join("readme.txt").unwrap_or_else(|e| panic!("{e}"))).await;

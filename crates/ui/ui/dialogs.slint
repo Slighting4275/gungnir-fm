@@ -143,7 +143,7 @@ export component DialogOverlay inherits Rectangle {
                 spacing: 10px;
                 Glyph {
                     y: (parent.height - self.height) / 2;
-                    name: root.kind == DialogKind.hash ? "edit" : root.kind == DialogKind.connect-server ? "desktop" : root.kind == DialogKind.preview ? "image" : root.kind == DialogKind.inspect ? "spear" : root.kind == DialogKind.confirm-delete ? "trash" : root.kind == DialogKind.new-folder ? "folder" : root.kind == DialogKind.conflict ? "warning" : root.kind == DialogKind.search ? "search" : root.kind == DialogKind.batch-rename ? "edit" : root.kind == DialogKind.compare-panes ? "split" : root.kind == DialogKind.compress ? "download" : "document";
+                    name: root.kind == DialogKind.hash ? "edit" : root.kind == DialogKind.connect-server ? "network" : root.kind == DialogKind.preview ? "image" : root.kind == DialogKind.inspect ? "spear" : root.kind == DialogKind.confirm-delete ? "trash" : root.kind == DialogKind.new-folder ? "folder" : root.kind == DialogKind.conflict ? "warning" : root.kind == DialogKind.search ? "search" : root.kind == DialogKind.batch-rename ? "edit" : root.kind == DialogKind.compare-panes ? "split" : root.kind == DialogKind.compress ? "download" : "document";
                     tint: root.kind == DialogKind.hash ? Theme.accent : root.kind == DialogKind.preview ? Theme.accent : root.kind == DialogKind.inspect ? Theme.gold : root.kind == DialogKind.error || root.kind == DialogKind.confirm-delete || root.kind == DialogKind.conflict ? Theme.bad : Theme.accent;
                 }
                 Text {

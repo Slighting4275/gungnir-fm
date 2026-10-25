@@ -133,6 +133,7 @@ pub enum Update {
     },
     Tree(Vec<TreeRow>),
     Devices(Vec<crate::DeviceItem>),
+    NetworkPlaces(Vec<PlaceItem>),
     Transfers {
         rows: Vec<TransferRow>,
         active: i32,
@@ -285,6 +286,7 @@ pub fn apply(ui: &AppWindow, u: Update) {
         }
         Update::Tree(t) => ui.set_tree(model(t)),
         Update::Devices(d) => ui.set_devices(model(d)),
+        Update::NetworkPlaces(p) => ui.set_network_places(model(p)),
         Update::Transfers { rows, active, open } => {
             let m = ui.get_transfers();
             match m.as_any().downcast_ref::<VecModel<TransferRow>>() {
