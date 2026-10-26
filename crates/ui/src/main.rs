@@ -294,6 +294,34 @@ fn create_app_window() -> Result<AppWindow, Box<dyn std::error::Error>> {
     }
 }
 
+fn autostart_gungnird() {
+    // 1. Try systemd user socket if available
+    let _ = std::process::Command::new("systemctl")
+        .args(["--user", "start", "gungnird.socket"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+
+    // 2. Also try direct spawn if gungnird binary exists
+    let candidates = [
+        dirs::home_dir().map(|h| h.join(".local/bin/gungnird")),
+        Some(std::path::PathBuf::from("/usr/local/bin/gungnird")),
+        Some(std::path::PathBuf::from("/usr/bin/gungnird")),
+    ];
+
+    for candidate in candidates.into_iter().flatten() {
+        if candidate.is_file() {
+            let _ = std::process::Command::new(candidate)
+                .args(["--idle-timeout", "0", "--seccomp"])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn();
+            break;
+        }
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let raw_args: Vec<String> = std::env::args().skip(1).collect();
     let mut init_cfg = InitConfig::default();
@@ -403,14 +431,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     } else {
         match socket_path_from_env() {
-            Ok(sock) => match rt.block_on(GungnirVfsBackend::connect(sock.clone())) {
-                Ok(b) => Some(b),
-                Err(e) if mode == "live" => {
-                    eprintln!("gungnir-fm: live gungnird unavailable ({e}); it will be retried on use");
-                    Some(GungnirVfsBackend::new(sock))
+            Ok(sock) => {
+                let first_try = rt.block_on(GungnirVfsBackend::connect(sock.clone()));
+                match first_try {
+                    Ok(b) => Some(b),
+                    Err(_) => {
+                        // Daemon was not running: attempt to auto-start it
+                        autostart_gungnird();
+                        // Brief retry loop for the socket to initialize
+                        let mut connected = None;
+                        for _ in 0..10 {
+                            std::thread::sleep(std::time::Duration::from_millis(50));
+                            if sock.exists() {
+                                if let Ok(b) = rt.block_on(GungnirVfsBackend::connect(sock.clone())) {
+                                    connected = Some(b);
+                                    break;
+                                }
+                            }
+                        }
+                        if connected.is_none() && mode == "live" {
+                            Some(GungnirVfsBackend::new(sock))
+                        } else {
+                            connected
+                        }
+                    }
                 }
-                Err(_) => None,
-            },
+            }
             Err(e) => {
                 eprintln!("gungnir-fm: {e}");
                 None

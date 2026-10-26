@@ -13,6 +13,11 @@ icon="$HOME/.local/share/icons/hicolor/scalable/apps/gungnir-fm.svg"
 desktop="$HOME/.local/share/applications/gungnir-fm.desktop"
 
 if [ "${1:-}" = "--uninstall" ]; then
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl --user disable --now gungnird.service gungnird.socket 2>/dev/null || true
+        rm -f "$HOME/.config/systemd/user/gungnird.service" "$HOME/.config/systemd/user/gungnird.socket"
+        systemctl --user daemon-reload 2>/dev/null || true
+    fi
     rm -f -- "$bin" "$daemon_bin" "$gio_module" "$icon" "$desktop"
     if command -v gio-querymodules >/dev/null 2>&1; then
         gio-querymodules "$HOME/.local/lib/gio/modules" 2>/dev/null || true
@@ -37,6 +42,17 @@ if [ -f "$here/.build/gungnird/release/gungnird" ]; then
 elif [ -f "$here/../gungnir-vfs/.build/target/release/gungnird" ]; then
     cp -f "$here/../gungnir-vfs/.build/target/release/gungnird" "$daemon_bin"
     chmod 755 "$daemon_bin"
+fi
+
+# Install and enable systemd user service & socket for automatic daemon management
+if [ -f "$daemon_bin" ] && command -v systemctl >/dev/null 2>&1; then
+    user_systemd="$HOME/.config/systemd/user"
+    mkdir -p "$user_systemd"
+    cp -f "$here/init/systemd/gungnird.service" "$user_systemd/gungnird.service"
+    cp -f "$here/init/systemd/gungnird.socket" "$user_systemd/gungnird.socket"
+    systemctl --user daemon-reload 2>/dev/null || true
+    systemctl --user enable --now gungnird.socket 2>/dev/null || true
+    systemctl --user enable --now gungnird.service 2>/dev/null || true
 fi
 
 vfs_so="$here/../gungnir-vfs/.build/zig-out/lib/libgiogungnir.so"
