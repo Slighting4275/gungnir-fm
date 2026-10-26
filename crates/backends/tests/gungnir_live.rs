@@ -291,3 +291,37 @@ async fn live_empty_file_creation_is_exclusive() -> VfsResult<()> {
     assert_eq!(std::fs::read(&target).ok().as_deref(), Some(b"existing content".as_slice()));
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cancelling_live_listing_with_full_receiver_stops_forwarder() -> VfsResult<()> {
+    let t = TempDir::new("live-blocked-listing");
+    let files = t.path().join("files");
+    std::fs::create_dir(&files).unwrap_or_else(|e| panic!("{e}"));
+    for i in 0..100 {
+        std::fs::write(files.join(format!("item{i}")), b"x").unwrap_or_else(|e| panic!("{e}"));
+    }
+    let (tx, mut rx) = mpsc::channel(1);
+    let cancel = CancellationToken::new();
+    let token = cancel.clone();
+    let socket = t.path().join("missing.sock");
+    let task = tokio::spawn(async move {
+        GungnirVfsBackend::new(socket).list_dir(&g(&files), ListOptions { first_batch: 1, batch: 1 }, tx, token).await
+    });
+    // Wait until the output is full; keep its receiver alive without consuming it.
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while rx.is_empty() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("listing did not produce a batch"));
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    cancel.cancel();
+    let result = tokio::time::timeout(Duration::from_secs(2), task)
+        .await
+        .unwrap_or_else(|_| panic!("live forwarder stayed blocked after cancellation"))
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(result, Err(VfsError::Cancelled));
+    rx.close();
+    Ok(())
+}

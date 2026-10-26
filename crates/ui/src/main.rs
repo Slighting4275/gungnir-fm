@@ -107,13 +107,16 @@ fn wire(ui: &AppWindow, tx: &mpsc::Sender<Msg>) {
     ui.on_dialog_custom_action({
         let tx = tx.clone();
         move |a, opt1, opt2, ex1, ex2| {
-            let _ = tx.blocking_send(Msg::Ui(Command::DialogCustomAction {
-                action: a.to_string(),
-                opt1,
-                opt2,
-                extra1: ex1.to_string(),
-                extra2: ex2.to_string(),
-            }));
+            send(
+                &tx,
+                Command::DialogCustomAction {
+                    action: a.to_string(),
+                    opt1,
+                    opt2,
+                    extra1: ex1.to_string(),
+                    extra2: ex2.to_string(),
+                },
+            );
         }
     });
     on!(on_terminal_run, |cmd| Command::TerminalRun(cmd.to_string()));
@@ -620,7 +623,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (tx, rx) = mpsc::channel(QUEUE);
     wire(&ui, &tx);
     let controller = Controller::new(registry, sink, tx.clone(), cfg);
-    rt.spawn(controller.run(rx));
+    let controller_task = rt.spawn(controller.run(rx));
+    // Capture geometry on the UI thread; persistence itself runs on a worker.
+    let window_timer = slint::Timer::default();
+    let weak = ui.as_weak();
+    let window_tx = tx.clone();
+    let mut normal_size = saved_session.as_ref().map(|s| s.window.clone()).unwrap_or_default();
+    let mut previous: Option<session::WindowState> = None;
+    window_timer.start(slint::TimerMode::Repeated, std::time::Duration::from_millis(250), move || {
+        let Some(ui) = weak.upgrade() else { return };
+        let window = ui.window();
+        let size = window.size().to_logical(window.scale_factor());
+        let mut state = session::WindowState {
+            width: size.width as u32,
+            height: size.height as u32,
+            maximized: window.is_maximized(),
+        };
+        // Keep the normal size when maximized or minimized so unmaximizing restores it.
+        if state.maximized || state.width < 200 || state.height < 200 {
+            state.width = normal_size.width;
+            state.height = normal_size.height;
+        } else {
+            normal_size = state.clone();
+        }
+        if previous.as_ref() != Some(&state)
+            && window_tx.try_send(Msg::Ui(Command::WindowChanged(state.clone()))).is_ok()
+        {
+            previous = Some(state);
+        }
+    });
+    let close_tx = tx.clone();
+    ui.window().on_close_requested(move || {
+        send(&close_tx, Command::Quit);
+        slint::CloseRequestResponse::KeepWindowShown
+    });
 
     init::notify_ready(&init_cfg);
 
@@ -647,7 +683,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     ui.run()?;
-    let _ = tx.try_send(Msg::Ui(Command::Quit));
+    rt.block_on(async {
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let _ = tx.send(Msg::Ui(Command::Quit)).await;
+            let _ = controller_task.await;
+        })
+        .await;
+        if result.is_err() {
+            eprintln!("gungnir-fm: timed out waiting for session save on exit");
+        }
+    });
     drop(ui);
     rt.shutdown_timeout(std::time::Duration::from_millis(500));
     Ok(())

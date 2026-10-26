@@ -1,7 +1,7 @@
 # Gungnir FM
 
 A fast dual-pane Linux file manager written in Rust with [Slint](https://slint.dev).
-It combines Nemo's layout and keyboard ergonomics with sub-millisecond responsiveness, adaptive dark and light themes with an interactive toolbar toggle, and an architecture where the UI thread never touches disk or blocking I/O. It serves as the companion GUI for [Gungnir VFS](https://gitlab.com/exalted6165/gungnir-vfs).
+It provides Nemo-style navigation and everyday file actions, adaptive dark and light themes, and background workers for directory listings, transfers, and Properties details. It serves as the companion GUI for [Gungnir VFS](https://gitlab.com/exalted6165/gungnir-vfs).
 
 Source repository & issue tracker: [https://gitlab.com/exalted6165/gungnir-fm](https://gitlab.com/exalted6165/gungnir-fm).
 
@@ -365,6 +365,30 @@ Gungnir FM strictly adheres to zero-personal-data policies:
 - **Virtualized Views**: Compact list, detailed list, and thumbnail grid views virtualized with Slint `ListView`. 100,000-entry folders scroll smoothly without UI stutters.
 - **Sortable Columns**: Natural, folders-first ordering by name, size, type, modified time, POSIX permissions, and Gungnir VFS sync status.
 
+### Creating and selecting items
+
+Right-click **empty space inside a folder** and choose **Create New Folder**, or
+**Create New Document → Empty Document**. The new item appears
+with its name selected for inline editing; type the name and press Enter. Both
+actions are also in the **File** menu. `Ctrl+Shift+N` or `F7`
+creates a folder. Existing files and symlinks are preserved; unsupported backends
+report an error. Right-clicking a file opens its item actions instead.
+
+- **Select Items Matching** (`Ctrl+S`): match visible names with `*` and `?`.
+- **Invert Selection**, **Duplicate**, **Paste Into Folder**, and **Open in Other Pane**.
+- **New Window** (`Ctrl+N`) and multi-item **Open**; selected folders open in tabs.
+- Clipboard file selections interoperate with other file managers through
+  `x-special/gnome-copied-files` when `xclip` (X11) or `wl-copy`/`wl-paste`
+  (Wayland) is installed. Cut selections clear after a successful move.
+- Properties load on a worker, preserve the original target if selection changes,
+  and restrict the executable toggle to regular files.
+
+The creation menu follows [Nemo's menu organization](https://github.com/linuxmint/nemo/blob/master/src/nemo-view.c).
+Default names get a numeric suffix when already taken, and cancelling the rename
+keeps the created item. Inline naming works in list, compact, and grid views.
+User document templates and complete Nemo feature parity are not yet implemented.
+See [workflow details and validation](docs/NEMO-WORKFLOWS.md).
+
 ### 🖼️ Visual Image & Video Previews
 - **Master Encyclopedia Media Support**:
   - **Universal & Web Raster**: JPEG (JFIF/EXIF), PNG, GIF, BMP/DIB, TIFF/BigTIFF, WebP, ICO, CUR, ICNS.
@@ -502,8 +526,8 @@ Gungnir FM includes an enterprise-grade, multi-format lossless compression subsy
 - **The Core Suite (Daily Driver & Cold-Storage Standards)**:
   - **Zstandard (`.zst`, `.tar.zst`)**: State-of-the-art daily driver archive engine scaling from ultra-fast level 1 (>500 MB/s) to levels 19–22 cold archival, with decompression throughput consistently exceeding 1.2 GB/s.
   - **XZ / LZMA2 (`.xz`, `.tar.xz`)**: Maximum density cold-storage archival for system binaries, firmware, and release tarballs.
-  - **Universal ZIP (`.zip`)**: Interoperable central-directory random-access container with optional password encryption.
-  - **7-Zip (`.7z`)**: Multi-stream encrypted container featuring solid compression and AES-256 header and data encryption.
+  - **Universal ZIP (`.zip`)**: Interoperable central-directory random-access container.
+  - **7-Zip (`.7z`)**: Archive support depends on the installed libarchive build.
   - **Gzip (`.gz`, `.tar.gz`) & Bzip2 (`.bz2`, `.tar.bz2`)**: Legacy Unix, cloud baseline, and Burrows-Wheeler distribution archives.
 - **High-Throughput & Specialized General Engines**:
   - **LZ4 (`.lz4`, `.tar.lz4`)**: Memory-bus speed streaming compression (400–800 MB/s encode, 3–5 GB/s decode per core).
@@ -518,7 +542,7 @@ Gungnir FM includes an enterprise-grade, multi-format lossless compression subsy
   - *Tier 2 (In-Process Native Single-Stream Engines)*: Streaming compressors and decompressors for single-file processing.
   - *Tier 3 (Asynchronous Non-Blocking CLI Worker Fallback)*: Non-blocking POSIX pipes for solid 7z, unrar, and specialized domain media encoders.
 - **UI Integration & Context Menu Actions**:
-  - **"Compress…"**: In-window modal Lossless Compression Dialog (`DialogKind::Compress`) supporting format selection, Fast / Normal (default) / Maximum levels, and AES-256 password encryption.
+  - **"Compress…"**: In-window modal Lossless Compression Dialog (`DialogKind::Compress`) supporting format selection, Fast / Normal (default) / Maximum levels, and a password field. Password-protected ZIP/7z creation currently fails explicitly because the backend cannot guarantee AES encryption; it never silently produces an unencrypted archive. Password-protected extraction uses libarchive when supported.
   - **"Quick Compress to .tar.zst"** & **"Quick Compress to .zip"**: Instant 1-click archiving.
   - **"Extract Here"** & **"Extract to Subfolder…"**: Collision-safe, traversal-protected archive extraction.
   - **"Test Archive Integrity"**: In-memory bit-perfect header, checksum, and stream integrity verification without disk writes.
@@ -534,7 +558,7 @@ Gungnir FM includes an enterprise-grade, multi-format lossless compression subsy
 ### 🗑️ FreeDesktop.org Trash (1.0) & Recent Items Integration
 - **Full Spec-Compliant Trash Support (`trash:///`)**: Direct navigation to and browsing of `$XDG_DATA_HOME/Trash/files` via canonical `trash:///` URI.
 - **Transactional Restoration**: Right-click or menu "Restore from Trash" decodes original paths from `.trashinfo`, creates any missing parent directories, atomically restores items via non-replacing rename, and purges metadata files.
-- **One-Click Empty Trash**: Instant purging of trash files and matching `.trashinfo` metadata records.
+- **Empty Trash**: Confirmation is required before purging trash files and matching `.trashinfo` metadata records.
 - **Permanent Deletion Cleanliness**: Unlinking files directly inside the trash automatically cleans up the corresponding `.trashinfo` record.
 - **Sidebar Places & Breadcrumbs**: Native "Trash" entry in sidebar places with custom icon and dynamic active tracking.
 - **Recent Items Support (`recent:///`)**: Canonical scheme handling for recent files.
@@ -560,9 +584,9 @@ Gungnir FM includes an enterprise-grade, multi-format lossless compression subsy
   - *Verify Checksum File*
 
 ### 💾 Crash-Resilient Session Persistence & Recovery
-- **Automatic State Saving**: Debounced auto-save (500 ms) to `~/.config/gungnir-fm/session.json`.
-- **Atomic Writes**: Writes to temporary files and atomically renames to prevent corruption during unexpected shutdowns or crashes.
-- **Persisted State**: Window size and maximized state, dark/light theme mode, active pane, split view toggle, open tabs per pane, preview zoom level, hidden file visibility (`Ctrl+H`), and sidebar state (`F9`).
+- **Automatic State Saving**: Debounced auto-save (500 ms) to `~/.config/gungnir-fm/session.json`; rapid updates retain the newest snapshot. Closing the window waits for a final save, and save errors are reported to stderr.
+- **Atomic Writes**: Exclusively creates private temporary files, syncs their contents, and atomically replaces the session file. Failed writes clean up their temporary file; a failed save can be retried.
+- **Persisted State**: Window size and maximized state, dark/light theme mode, active pane, split view toggle, open tabs per pane, list/compact/grid view, preview zoom level, hidden file visibility (`Ctrl+H`), and sidebar state (`F9`).
 - **Safe Recovery**: Automatically restores open tabs and paths on restart, safely falling back to the user's home directory if any saved path is unmounted or inaccessible.
 
 ### 🔌 Removable Drives & Desktop Integration
@@ -604,14 +628,16 @@ Gungnir FM includes an enterprise-grade, multi-format lossless compression subsy
 | `Alt+Up` | Navigate up to parent directory |
 | `Alt+Left` / `Alt+Right` | Navigate back / forward in tab history |
 | `Ctrl+H` | Toggle hidden files |
-| `Ctrl+1` / `Ctrl+2` / `Ctrl+3` | Switch view: Detailed list / Compact list / Grid |
+| `Ctrl+1` / `Ctrl+2` / `Ctrl+3` | Switch view: Compact list / Detailed list / Grid |
 | `Ctrl++` / `Ctrl+=` | Zoom in previews / icons (up to 350%) |
 | `Ctrl+-` / `Ctrl+_` | Zoom out previews / icons (down to 50%) |
 | `Ctrl+0` | Reset preview zoom to 100% |
 | `Space` | Quick Preview overlay (image/video/text) |
 | `F2` | Rename selected file or directory (opens Batch Renamer when 2+ files selected) |
 | `F5` / `F6` | Copy / Move selection to other pane |
-| `F7` | Create new directory |
+| `Ctrl+Shift+N` / `F7` | Create new folder |
+| `Ctrl+N` | New window |
+| `Ctrl+S` | Select items matching a name pattern |
 | `Ctrl+C` / `Ctrl+X` / `Ctrl+V` | Copy / Cut / Paste selection |
 | `Delete` | Move selection to Trash |
 | `Shift+Delete` | Permanently delete selection |
@@ -620,7 +646,7 @@ Gungnir FM includes an enterprise-grade, multi-format lossless compression subsy
 ---
 
 ## Running Tests
-The workspace includes unit and integration tests across all crates (sandboxed and isolated, with zero personal data access):
+The workspace includes unit and integration tests across all crates. Controller tests use temporary desktop preferences; test update operations are simulated:
 ```sh
 # Via Makefile:
 make test

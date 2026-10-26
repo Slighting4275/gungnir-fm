@@ -565,8 +565,12 @@ impl VfsProvider for GungnirVfsBackend {
                     looked_up += n;
                     self.enrich(&mut batch[..n], deadline).await;
                 }
-                if sink.send(batch).await.is_err() {
-                    return Err(VfsError::Cancelled);
+                tokio::select! {
+                    biased;
+                    () = cancel.cancelled() => return Err(VfsError::Cancelled),
+                    result = sink.send(batch) => {
+                        if result.is_err() { return Err(VfsError::Cancelled); }
+                    }
                 }
             }
             Ok(())

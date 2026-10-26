@@ -46,6 +46,16 @@ fn start(left: &str, right: &str, mock: MockConfig) -> Harness {
 }
 
 fn start_with_local(left: &str, right: &str, mock: MockConfig, include_local: bool) -> Harness {
+    start_configured(left, right, mock, include_local, |_| {})
+}
+
+fn start_configured(
+    left: &str,
+    right: &str,
+    mock: MockConfig,
+    include_local: bool,
+    configure: impl FnOnce(&mut Config),
+) -> Harness {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
@@ -67,7 +77,7 @@ fn start_with_local(left: &str, right: &str, mock: MockConfig, include_local: bo
         config: vec![sandbox.join("config")],
         data: vec![sandbox.join("data"), std::path::PathBuf::from("/usr/share")],
     };
-    let cfg = Config {
+    let mut cfg = Config {
         left: uri(left),
         right: uri(right),
         left_select: None,
@@ -82,6 +92,7 @@ fn start_with_local(left: &str, right: &str, mock: MockConfig, include_local: bo
         desktop_dirs: Some(desktop_dirs),
         trace: false,
     };
+    configure(&mut cfg);
     let c = Controller::new(reg, Arc::new(Recorder(Mutex::new(utx))), tx.clone(), cfg);
     rt.spawn(c.run(rx));
     Harness { tx, rx: urx, _rt: rt, _desktop_sandbox: DesktopSandbox(sandbox) }
@@ -375,6 +386,7 @@ fn session_persistence_and_safe_recovery() {
         sidebar_visible: true,
         zoom_level: 1.25,
         dark_mode: true,
+        view_mode: 2,
     };
 
     // Save atomically
@@ -1499,4 +1511,84 @@ fn executable_permission_toggle_refuses_directories_and_symlink_targets() {
     assert_ne!(std::fs::metadata(tmp.join("folder")).unwrap().permissions().mode() & 0o111, 0);
     assert_eq!(std::fs::metadata(tmp.join(".target")).unwrap().permissions().mode() & 0o777, 0o600);
     let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[test]
+fn session_restores_view_mode_and_flushes_geometry_and_latest_view_on_quit() {
+    let dir = temp_dir("session-controller-quit");
+    let path = dir.join("session.json");
+    let text = dir.to_str().unwrap_or_else(|| panic!("UTF-8 fixture"));
+    let initial = serde_json::from_value(serde_json::json!({
+        "primary_pane_tabs": [text], "view_mode": 2,
+        "window": { "width": 1100, "height": 750 }
+    }))
+    .unwrap_or_else(|e| panic!("{e}"));
+    let h = start_configured(text, text, MockConfig::default(), true, |cfg| {
+        cfg.session_file = Some(path.clone());
+        cfg.initial_session = Some(initial);
+    });
+    h.until(Duration::from_secs(3), |u| matches!(u, Update::Flags(f) if f.view_mode == 2));
+    h.send(Command::WindowChanged(crate::session::WindowState { width: 950, height: 650, maximized: false }));
+    h.send(Command::ViewMode(0));
+    h.send(Command::Quit);
+    h.until(Duration::from_secs(3), |u| matches!(u, Update::Quit));
+    let saved = crate::session::load(&path).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(saved.view_mode, 0);
+    assert_eq!((saved.window.width, saved.window.height), (950, 650));
+    assert_eq!(saved.primary_pane_tabs.get_paths(), vec![VfsUri::from_local_path(&dir).unwrap().to_uri_string()]);
+    drop(h);
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn nemo_inline_creation_uses_unique_names_and_renames_the_created_item() {
+    let d = temp_dir("inline-create");
+    std::fs::write(d.join("Untitled Document"), b"original").unwrap();
+    std::fs::create_dir(d.join("Untitled Folder")).unwrap();
+    let path = d.to_str().unwrap();
+    let h = start(path, path, MockConfig::default());
+    h.until(Duration::from_secs(3), |u| full_rows(u, 0, 2));
+    h.send(Command::Run("new-file-inline".into()));
+    let updates = h.until(Duration::from_secs(3), |u| matches!(u, Update::Rename { pane: 0, index } if *index >= 0));
+    let index = updates
+        .iter()
+        .find_map(|u| match u {
+            Update::Rename { pane: 0, index } if *index >= 0 => Some(*index as usize),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(std::fs::read(d.join("Untitled Document")).unwrap(), b"original");
+    assert_eq!(std::fs::read(d.join("Untitled Document 2")).unwrap(), b"");
+    h.send(Command::RenameCommit { pane: 0, index, name: "Report.txt".into() });
+    h.until(Duration::from_secs(3), |u| matches!(u, Update::Status(s) if s.message.contains("Renamed to Report.txt")));
+    assert_eq!(std::fs::read(d.join("Report.txt")).unwrap(), b"");
+    h.send(Command::Run("new-folder-inline".into()));
+    h.until(Duration::from_secs(3), |u| matches!(u, Update::Rename { pane: 0, index } if *index >= 0));
+    assert!(d.join("Untitled Folder 2").is_dir());
+    h.send(Command::RenameCancel);
+    drop(h);
+    std::fs::remove_dir_all(d).ok();
+}
+
+#[test]
+fn inline_creation_in_right_pane_preserves_existing_symlink_and_clears_filter() {
+    let d = temp_dir("inline-right");
+    let left = d.join("left");
+    let right = d.join("right");
+    std::fs::create_dir(&left).unwrap();
+    std::fs::create_dir(&right).unwrap();
+    std::fs::write(left.join("target"), b"keep").unwrap();
+    std::os::unix::fs::symlink(left.join("target"), right.join("Untitled Document")).unwrap();
+    let h = start(left.to_str().unwrap(), right.to_str().unwrap(), MockConfig::default());
+    h.until(Duration::from_secs(3), |u| full_rows(u, 1, 1));
+    h.send(Command::PaneFocused(1));
+    h.send(Command::Filter { pane: 1, text: "no-match".into() });
+    h.send(Command::Run("new-file-inline".into()));
+    h.until(Duration::from_secs(3), |u| matches!(u, Update::Rename { pane: 1, index } if *index >= 0));
+    assert_eq!(std::fs::read(left.join("target")).unwrap(), b"keep");
+    assert!(right.join("Untitled Document").is_symlink());
+    assert_eq!(std::fs::read(right.join("Untitled Document 2")).unwrap(), b"");
+    assert!(!left.join("Untitled Document 2").exists());
+    drop(h);
+    std::fs::remove_dir_all(d).ok();
 }

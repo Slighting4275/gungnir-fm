@@ -1,7 +1,7 @@
 //! Session persistence and crash recovery.
 //!
 //! Serializes window and navigation state to `~/.config/gungnir-fm/session.json`.
-//! Uses atomic writes (`session.json.tmp` renamed to `session.json`) and a 500ms
+//! Uses exclusive temporary sibling files renamed to the session file and a 500ms
 //! debounced background saver.
 
 use core_vfs::VfsUri;
@@ -104,10 +104,16 @@ pub struct SessionState {
     pub zoom_level: f32,
     #[serde(default = "default_true")]
     pub dark_mode: bool,
+    #[serde(default = "default_view_mode")]
+    pub view_mode: i32,
 }
 
 fn default_true() -> bool {
     true
+}
+
+fn default_view_mode() -> i32 {
+    1
 }
 
 fn default_zoom() -> f32 {
@@ -116,28 +122,35 @@ fn default_zoom() -> f32 {
 
 /// Atomically write state to a JSON file via a temporary sibling file.
 pub fn save_atomic(path: &Path, state: &SessionState) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let tmp_path = path.with_extension(format!("tmp-{}", std::process::id()));
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent)?;
+    let name = path.file_name().ok_or_else(|| std::io::Error::other("session path has no filename"))?;
     let json_bytes =
         serde_json::to_vec_pretty(state).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-
-    {
-        use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(&tmp_path)?;
-        f.write_all(&json_bytes)?;
-        f.sync_all()?;
+    let (tmp_path, mut file) = loop {
+        let mut tmp_name = name.to_os_string();
+        tmp_name.push(format!(".tmp-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+        let candidate = parent.join(tmp_name);
+        match std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&candidate) {
+            Ok(file) => break (candidate, file),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    };
+    let result = (|| {
+        file.write_all(&json_bytes)?;
+        file.sync_all()?;
+        std::fs::rename(&tmp_path, path)?;
+        std::fs::File::open(parent)?.sync_all()
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp_path);
     }
-    std::fs::rename(&tmp_path, path)?;
-    Ok(())
+    result
 }
 
 /// Load and parse session state from file.
@@ -173,73 +186,83 @@ pub fn resolve_path_with_fallback(path_str: &str, home: &VfsUri) -> VfsUri {
     home.clone()
 }
 
-pub enum SessionSaveMsg {
-    Update(SessionState),
-    Flush(tokio::sync::oneshot::Sender<()>),
-}
-
-/// Background session saver that debounces writes by 500ms.
+/// Background session saver that coalesces updates without dropping the latest state.
 #[derive(Clone)]
 pub struct SessionSaver {
-    tx: tokio::sync::mpsc::Sender<SessionSaveMsg>,
+    latest: tokio::sync::watch::Sender<Option<SessionState>>,
+    flush: tokio::sync::mpsc::Sender<tokio::sync::oneshot::Sender<std::io::Result<()>>>,
+}
+
+async fn persist(path: &Path, pending: &mut Option<SessionState>) -> std::io::Result<()> {
+    if let Some(state) = pending.clone() {
+        let path = path.to_owned();
+        tokio::task::spawn_blocking(move || save_atomic(&path, &state)).await.map_err(std::io::Error::other)??;
+        *pending = None;
+    }
+    Ok(())
 }
 
 impl SessionSaver {
     #[must_use]
     pub fn spawn(path: PathBuf) -> (Self, Option<tokio::task::JoinHandle<()>>) {
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<SessionSaveMsg>(64);
+        let (latest, mut updates) = tokio::sync::watch::channel::<Option<SessionState>>(None);
+        let (flush, mut flushes) = tokio::sync::mpsc::channel::<tokio::sync::oneshot::Sender<std::io::Result<()>>>(8);
         let task = async move {
-            let mut pending_state: Option<SessionState> = None;
-            let mut debounce_timer = Box::pin(tokio::time::sleep(Duration::MAX));
+            let mut pending = None;
+            let timer = tokio::time::sleep(Duration::from_millis(500));
+            tokio::pin!(timer);
             let mut timer_active = false;
-
             loop {
                 tokio::select! {
-                    msg = rx.recv() => {
-                        match msg {
-                            Some(SessionSaveMsg::Update(state)) => {
-                                pending_state = Some(state);
-                                debounce_timer = Box::pin(tokio::time::sleep(Duration::from_millis(500)));
-                                timer_active = true;
-                            }
-                            Some(SessionSaveMsg::Flush(ack)) => {
-                                if let Some(state) = pending_state.take() {
-                                    let _ = save_atomic(&path, &state);
-                                }
-                                timer_active = false;
-                                let _ = ack.send(());
-                            }
-                            None => {
-                                if let Some(state) = pending_state.take() {
-                                    let _ = save_atomic(&path, &state);
-                                }
-                                break;
-                            }
+                    changed = updates.changed() => {
+                        if let Some(state) = updates.borrow_and_update().clone() {
+                            pending = Some(state);
                         }
+                        if changed.is_err() {
+                            if let Err(e) = persist(&path, &mut pending).await {
+                                eprintln!("gungnir-fm: session save failed: {e}");
+                            }
+                            break;
+                        }
+                        timer.as_mut().reset(tokio::time::Instant::now() + Duration::from_millis(500));
+                        timer_active = true;
                     }
-                    () = &mut debounce_timer, if timer_active => {
+                    ack = flushes.recv() => {
+                        let Some(ack) = ack else {
+                            if let Some(state) = updates.borrow_and_update().clone() { pending = Some(state); }
+                            if let Err(e) = persist(&path, &mut pending).await {
+                                eprintln!("gungnir-fm: session save failed: {e}");
+                            }
+                            break;
+                        };
+                        if let Some(state) = updates.borrow_and_update().clone() {
+                            pending = Some(state);
+                        }
+                        let result = persist(&path, &mut pending).await;
                         timer_active = false;
-                        if let Some(state) = pending_state.take() {
-                            let _ = save_atomic(&path, &state);
+                        let _ = ack.send(result);
+                    }
+                    () = &mut timer, if timer_active => {
+                        timer_active = false;
+                        if let Err(e) = persist(&path, &mut pending).await {
+                            eprintln!("gungnir-fm: session save failed: {e}");
                         }
                     }
                 }
             }
         };
-
         let handle = tokio::runtime::Handle::try_current().ok().map(|h| h.spawn(task));
-        (Self { tx }, handle)
+        (Self { latest, flush }, handle)
     }
 
     pub fn update(&self, state: SessionState) {
-        let _ = self.tx.try_send(SessionSaveMsg::Update(state));
+        self.latest.send_replace(Some(state));
     }
 
-    pub async fn flush(&self) {
-        let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
-        if self.tx.send(SessionSaveMsg::Flush(ack_tx)).await.is_ok() {
-            let _ = ack_rx.await;
-        }
+    pub async fn flush(&self) -> std::io::Result<()> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.flush.send(tx).await.map_err(|_| std::io::Error::other("session saver stopped"))?;
+        rx.await.map_err(|_| std::io::Error::other("session saver stopped"))?
     }
 }
 
@@ -262,6 +285,7 @@ mod tests {
             sidebar_visible: false,
             zoom_level: 1.5,
             dark_mode: false,
+            view_mode: 2,
         };
 
         let json = serde_json::to_string(&state).unwrap_or_else(|e| panic!("{e}"));
@@ -311,6 +335,7 @@ mod tests {
             sidebar_visible: true,
             zoom_level: 1.0,
             dark_mode: true,
+            view_mode: 1,
         };
 
         save_atomic(&session_file, &state).unwrap_or_else(|e| panic!("{e}"));
@@ -329,6 +354,95 @@ mod tests {
         assert_eq!(resolved, home);
     }
 
+    fn sample() -> SessionState {
+        serde_json::from_str(r#"{"primary_pane_tabs":["/tmp"]}"#).unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    #[test]
+    fn legacy_sessions_default_to_detailed_view() {
+        assert_eq!(sample().view_mode, 1);
+    }
+
+    #[test]
+    fn atomic_save_preserves_preexisting_temporary_links_and_cleans_failures() {
+        use std::os::unix::fs::PermissionsExt;
+        let sandbox = TestSandbox::new("save-links");
+        let path = sandbox.0.join("session.json");
+        let victim = sandbox.0.join("other-file");
+        std::fs::write(&victim, b"must survive").unwrap_or_else(|e| panic!("{e}"));
+        let old_temp = path.with_extension(format!("tmp-{}", std::process::id()));
+        std::fs::hard_link(&victim, &old_temp).unwrap_or_else(|e| panic!("{e}"));
+        save_atomic(&path, &sample()).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(std::fs::read(&victim).unwrap_or_default(), b"must survive");
+        assert_eq!(std::fs::metadata(&path).unwrap_or_else(|e| panic!("{e}")).permissions().mode() & 0o777, 0o600);
+        let blocked = sandbox.0.join("a-directory");
+        std::fs::create_dir(&blocked).unwrap_or_else(|e| panic!("{e}"));
+        assert!(save_atomic(&blocked, &sample()).is_err());
+        let entries: Vec<_> = std::fs::read_dir(&sandbox.0).unwrap_or_else(|e| panic!("{e}")).collect();
+        assert_eq!(entries.len(), 4, "failed saves must remove their own temporary file");
+    }
+
+    #[test]
+    fn concurrent_atomic_saves_leave_valid_complete_json() {
+        let sandbox = TestSandbox::new("save-concurrent");
+        let path = sandbox.0.join("session.json");
+        std::thread::scope(|scope| {
+            for i in 0..16 {
+                let path = &path;
+                scope.spawn(move || {
+                    let mut state = sample();
+                    state.window.width = 1000 + i;
+                    save_atomic(path, &state).unwrap_or_else(|e| panic!("{e}"));
+                });
+            }
+        });
+        let loaded = load(&path).unwrap_or_else(|e| panic!("{e}"));
+        assert!((1000..1016).contains(&loaded.window.width));
+        assert_eq!(std::fs::read_dir(&sandbox.0).unwrap_or_else(|e| panic!("{e}")).count(), 1);
+    }
+
+    #[tokio::test]
+    async fn rapid_session_updates_keep_the_latest_snapshot() {
+        let sandbox = TestSandbox::new("session-flood");
+        let path = sandbox.0.join("session.json");
+        let (saver, _) = SessionSaver::spawn(path.clone());
+        let mut state = sample();
+        // No yielding: the old bounded queue dropped all updates after the 64th.
+        for i in 0..1000 {
+            state.window.width = 1000 + i;
+            saver.update(state.clone());
+        }
+        saver.flush().await.unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(load(&path).unwrap_or_else(|e| panic!("{e}")), state);
+    }
+
+    #[tokio::test]
+    async fn failed_flush_is_reported_and_can_be_retried() {
+        let sandbox = TestSandbox::new("session-retry");
+        let parent = sandbox.0.join("blocked");
+        std::fs::write(&parent, b"keep").unwrap_or_else(|e| panic!("{e}"));
+        let path = parent.join("session.json");
+        let (saver, _) = SessionSaver::spawn(path.clone());
+        let state = sample();
+        saver.update(state.clone());
+        assert!(saver.flush().await.is_err());
+        assert_eq!(std::fs::read(&parent).unwrap_or_default(), b"keep");
+        std::fs::remove_file(&parent).unwrap_or_else(|e| panic!("{e}"));
+        saver.flush().await.unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(load(&path).unwrap_or_else(|e| panic!("{e}")), state);
+    }
+
+    #[tokio::test]
+    async fn dropping_saver_persists_last_update() {
+        let sandbox = TestSandbox::new("session-drop");
+        let path = sandbox.0.join("session.json");
+        let (saver, handle) = SessionSaver::spawn(path.clone());
+        saver.update(sample());
+        drop(saver);
+        handle.unwrap_or_else(|| panic!("no saver task")).await.unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(load(&path).unwrap_or_else(|e| panic!("{e}")), sample());
+    }
+
     #[tokio::test]
     async fn test_session_saver_debounce_and_flush() {
         let sandbox = TestSandbox::new("saver-test");
@@ -345,10 +459,11 @@ mod tests {
             sidebar_visible: true,
             zoom_level: 1.0,
             dark_mode: true,
+            view_mode: 1,
         };
 
         saver.update(state.clone());
-        saver.flush().await;
+        saver.flush().await.unwrap_or_else(|e| panic!("{e}"));
 
         assert!(session_file.exists());
         let loaded = load(&session_file).unwrap_or_else(|e| panic!("{e}"));

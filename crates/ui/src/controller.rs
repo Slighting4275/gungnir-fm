@@ -78,6 +78,7 @@ pub enum Command {
     PaneFocused(usize),
     Run(String),
     ViewMode(i32),
+    WindowChanged(crate::session::WindowState),
     Zoom(f32),
     SidebarOpen(String),
     TreeToggle(usize),
@@ -217,6 +218,12 @@ pub enum Event {
         dest: VfsUri,
         files: Result<Option<crate::clipboard::Files>, ()>,
     },
+    Created {
+        pane: usize,
+        tab: u64,
+        dir: VfsUri,
+        result: VfsResult<VfsUri>,
+    },
     CustomAppSelected(String),
     Tick,
 }
@@ -278,6 +285,7 @@ struct Tab {
     backend: Option<BackendKind>,
     /// Reselect this name after the next load.
     pending_select: Option<String>,
+    pending_rename: Option<String>,
 }
 
 impl Tab {
@@ -304,6 +312,7 @@ impl Tab {
             volume: None,
             backend: None,
             pending_select: None,
+            pending_rename: None,
         }
     }
 
@@ -646,6 +655,7 @@ pub struct Controller {
     sidebar_mode: i32,
     show_hidden: bool,
     view_mode: i32,
+    window_state: crate::session::WindowState,
     zoom_level: f32,
     next_tab: u64,
     next_transfer: u64,
@@ -789,6 +799,8 @@ impl Controller {
 
         let actions = crate::actions::ActionRegistry::load_or_default(cfg.actions_dir.as_deref());
 
+        let window_state = cfg.initial_session.as_ref().map(|s| s.window.clone()).unwrap_or_default();
+        let view_mode = cfg.initial_session.as_ref().map_or(1, |s| s.view_mode.clamp(0, 2));
         Self {
             registry,
             ui,
@@ -800,7 +812,8 @@ impl Controller {
             sidebar,
             sidebar_mode: 0,
             show_hidden,
-            view_mode: 1,
+            view_mode,
+            window_state,
             zoom_level,
             next_tab,
             next_transfer: 1,
@@ -841,8 +854,11 @@ impl Controller {
         while let Some(m) = rx.recv().await {
             match m {
                 Msg::Ui(Command::Quit) => {
-                    if let Some(ref saver) = self.session_saver {
-                        saver.flush().await;
+                    self.trigger_save_session();
+                    if let Some(ref saver) = self.session_saver
+                        && let Err(e) = saver.flush().await
+                    {
+                        eprintln!("gungnir-fm: session save failed: {e}");
                     }
                     self.ui.send(Update::Quit);
                     break;
@@ -1104,7 +1120,7 @@ impl Controller {
             None
         };
         crate::session::SessionState {
-            window: crate::session::WindowState::default(),
+            window: self.window_state.clone(),
             split_view: self.dual,
             active_pane: self.active_pane,
             primary_pane_tabs: crate::session::PaneTabsState::new(p0_paths, p0_active),
@@ -1113,6 +1129,7 @@ impl Controller {
             sidebar_visible: self.sidebar,
             zoom_level: self.zoom_level,
             dark_mode: self.dark_mode,
+            view_mode: self.view_mode,
         }
     }
 
@@ -1332,6 +1349,7 @@ impl Controller {
         t.error.clear();
         t.backend = Some(provider.kind());
         if !same_place {
+            t.pending_rename = None;
             if let Some(w) = t.watch.take() {
                 w.abort();
             }
@@ -1557,6 +1575,17 @@ impl Controller {
         self.push_pane(pane);
         if pane == self.active_pane {
             self.push_status();
+        }
+        if active && pane == self.active_pane && self.dialog.is_none() && self.renaming.is_none() {
+            let t = self.panes[pane].tab_mut();
+            if let Some(name) = t.pending_rename.clone()
+                && let Some(index) = t.visible.iter().position(|&i| t.entries[i as usize].name == name)
+            {
+                t.pending_rename = None;
+                let uri = t.entries[t.visible[index] as usize].uri.clone();
+                self.renaming = Some((pane, index, uri));
+                self.ui.send(Update::Rename { pane: pane as i32, index: index as i32 });
+            }
         }
         self.trigger_thumbnails(pane, tab);
     }
@@ -2343,6 +2372,42 @@ impl Controller {
             }
             "compare-panes" => {
                 self.compare_panes();
+            }
+            "new-folder-inline" | "new-file-inline" => {
+                let dir = self.panes[p].tab().location.clone();
+                if dir.scheme() == Scheme::Trash {
+                    self.say("Restore items before editing the Trash", true);
+                    return;
+                }
+                let provider = match self.registry.resolve(&dir) {
+                    Ok(provider) => provider,
+                    Err(e) => {
+                        self.say(e.to_string(), true);
+                        return;
+                    }
+                };
+                let file = name == "new-file-inline";
+                let tab = self.panes[p].tab().id;
+                let tx = self.tx.clone();
+                tokio::spawn(async move {
+                    let result = async {
+                        let base = if file { "Untitled Document" } else { "Untitled Folder" };
+                        for n in 1..=10_000 {
+                            let name = if n == 1 { base.to_string() } else { format!("{base} {n}") };
+                            let uri = dir.join(&name)?;
+                            let result =
+                                if file { provider.create_file(&uri).await } else { provider.create_dir(&uri).await };
+                            match result {
+                                Ok(()) => return Ok(uri),
+                                Err(VfsError::AlreadyExists(_)) => continue,
+                                Err(e) => return Err(e),
+                            }
+                        }
+                        Err(VfsError::AlreadyExists("Too many items with the same default name".into()))
+                    }
+                    .await;
+                    let _ = tx.send(Msg::Ev(Event::Created { pane: p, tab, dir, result })).await;
+                });
             }
             "new-folder" | "new-file" => {
                 let dir = self.panes[p].tab().location.clone();
@@ -3498,7 +3563,9 @@ impl Controller {
                 if let Some(ref saver) = self.session_saver {
                     let saver = saver.clone();
                     tokio::spawn(async move {
-                        saver.flush().await;
+                        if let Err(e) = saver.flush().await {
+                            eprintln!("gungnir-fm: session save failed: {e}");
+                        }
                     });
                 }
                 self.ui.send(Update::Quit);
@@ -3515,7 +3582,14 @@ impl Controller {
                 self.push_flags();
                 self.trigger_save_session();
             }
-            Command::ViewMode(m) => self.view_mode = m,
+            Command::WindowChanged(state) => {
+                self.window_state = state;
+                self.trigger_save_session();
+            }
+            Command::ViewMode(m) => {
+                self.view_mode = m.clamp(0, 2);
+                self.trigger_save_session();
+            }
             Command::Zoom(z) => {
                 self.zoom_level = z.clamp(0.5, 3.5);
                 self.trigger_save_session();
@@ -4593,6 +4667,23 @@ impl Controller {
                 self.tree_rows = rows.iter().map(|r| r.uri.to_string()).collect();
                 self.ui.send(Update::Tree(rows));
             }
+            Event::Created { pane, tab, dir, result } => match result {
+                Err(e) => self.say(e.to_string(), true),
+                Ok(uri) => {
+                    self.say(format!("Created {}", uri.file_name().unwrap_or_default()), false);
+                    if let Some(ti) = self.tab_index(pane, tab) {
+                        let t = &mut self.panes[pane].tabs[ti];
+                        if t.location == dir {
+                            let name = uri.file_name().unwrap_or_default().to_string();
+                            t.selected = [name.clone()].into();
+                            t.pending_select = Some(name.clone());
+                            t.pending_rename = Some(name);
+                            t.filter.clear();
+                        }
+                    }
+                    self.reload_matching(&[dir]);
+                }
+            },
             Event::Op { result, reload, select } => {
                 match result {
                     Ok(m) => self.say(m, false),

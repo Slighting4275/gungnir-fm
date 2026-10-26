@@ -273,8 +273,11 @@ export component AppWindow inherits Window {
             MenuItem { title: "Close Tab"; shortcut: @keys(Control + W); activated => { root.tab-close(root.active-pane, root.active-info.active-tab); } }
             MenuItem { title: "Open Terminal Here"; shortcut: @keys(Control + Shift + Return); activated => { root.command("open-terminal-here"); } }
             MenuSeparator { }
-            MenuItem { title: "New Document…"; activated => { root.command("new-file"); } }
-            MenuItem { title: "New Folder…"; shortcut: @keys(F7); activated => { root.command("new-folder"); } }
+            MenuItem { title: "Create New Folder"; shortcut: @keys(F7); activated => { root.command("new-folder-inline"); } }
+            Menu {
+                title: "Create New Document";
+                MenuItem { title: "Empty Document"; activated => { root.command("new-file-inline"); } }
+            }
             MenuItem { title: "Check File Hash…"; activated => { root.command("check-hash"); } }
             MenuItem { title: "Properties"; shortcut: @keys(Alt + Return); activated => { root.command("properties"); } }
             MenuSeparator { }
@@ -372,7 +375,7 @@ export component AppWindow inherits Window {
                 return accept;
             }
             if e.text == Key.F4 { root.command("toggle-terminal"); return accept; }
-            if e.modifiers.control && e.modifiers.shift && (e.text == "n" || e.text == "N") { root.command("new-folder"); return accept; }
+            if e.modifiers.control && e.modifiers.shift && (e.text == "n" || e.text == "N") { root.command("new-folder-inline"); return accept; }
             if e.modifiers.control && e.modifiers.shift && (e.text == "f" || e.text == "F") { root.command("deep-search"); return accept; }
             if e.modifiers.control && e.modifiers.shift && (e.text == "d" || e.text == "D") { root.command("compare-panes"); return accept; }
             if e.modifiers.control && e.modifiers.shift && (e.text == "t" || e.text == "T") { root.toggle-dark-mode(); return accept; }
