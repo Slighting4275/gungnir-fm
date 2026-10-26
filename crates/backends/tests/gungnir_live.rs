@@ -191,3 +191,89 @@ async fn no_daemon_is_reported_not_hung() {
     assert!(matches!(r, Err(VfsError::DaemonUnavailable(_))));
     assert!(t0.elapsed() < Duration::from_millis(600));
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn live_transfer_rejects_symlink_recursion_and_merges_directory_replacements() -> VfsResult<()> {
+    let t = TempDir::new("live-overwrite-alias");
+    let Some(d) = Daemon::start(t.path()) else { return Ok(()) };
+    let b = GungnirVfsBackend::connect(d.sock.clone()).await?;
+    for directory in ["source/item/inside", "dest/item"] {
+        std::fs::create_dir_all(t.path().join(directory)).unwrap_or_else(|e| panic!("{e}"));
+    }
+    std::fs::write(t.path().join("source/item/new.txt"), b"new").unwrap_or_else(|e| panic!("{e}"));
+    std::fs::write(t.path().join("dest/item/old.txt"), b"old").unwrap_or_else(|e| panic!("{e}"));
+    std::os::unix::fs::symlink(t.path().join("source/item/inside"), t.path().join("alias"))
+        .unwrap_or_else(|e| panic!("{e}"));
+    let make_control = || {
+        let (progress, receiver) = mpsc::channel(128);
+        let (pause, paused) = watch::channel(false);
+        (TransferControl { progress, cancel: CancellationToken::new(), paused }, receiver, pause)
+    };
+    let (ctl, _rx, _pause) = make_control();
+    assert_eq!(
+        b.transfer(
+            TransferRequest {
+                id: 31,
+                kind: TransferKind::Copy,
+                sources: vec![g(&t.path().join("source/item"))],
+                dest_dir: g(&t.path().join("alias")),
+                overwrite: false
+            },
+            ctl
+        )
+        .await,
+        Err(VfsError::WouldRecurse)
+    );
+    let (ctl, _rx, _pause) = make_control();
+    b.transfer(
+        TransferRequest {
+            id: 32,
+            kind: TransferKind::Copy,
+            sources: vec![g(&t.path().join("source/item"))],
+            dest_dir: g(&t.path().join("dest")),
+            overwrite: true,
+        },
+        ctl,
+    )
+    .await?;
+    assert_eq!(std::fs::read(t.path().join("dest/item/new.txt")).ok().as_deref(), Some(b"new".as_slice()));
+    assert!(t.path().join("dest/item/old.txt").exists());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mixed_same_device_and_cross_device_moves_do_not_recopy_moved_sources() -> VfsResult<()> {
+    use std::os::unix::fs::MetadataExt;
+    let t = TempDir::new("live-mixed-move");
+    let Some(d) = Daemon::start(t.path()) else { return Ok(()) };
+    let external = PathBuf::from("/dev/shm").join(format!("gungnir-fm-mixed-move-{}", std::process::id()));
+    if std::fs::metadata("/dev/shm").map(|m| m.dev()).ok() == std::fs::metadata(t.path()).map(|m| m.dev()).ok() {
+        eprintln!("SKIP: no separate /dev/shm filesystem");
+        return Ok(());
+    }
+    std::fs::create_dir(&external).unwrap_or_else(|e| panic!("{e}"));
+    let external = TempDir(external);
+    std::fs::create_dir(t.path().join("local-dir")).unwrap_or_else(|e| panic!("{e}"));
+    std::fs::write(t.path().join("local-dir/local.txt"), b"local").unwrap_or_else(|e| panic!("{e}"));
+    std::fs::write(external.path().join("remote.txt"), b"cross-device").unwrap_or_else(|e| panic!("{e}"));
+    std::fs::create_dir(t.path().join("dest")).unwrap_or_else(|e| panic!("{e}"));
+    let b = GungnirVfsBackend::connect(d.sock.clone()).await?;
+    let (progress, _rx) = mpsc::channel(128);
+    let (_pause, paused) = watch::channel(false);
+    b.transfer(
+        TransferRequest {
+            id: 33,
+            kind: TransferKind::Move,
+            sources: vec![g(&t.path().join("local-dir")), g(&external.path().join("remote.txt"))],
+            dest_dir: g(&t.path().join("dest")),
+            overwrite: false,
+        },
+        TransferControl { progress, cancel: CancellationToken::new(), paused },
+    )
+    .await?;
+    assert_eq!(std::fs::read(t.path().join("dest/local-dir/local.txt")).ok().as_deref(), Some(b"local".as_slice()));
+    assert_eq!(std::fs::read(t.path().join("dest/remote.txt")).ok().as_deref(), Some(b"cross-device".as_slice()));
+    assert!(!t.path().join("local-dir").exists());
+    assert!(!external.path().join("remote.txt").exists());
+    Ok(())
+}

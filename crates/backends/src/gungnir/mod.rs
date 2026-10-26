@@ -334,7 +334,7 @@ impl GungnirVfsBackend {
         // Plan: (source file, destination file) pairs plus directories to create, so
         // gungnird copies every file with progress (it refuses directories).
         let overwrite = req.overwrite;
-        let plan = {
+        let mut plan = {
             let (sources, dest_dir) = (sources.clone(), dest_dir.clone());
             tokio::task::spawn_blocking(move || plan_tree(&sources, &dest_dir, overwrite))
                 .await
@@ -370,7 +370,15 @@ impl GungnirVfsBackend {
                     )
                     .await
                 {
-                    Ok(_) => {}
+                    Ok(_) => {
+                        pr.bytes_done += plan
+                            .files
+                            .iter()
+                            .filter(|(path, _, _)| path.starts_with(src))
+                            .map(|(_, _, size)| *size)
+                            .sum::<u64>();
+                        pr.files_done += plan.files.iter().filter(|(path, _, _)| path.starts_with(src)).count() as u64;
+                    }
                     Err(
                         VfsError::WouldRecurse | VfsError::Io { errno: libc::EXDEV, .. } | VfsError::Unsupported(_),
                     ) => leftover.push(src.clone()),
@@ -384,6 +392,12 @@ impl GungnirVfsBackend {
                 let _ = ctl.progress.try_send(pr);
                 return Ok(());
             }
+            // A mixed batch may contain successful renames and cross-device
+            // fallbacks. Never try to copy/delete the already-moved sources again.
+            let remaining_tops: Vec<_> = plan.tops.iter().filter(|(src, _)| leftover.contains(src)).cloned().collect();
+            plan.files.retain(|(src, _, _)| leftover.iter().any(|top| src.starts_with(top)));
+            plan.dirs.retain(|dst| remaining_tops.iter().any(|(_, top)| dst.starts_with(top)));
+            plan.tops = remaining_tops;
         }
 
         for d in &plan.dirs {
@@ -392,10 +406,19 @@ impl GungnirVfsBackend {
             }
             self.gate(d)?;
             let d2 = d.clone();
-            tokio::task::spawn_blocking(move || std::fs::create_dir(&d2))
-                .await
-                .map_err(|e| VfsError::Transport(e.to_string()))?
-                .map_err(|e| VfsError::from_io("mkdir", &e, &d.display().to_string()))?;
+            tokio::task::spawn_blocking(move || match std::fs::create_dir(&d2) {
+                Err(e)
+                    if overwrite
+                        && e.kind() == std::io::ErrorKind::AlreadyExists
+                        && d2.symlink_metadata().is_ok_and(|md| md.is_dir()) =>
+                {
+                    Ok(())
+                }
+                result => result,
+            })
+            .await
+            .map_err(|e| VfsError::Transport(e.to_string()))?
+            .map_err(|e| VfsError::from_io("mkdir", &e, &d.display().to_string()))?;
         }
         for (src, dst, size) in &plan.files {
             if ctl.cancel.is_cancelled() {
@@ -445,8 +468,8 @@ fn plan_tree(sources: &[PathBuf], dest_dir: &Path, overwrite: bool) -> VfsResult
             plan.dirs.push(dst.to_owned());
             let mut kids: Vec<_> = std::fs::read_dir(src)
                 .map_err(|e| VfsError::from_io("opendir", &e, &src.display().to_string()))?
-                .filter_map(Result::ok)
-                .collect();
+                .collect::<Result<_, _>>()
+                .map_err(|e| VfsError::from_io("readdir", &e, &src.display().to_string()))?;
             kids.sort_by_key(std::fs::DirEntry::file_name);
             for k in kids {
                 walk(&k.path(), &dst.join(k.file_name()), plan)?;
@@ -456,6 +479,19 @@ fn plan_tree(sources: &[PathBuf], dest_dir: &Path, overwrite: bool) -> VfsResult
             plan.files.push((src.to_owned(), dst.to_owned(), md.len()));
         }
         Ok(())
+    }
+    let canonical_dest = std::fs::canonicalize(dest_dir)
+        .map_err(|e| VfsError::from_io("realpath", &e, &dest_dir.display().to_string()))?;
+    for source in sources {
+        let md = std::fs::symlink_metadata(source)
+            .map_err(|e| VfsError::from_io("lstat", &e, &source.display().to_string()))?;
+        if md.is_dir() {
+            let canonical_source = std::fs::canonicalize(source)
+                .map_err(|e| VfsError::from_io("realpath", &e, &source.display().to_string()))?;
+            if canonical_dest.starts_with(canonical_source) {
+                return Err(VfsError::WouldRecurse);
+            }
+        }
     }
     let mut plan = Plan { tops: Vec::new(), dirs: Vec::new(), files: Vec::new(), bytes: 0 };
     for s in sources {

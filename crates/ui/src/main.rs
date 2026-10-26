@@ -20,6 +20,7 @@
 
 mod actions;
 mod bridge;
+mod clipboard;
 mod controller;
 #[cfg(test)]
 mod controller_tests;
@@ -466,11 +467,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let mut connected = None;
                         for _ in 0..10 {
                             std::thread::sleep(std::time::Duration::from_millis(50));
-                            if sock.exists() {
-                                if let Ok(b) = rt.block_on(GungnirVfsBackend::connect(sock.clone())) {
-                                    connected = Some(b);
-                                    break;
-                                }
+                            if sock.exists()
+                                && let Ok(b) = rt.block_on(GungnirVfsBackend::connect(sock.clone()))
+                            {
+                                connected = Some(b);
+                                break;
                             }
                         }
                         if connected.is_none() && mode == "live" {
@@ -540,24 +541,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             } else if !local_path.exists()
                 && let Some(parent) = local_path.parent()
                 && parent.is_dir()
+                && let Some(requested_name) = local_path.file_name().and_then(|n| n.to_str())
             {
-                if let Some(requested_name) = local_path.file_name().and_then(|n| n.to_str()) {
-                    let req_lower = requested_name.to_lowercase();
-                    if let Ok(entries) = std::fs::read_dir(parent) {
-                        for entry in entries.flatten() {
-                            let actual_name = entry.file_name();
-                            if actual_name.to_string_lossy().to_lowercase() == req_lower
-                                && let Ok(parent_uri) = VfsUri::from_local_path(parent)
-                            {
-                                return (Some(parent_uri), Some(actual_name.to_string_lossy().into_owned()));
-                            }
+                let req_lower = requested_name.to_lowercase();
+                if let Ok(entries) = std::fs::read_dir(parent) {
+                    for entry in entries.flatten() {
+                        let actual_name = entry.file_name();
+                        if actual_name.to_string_lossy().to_lowercase() == req_lower
+                            && let Ok(parent_uri) = VfsUri::from_local_path(parent)
+                        {
+                            return (Some(parent_uri), Some(actual_name.to_string_lossy().into_owned()));
                         }
                     }
-                    if local_path.extension().is_some()
-                        && let Ok(parent_uri) = VfsUri::from_local_path(parent)
-                    {
-                        return (Some(parent_uri), Some(requested_name.to_owned()));
-                    }
+                }
+                if local_path.extension().is_some()
+                    && let Ok(parent_uri) = VfsUri::from_local_path(parent)
+                {
+                    return (Some(parent_uri), Some(requested_name.to_owned()));
                 }
             }
         }

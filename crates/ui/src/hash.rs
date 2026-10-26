@@ -119,21 +119,43 @@ pub fn verify_checksum_file(path: &Path) -> Result<Vec<(String, bool)>, std::io:
 
     for line in reader.lines() {
         let line = line?;
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
+        if line.trim().is_empty() || line.starts_with('#') {
             continue;
         }
-
-        // Common format: "<hash>  <filename>" or "<hash> *<filename>"
-        let mut parts = trimmed.split_whitespace();
-        let Some(hash_str) = parts.next() else { continue };
-        let rest = trimmed[hash_str.len()..].trim_start();
-        let target_name = rest.trim_start_matches('*').trim();
+        let invalid = || std::io::Error::new(std::io::ErrorKind::InvalidData, "Malformed checksum record");
+        let (record, escaped) =
+            if let Some(rest) = line.strip_prefix('\\') { (rest, true) } else { (line.as_str(), false) };
+        let (hash_str, rest) = record.split_once(' ').ok_or_else(invalid)?;
+        if !matches!(hash_str.len(), 32 | 40 | 64 | 128) || !hash_str.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(invalid());
+        }
+        // GNU sums use one separator and one binary/text marker. Everything
+        // after that belongs to the filename, including literal '*' and spaces.
+        let name = rest.strip_prefix(' ').or_else(|| rest.strip_prefix('*')).unwrap_or(rest);
+        let target_name = if escaped {
+            let mut name_chars = name.chars();
+            let mut decoded = String::new();
+            while let Some(ch) = name_chars.next() {
+                if ch == '\\' {
+                    decoded.push(match name_chars.next() {
+                        Some('n') => '\n',
+                        Some('r') => '\r',
+                        Some('\\') => '\\',
+                        _ => return Err(invalid()),
+                    });
+                } else {
+                    decoded.push(ch);
+                }
+            }
+            decoded
+        } else {
+            name.to_owned()
+        };
         if target_name.is_empty() {
-            continue;
+            return Err(invalid());
         }
 
-        let target_path = parent.join(target_name);
+        let target_path = parent.join(&target_name);
         if !target_path.is_file() {
             results.push((target_name.to_string(), false));
             continue;
@@ -147,6 +169,9 @@ pub fn verify_checksum_file(path: &Path) -> Result<Vec<(String, bool)>, std::io:
         }
     }
 
+    if results.is_empty() {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "No checksum records found"));
+    }
     Ok(results)
 }
 
@@ -154,6 +179,25 @@ pub fn verify_checksum_file(path: &Path) -> Result<Vec<(String, bool)>, std::io:
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn checksum_files_preserve_filename_spaces_stars_and_escapes() {
+        let sandbox = std::env::temp_dir().join(format!("gungnir-checksum-edge-{}", std::process::id()));
+        std::fs::create_dir_all(&sandbox).unwrap_or_else(|e| panic!("{e}"));
+        let name = "* leading and trailing ";
+        std::fs::write(sandbox.join(name), b"data").unwrap_or_else(|e| panic!("{e}"));
+        let hash = compute_hashes(&sandbox.join(name)).unwrap_or_else(|e| panic!("{e}")).sha256;
+        let checksum = sandbox.join("SHA256SUMS");
+        std::fs::write(&checksum, format!("{hash} *{name}\n")).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(verify_checksum_file(&checksum).unwrap_or_else(|e| panic!("{e}")), vec![(name.to_owned(), true)]);
+        let name = "line\nbreak\\file";
+        std::fs::write(sandbox.join(name), b"data").unwrap_or_else(|e| panic!("{e}"));
+        std::fs::write(&checksum, format!("\\{hash}  line\\nbreak\\\\file\n")).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(verify_checksum_file(&checksum).unwrap_or_else(|e| panic!("{e}")), vec![(name.to_owned(), true)]);
+        std::fs::write(&checksum, "not a checksum\n").unwrap_or_else(|e| panic!("{e}"));
+        assert!(verify_checksum_file(&checksum).is_err());
+        let _ = std::fs::remove_dir_all(sandbox);
+    }
 
     #[test]
     fn test_compute_hashes() {

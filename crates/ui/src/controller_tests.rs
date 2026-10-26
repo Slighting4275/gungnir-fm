@@ -494,6 +494,116 @@ fn test_terminal_drawer_toggle_and_commands() {
 }
 
 #[test]
+fn test_open_terminal_here_command_and_action() {
+    let tmp = std::env::temp_dir().join(format!("gungnir_test_open_term_{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&tmp);
+    let sub = tmp.join("subfolder");
+    let _ = std::fs::create_dir_all(&sub);
+
+    let tmp_str = tmp.to_str().unwrap_or_else(|| panic!("valid utf8"));
+    let h = start(tmp_str, tmp_str, MockConfig::default());
+    let _ = h.drain_for(Duration::from_millis(100));
+
+    // Command "open-terminal-here"
+    h.send(Command::Run("open-terminal-here".into()));
+    let updates = h.drain_for(Duration::from_millis(500));
+    let handled = updates.iter().any(|u| matches!(u, Update::Status(..) | Update::Terminal { .. }));
+    assert!(handled, "open-terminal-here command should produce a status or terminal update");
+
+    // CustomAction with id "open_terminal_here"
+    h.send(Command::CustomAction { pane: 0, id: "open_terminal_here".into() });
+    let updates2 = h.drain_for(Duration::from_millis(500));
+    let handled2 = updates2.iter().any(|u| matches!(u, Update::Status(..) | Update::Terminal { .. }));
+    assert!(handled2, "custom-action open_terminal_here should be handled");
+
+    // CustomAction with alias id "terminal"
+    h.send(Command::CustomAction { pane: 0, id: "terminal".into() });
+    let updates3 = h.drain_for(Duration::from_millis(500));
+    let handled3 = updates3.iter().any(|u| matches!(u, Update::Status(..) | Update::Terminal { .. }));
+    assert!(handled3, "custom-action terminal alias should be handled");
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn test_pane_view_context_and_clipboard_state() {
+    let tmp = std::env::temp_dir().join(format!("gungnir_test_pane_view_{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&tmp);
+    let f1 = tmp.join("file1.txt");
+    let f2 = tmp.join("file2.txt");
+    std::fs::write(&f1, "hello").unwrap_or_else(|e| panic!("{e}"));
+    std::fs::write(&f2, "world").unwrap_or_else(|e| panic!("{e}"));
+
+    let tmp_str = tmp.to_str().unwrap_or_else(|| panic!("valid utf8"));
+    let h = start(tmp_str, tmp_str, MockConfig::default());
+
+    // Initially has_clipboard is false and is_trash is false
+    let initial_pane = h.until(Duration::from_millis(500), |u| matches!(u, Update::Pane { pane: 0, .. }));
+    assert!(!initial_pane.is_empty(), "initial pane view should be received");
+    if let Some(Update::Pane { view, .. }) = initial_pane.last() {
+        assert!(!view.is_trash, "should not be trash scheme");
+        assert!(!view.has_clipboard, "clipboard should be empty initially");
+    }
+
+    // Wait for the two files to appear
+    let _ = h.until(Duration::from_millis(500), |u| full_rows(u, 0, 2));
+
+    // Select all items
+    h.send(Command::Run("select-all".into()));
+    let sel_pane = h
+        .until(Duration::from_millis(500), |u| matches!(u, Update::Pane { pane: 0, view } if view.selected_count >= 2));
+    assert!(!sel_pane.is_empty(), "selected_count should be updated in PaneView on select-all");
+
+    // Copy to clipboard
+    h.send(Command::Run("copy".into()));
+    let clip_pane =
+        h.until(Duration::from_millis(500), |u| matches!(u, Update::Pane { pane: 0, view } if view.has_clipboard));
+    assert!(!clip_pane.is_empty(), "has_clipboard should be true in PaneView after copy");
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn test_folder_commands_and_row_context() {
+    let tmp = std::env::temp_dir().join(format!("gungnir_test_folder_cmds_{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&tmp);
+    let sub = tmp.join("alpha");
+    let _ = std::fs::create_dir_all(&sub);
+    let f1 = tmp.join("file1.txt");
+    std::fs::write(&f1, "hello").unwrap_or_else(|e| panic!("{e}"));
+
+    let tmp_str = tmp.to_str().unwrap_or_else(|| panic!("valid utf8"));
+    let h = start(tmp_str, tmp_str, MockConfig::default());
+    let _ = h.until(Duration::from_secs(3), |u| full_rows(u, 0, 2));
+
+    // Test folder-properties command
+    h.send(Command::Run("folder-properties".into()));
+    let props = h.until(
+        Duration::from_secs(2),
+        |u| matches!(u, Update::Dialog(d) if matches!(d.kind, crate::DialogKind::Properties) && d.title.contains("Properties ·")),
+    );
+    assert!(!props.is_empty(), "folder-properties should open properties dialog for the folder");
+    h.send(Command::DialogCancel);
+    let _ = h.drain_for(Duration::from_millis(50));
+
+    // Test open-terminal-folder command
+    h.send(Command::Run("open-terminal-folder".into()));
+    let term = h.until(Duration::from_secs(2), |u| matches!(u, Update::Status(..) | Update::Terminal { .. }));
+    assert!(!term.is_empty(), "open-terminal-folder should produce status or terminal update");
+
+    // Test RowContext updates cursor even if already selected
+    h.send(Command::Run("select-all".into()));
+    let _ =
+        h.until(Duration::from_secs(2), |u| matches!(u, Update::Pane { pane: 0, view } if view.selected_count == 2));
+    h.send(Command::RowContext { pane: 0, index: 1 });
+    let cursor_update =
+        h.until(Duration::from_secs(2), |u| matches!(u, Update::Pane { pane: 0, view } if view.cursor == 1));
+    assert!(!cursor_update.is_empty(), "RowContext should update cursor to 1 even when already selected");
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[test]
 fn test_deep_recursive_search_and_grep() {
     let tmp = std::env::temp_dir().join(format!("gungnir_test_search_{}", std::process::id()));
     let nested = tmp.join("alpha").join("beta");
@@ -555,7 +665,7 @@ fn test_batch_rename_preview_and_apply() {
 
     let tmp_str = tmp.to_str().unwrap_or_else(|| panic!("valid utf8"));
     let h = start(tmp_str, tmp_str, MockConfig::default());
-    let _ = h.drain_for(Duration::from_millis(150));
+    h.until(Duration::from_secs(5), |u| full_rows(u, 0, 2));
 
     // Select all items
     h.send(Command::Run("select-all".into()));
@@ -594,8 +704,8 @@ fn test_batch_rename_preview_and_apply() {
     let close = h.until(Duration::from_millis(1000), |u| matches!(u, Update::CloseDialog));
     assert!(!close.is_empty(), "dialog should close after apply");
 
-    // Allow background op to finish
-    let _ = h.drain_for(Duration::from_millis(100));
+    // Wait for actual completion rather than assuming the operation takes <100ms.
+    h.until(Duration::from_secs(5), |u| matches!(u, Update::Status(s) if s.message == "Successfully renamed 2 files"));
     assert!(tmp.join("renamed_item_1.txt").exists());
     assert!(tmp.join("renamed_item_2.txt").exists());
 
@@ -615,10 +725,26 @@ fn test_pane_comparison_and_sync() {
     std::fs::write(left.join("left_unique.txt"), "left").unwrap_or_else(|e| panic!("{e}"));
     std::fs::write(right.join("right_unique.txt"), "right").unwrap_or_else(|e| panic!("{e}"));
 
+    // This comparison intentionally checks size and mtime; two independent
+    // writes do not reliably receive the same nanosecond timestamp.
+    let common_mtime = std::fs::metadata(left.join("common.txt")).unwrap().modified().unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(right.join("common.txt"))
+        .unwrap()
+        .set_times(std::fs::FileTimes::new().set_modified(common_mtime))
+        .unwrap();
+
     let left_str = left.to_str().unwrap_or_else(|| panic!("valid utf8"));
     let right_str = right.to_str().unwrap_or_else(|| panic!("valid utf8"));
     let h = start(left_str, right_str, MockConfig::default());
-    let _ = h.drain_for(Duration::from_millis(200));
+    let mut ready = [false; 2];
+    h.until(Duration::from_secs(5), |u| {
+        for (pane, seen) in ready.iter_mut().enumerate() {
+            *seen |= full_rows(u, pane, 2);
+        }
+        ready.iter().all(|seen| *seen)
+    });
 
     // Open comparison dialog
     h.send(Command::Run("compare-panes".into()));
@@ -706,7 +832,7 @@ fn test_lossless_compression_and_extraction_workflow() {
     std::fs::write(&src_file, b"Bit-perfect lossless verification string 1234567890").unwrap_or_else(|e| panic!("{e}"));
 
     let h = start(tmp.to_str().unwrap_or(""), tmp.to_str().unwrap_or(""), MockConfig::default());
-    let _ = h.until(Duration::from_millis(2000), |u| matches!(u, Update::Status { .. }));
+    let _ = h.until(Duration::from_secs(5), |u| full_rows(u, 0, 1));
 
     // Select all items in left pane
     h.send(Command::Run("select-all".into()));
@@ -887,6 +1013,7 @@ fn test_nemo_properties_and_open_with_default_application() {
     // 5. Close dialog
     h.send(Command::DialogCancel);
     h.until(Duration::from_secs(3), |u| matches!(u, Update::CloseDialog));
+    let _ = h.drain_for(Duration::from_millis(50));
 
     // 6. Open "Open With" dialog directly (opens Properties directly on tab 2)
     h.send(Command::Run("open-with".into()));
@@ -922,4 +1049,187 @@ fn test_theme_mode_toggle_and_persistence() {
     // 4. Switch to Dark Mode via Command::SetDarkMode(true)
     h.send(Command::SetDarkMode(true));
     h.until(Duration::from_secs(5), |u| matches!(u, Update::Flags(f) if f.dark_mode));
+}
+
+#[test]
+fn terminal_output_truncation_preserves_utf8_and_actor() {
+    let h = start("gungnir://odin/asgard", "gungnir://odin/asgard", MockConfig::instant());
+    h.until(Duration::from_secs(5), |u| full_rows(u, 0, 7));
+    h.tx.try_send(Msg::Ev(crate::controller::Event::TerminalOutput {
+        text: "€".repeat(10_001),
+        reload_loc: uri("/unused"),
+    }))
+    .unwrap();
+    h.send(Command::Run("about".into()));
+    h.until(Duration::from_secs(5), |u| matches!(u, Update::Dialog(d) if d.title == "Gungnir FM"));
+}
+
+#[test]
+fn content_search_handles_multibyte_preview_boundary() {
+    let tmp = temp_dir("unicode-search");
+    std::fs::write(tmp.join("unicode.txt"), format!("{}€match", "x".repeat(59))).unwrap();
+    let h = start(tmp.to_str().unwrap(), tmp.to_str().unwrap(), MockConfig::instant());
+    h.until(Duration::from_secs(5), |u| full_rows(u, 0, 1));
+    h.send(Command::Run("deep-search".into()));
+    h.until(Duration::from_secs(5), |u| matches!(u, Update::Dialog(_)));
+    h.send(Command::DialogCustomAction {
+        action: "search".into(),
+        opt1: true,
+        opt2: false,
+        extra1: "match".into(),
+        extra2: String::new(),
+    });
+    h.until(
+        Duration::from_secs(5),
+        |u| matches!(u, Update::Dialog(d) if d.rows.iter().any(|(n, _)| n.contains("unicode.txt"))),
+    );
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[test]
+fn mixed_conflict_resolutions_keep_auto_renamed_original() {
+    let tmp = temp_dir("mixed-conflicts");
+    let left = tmp.join("left");
+    let right = tmp.join("right");
+    std::fs::create_dir(&left).unwrap();
+    std::fs::create_dir(&right).unwrap();
+    for name in ["a.txt", "b.txt"] {
+        std::fs::write(left.join(name), b"new").unwrap();
+        std::fs::write(right.join(name), b"old").unwrap();
+    }
+    let h = start(left.to_str().unwrap(), right.to_str().unwrap(), MockConfig::instant());
+    let mut ready = [false; 2];
+    h.until(Duration::from_secs(5), |u| {
+        for (pane, seen) in ready.iter_mut().enumerate() {
+            *seen |= full_rows(u, pane, 2);
+        }
+        ready.iter().all(|seen| *seen)
+    });
+    h.send(Command::Run("toggle-dual".into()));
+    h.send(Command::Run("select-all".into()));
+    h.send(Command::Run("copy-to-other".into()));
+    h.until(Duration::from_secs(5), |u| matches!(u, Update::Dialog(d) if d.kind == crate::DialogKind::Conflict));
+    h.send(Command::DialogCustomAction {
+        action: "replace".into(),
+        opt1: false,
+        opt2: false,
+        extra1: String::new(),
+        extra2: String::new(),
+    });
+    let updates =
+        h.until(Duration::from_secs(5), |u| matches!(u, Update::Dialog(d) if d.kind == crate::DialogKind::Conflict));
+    let auto_name = updates
+        .iter()
+        .find_map(|u| match u {
+            Update::Dialog(d) => d.rows.iter().find(|(k, _)| k == "File name").map(|(_, v)| v.clone()),
+            _ => None,
+        })
+        .unwrap();
+    h.send(Command::DialogCustomAction {
+        action: "auto-rename".into(),
+        opt1: false,
+        opt2: false,
+        extra1: String::new(),
+        extra2: String::new(),
+    });
+    h.until(Duration::from_secs(5), |u| matches!(u, Update::CloseDialog));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let copy_name = auto_name.replace(".txt", " (copy).txt");
+    while !right.join(&copy_name).exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(std::fs::read(right.join(&auto_name)).unwrap(), b"old");
+    assert_eq!(std::fs::read(right.join(&copy_name)).unwrap(), b"new");
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[test]
+fn batch_rename_collision_keeps_all_originals_and_reports_error() {
+    let tmp = temp_dir("batch-collision");
+    std::fs::write(tmp.join("a.txt"), b"a").unwrap();
+    std::fs::write(tmp.join("b.txt"), b"b").unwrap();
+    let h = start(tmp.to_str().unwrap(), tmp.to_str().unwrap(), MockConfig::instant());
+    h.until(Duration::from_secs(5), |u| full_rows(u, 0, 2));
+    h.send(Command::Run("select-all".into()));
+    h.send(Command::Run("batch-rename".into()));
+    h.until(Duration::from_secs(5), |u| matches!(u, Update::Dialog(d) if d.kind == crate::DialogKind::BatchRename));
+    h.send(Command::DialogCustomAction {
+        action: "preview-rename".into(),
+        opt1: false,
+        opt2: false,
+        extra1: "a".into(),
+        extra2: "b".into(),
+    });
+    h.until(
+        Duration::from_secs(5),
+        |u| matches!(u, Update::Dialog(d) if d.rows.iter().any(|(a,b)| a == "a.txt" && b == "b.txt")),
+    );
+    h.send(Command::DialogCustomAction {
+        action: "apply-batch-rename".into(),
+        opt1: false,
+        opt2: false,
+        extra1: String::new(),
+        extra2: String::new(),
+    });
+    h.until(Duration::from_secs(5), |u| matches!(u, Update::Status(s) if s.message_is_error));
+    assert_eq!(std::fs::read(tmp.join("a.txt")).unwrap(), b"a");
+    assert_eq!(std::fs::read(tmp.join("b.txt")).unwrap(), b"b");
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[test]
+fn nemo_invert_selection_and_duplicate_only_visible_targets() {
+    let tmp = temp_dir("nemo-selection");
+    for name in ["a.txt", "b.txt", ".hidden"] {
+        std::fs::write(tmp.join(name), name).unwrap();
+    }
+    let h = start(tmp.to_str().unwrap(), tmp.to_str().unwrap(), MockConfig::instant());
+    h.until(Duration::from_secs(5), |u| full_rows(u, 0, 2));
+    h.send(Command::RowClicked { pane: 0, index: 0, ctrl: false, shift: false });
+    h.send(Command::Run("invert-selection".into()));
+    h.until(
+        Duration::from_secs(5),
+        |u| matches!(u, Update::Selection { pane: 0, changes } if changes.contains(&(1, true))),
+    );
+    h.send(Command::Run("duplicate".into()));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !tmp.join("b (copy).txt").exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(std::fs::read_to_string(tmp.join("b (copy).txt")).unwrap(), "b.txt");
+    assert!(!tmp.join("a (copy).txt").exists());
+    assert!(!tmp.join(".hidden (copy)").exists());
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[test]
+fn cancelled_cut_paste_keeps_clipboard_for_retry() {
+    let tmp = temp_dir("cut-retry");
+    for dir in ["source", "dest", "retry"] {
+        std::fs::create_dir(tmp.join(dir)).unwrap();
+    }
+    std::fs::write(tmp.join("source/item"), b"source").unwrap();
+    std::fs::write(tmp.join("dest/item"), b"existing").unwrap();
+    let h = start(tmp.join("source").to_str().unwrap(), tmp.join("dest").to_str().unwrap(), MockConfig::instant());
+    h.until(Duration::from_secs(5), |u| full_rows(u, 0, 1));
+    h.send(Command::Run("cut".into()));
+    h.send(Command::Navigate { pane: 0, location: tmp.join("dest").display().to_string() });
+    h.until(Duration::from_secs(5), |u| full_rows(u, 0, 1));
+    h.send(Command::Run("paste".into()));
+    h.until(Duration::from_secs(5), |u| matches!(u, Update::Dialog(d) if d.kind == crate::DialogKind::Conflict));
+    h.send(Command::DialogCancel);
+    h.send(Command::Navigate { pane: 0, location: tmp.join("retry").display().to_string() });
+    h.until(
+        Duration::from_secs(5),
+        |u| matches!(u, Update::Pane { pane: 0, view } if view.location.ends_with("/retry")),
+    );
+    h.send(Command::Run("paste".into()));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !tmp.join("retry/item").exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(std::fs::read(tmp.join("retry/item")).unwrap(), b"source");
+    assert_eq!(std::fs::read(tmp.join("dest/item")).unwrap(), b"existing");
+    assert!(!tmp.join("source/item").exists());
+    let _ = std::fs::remove_dir_all(tmp);
 }

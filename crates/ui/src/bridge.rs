@@ -29,6 +29,9 @@ pub struct PaneView {
     pub can_back: bool,
     pub can_forward: bool,
     pub cursor: i32,
+    pub is_trash: bool,
+    pub selected_count: i32,
+    pub has_clipboard: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -276,6 +279,9 @@ pub fn apply(ui: &AppWindow, u: Update) {
                 can_back: view.can_back,
                 can_forward: view.can_forward,
                 cursor: view.cursor,
+                is_trash: view.is_trash,
+                selected_count: view.selected_count,
+                has_clipboard: view.has_clipboard,
             };
             if pane == 0 { ui.set_left(info) } else { ui.set_right(info) }
         }

@@ -38,6 +38,8 @@ export component AppWindow inherits Window {
     in-out property <bool> sidebar-visible: true;
     in-out property <int> sidebar-mode: 0;
     in-out property <int> view-mode: 1;
+    property <int> left-grid-cols: 1;
+    property <int> right-grid-cols: 1;
     in-out property <bool> show-hidden: false;
     in-out property <float> zoom-level: 1.0;
     in-out property <bool> transfers-open: false;
@@ -65,6 +67,7 @@ export component AppWindow inherits Window {
         ],
         sort-column: 0, sort-ascending: true, loading: false, error: "", filter: "",
         can-back: true, can-forward: false, cursor: 2,
+        is-trash: false, selected-count: 3, has-clipboard: false,
     };
     in-out property <PaneInfo> right: {
         tabs: [{ title: "asgard", location: "gungnir://odin/asgard", loading: false }],
@@ -73,6 +76,7 @@ export component AppWindow inherits Window {
         crumbs: [{ label: "odin", uri: "gungnir://odin/", icon: 3 }, { label: "asgard", uri: "gungnir://odin/asgard", icon: 0 }],
         sort-column: 1, sort-ascending: false, loading: false, error: "", filter: "",
         can-back: false, can-forward: false, cursor: 0,
+        is-trash: false, selected-count: 0, has-clipboard: false,
     };
     in-out property <[FileRow]> left-files: [
         { name: "release_v1", size-text: "", type-text: "Folder", modified-text: "2026-10-12 21:40", perms-text: "drwxr-xr-x", status-text: "", status: 0, icon: 0, is-dir: true, hidden: false, selected: false, thumbnail: @image-url(""), has-thumbnail: false },
@@ -263,8 +267,10 @@ export component AppWindow inherits Window {
     MenuBar {
         Menu {
             title: "File";
+            MenuItem { title: "New Window"; shortcut: @keys(Control + N); activated => { root.command("new-window"); } }
             MenuItem { title: "New Tab"; shortcut: @keys(Control + T); activated => { root.tab-new(root.active-pane); } }
             MenuItem { title: "Close Tab"; shortcut: @keys(Control + W); activated => { root.tab-close(root.active-pane, root.active-info.active-tab); } }
+            MenuItem { title: "Open Terminal Here"; shortcut: @keys(Control + Shift + Return); activated => { root.command("open-terminal-here"); } }
             MenuSeparator { }
             MenuItem { title: "New Folder…"; shortcut: @keys(F7); activated => { root.command("new-folder"); } }
             MenuItem { title: "Check File Hash…"; activated => { root.command("check-hash"); } }
@@ -287,6 +293,8 @@ export component AppWindow inherits Window {
             MenuItem { title: "Move to Trash (Delete)"; activated => { root.command("trash"); } }
             MenuItem { title: "Delete Permanently… (Shift+Delete)"; activated => { root.command("delete"); } }
             MenuSeparator { }
+            MenuItem { title: "Invert Selection"; activated => { root.command("invert-selection"); } }
+            MenuItem { title: "Duplicate"; activated => { root.command("duplicate"); } }
             MenuItem { title: "Select All (Ctrl+A)"; activated => { root.command("select-all"); } }
             MenuItem { title: "Filter…"; shortcut: @keys(Control + F); activated => { root.focus-filter(); } }
             MenuSeparator { }
@@ -361,6 +369,7 @@ export component AppWindow inherits Window {
                 return accept;
             }
             if e.text == Key.F4 { root.command("toggle-terminal"); return accept; }
+            if e.modifiers.control && e.modifiers.shift && (e.text == "n" || e.text == "N") { root.command("new-folder"); return accept; }
             if e.modifiers.control && e.modifiers.shift && (e.text == "f" || e.text == "F") { root.command("deep-search"); return accept; }
             if e.modifiers.control && e.modifiers.shift && (e.text == "d" || e.text == "D") { root.command("compare-panes"); return accept; }
             if e.modifiers.control && e.modifiers.shift && (e.text == "t" || e.text == "T") { root.toggle-dark-mode(); return accept; }
@@ -400,11 +409,14 @@ export component AppWindow inherits Window {
                 return reject;
             }
             if e.text == Key.Backspace { root.nav(p, "up"); return accept; }
+            if e.modifiers.control && e.modifiers.shift && e.text == Key.Return { root.command("open-terminal-here"); return accept; }
             if e.text == Key.Return { root.command("open"); return accept; }
             if e.text == Key.Delete { root.command(e.modifiers.shift ? "delete" : "trash"); return accept; }
             if e.text == Key.Escape { root.command("clear-selection"); return accept; }
-            if e.text == Key.UpArrow { root.move-cursor(p, root.view-mode == 2 ? -4 : -1, e.modifiers.shift); return accept; }
-            if e.text == Key.DownArrow { root.move-cursor(p, root.view-mode == 2 ? 4 : 1, e.modifiers.shift); return accept; }
+            if e.text == Key.UpArrow { root.move-cursor(p, root.view-mode == 2 ? -(p == 0 ? root.left-grid-cols : root.right-grid-cols) : -1, e.modifiers.shift); return accept; }
+            if e.text == Key.DownArrow { root.move-cursor(p, root.view-mode == 2 ? (p == 0 ? root.left-grid-cols : root.right-grid-cols) : 1, e.modifiers.shift); return accept; }
+            if root.view-mode == 2 && e.text == Key.LeftArrow { root.move-cursor(p, -1, e.modifiers.shift); return accept; }
+            if root.view-mode == 2 && e.text == Key.RightArrow { root.move-cursor(p, 1, e.modifiers.shift); return accept; }
             if e.text == Key.PageUp { root.move-cursor(p, -20, e.modifiers.shift); return accept; }
             if e.text == Key.PageDown { root.move-cursor(p, 20, e.modifiers.shift); return accept; }
             if e.text == Key.Home { root.move-cursor(p, -1000000000, e.modifiers.shift); return accept; }
@@ -571,6 +583,7 @@ export component AppWindow inherits Window {
                         split: root.dual-pane;
                         horizontal-stretch: 1;
                         pane-index: 0;
+                        grid-columns-changed(n) => { root.left-grid-cols = n; }
                         active: root.active-pane == 0;
                         view-mode: root.view-mode;
                         info: root.left;
@@ -606,6 +619,7 @@ export component AppWindow inherits Window {
                         split: true;
                         horizontal-stretch: 1;
                         pane-index: 1;
+                        grid-columns-changed(n) => { root.right-grid-cols = n; }
                         active: root.active-pane == 1;
                         view-mode: root.view-mode;
                         info: root.right;

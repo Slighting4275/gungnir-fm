@@ -218,3 +218,143 @@ async fn volume_and_inspect() -> VfsResult<()> {
     assert!(info.iter().any(|(k, v)| k == "Size" && v == "9 bytes"));
     Ok(())
 }
+
+#[tokio::test]
+async fn overwrite_failure_preserves_existing_destination() -> VfsResult<()> {
+    let t = TempDir::new("overwrite-failure");
+    std::fs::create_dir_all(t.path().join("src/item")).unwrap_or_else(|e| panic!("{e}"));
+    std::fs::create_dir_all(t.path().join("dst/item")).unwrap_or_else(|e| panic!("{e}"));
+    std::fs::write(t.path().join("dst/item/keep"), b"original").unwrap_or_else(|e| panic!("{e}"));
+    let _socket =
+        std::os::unix::net::UnixListener::bind(t.path().join("src/item/socket")).unwrap_or_else(|e| panic!("{e}"));
+    let (ctl, _rx, _pause, _cancel) = control();
+    let result = LocalPosixBackend::new()
+        .transfer(
+            TransferRequest {
+                id: 21,
+                kind: TransferKind::Copy,
+                sources: vec![t.uri("src/item")],
+                dest_dir: t.uri("dst"),
+                overwrite: true,
+            },
+            ctl,
+        )
+        .await;
+    assert!(result.is_err());
+    assert_eq!(std::fs::read(t.path().join("dst/item/keep")).ok().as_deref(), Some(b"original".as_slice()));
+    Ok(())
+}
+
+#[tokio::test]
+async fn transfer_rejects_destination_alias_inside_source() -> VfsResult<()> {
+    let t = TempDir::new("transfer-alias");
+    std::fs::create_dir_all(t.path().join("src/inner")).unwrap_or_else(|e| panic!("{e}"));
+    std::os::unix::fs::symlink(t.path().join("src/inner"), t.path().join("alias")).unwrap_or_else(|e| panic!("{e}"));
+    let (ctl, _rx, _pause, _cancel) = control();
+    // Cancel as soon as progress starts if a broken implementation attempts recursion.
+    let cancel = ctl.cancel.clone();
+    let (ptx, mut prx) = mpsc::channel(4);
+    let ctl = TransferControl { progress: ptx, ..ctl };
+    let task = tokio::spawn(async move {
+        if prx.recv().await.is_some() {
+            cancel.cancel();
+        }
+    });
+    let result = LocalPosixBackend::new()
+        .transfer(
+            TransferRequest {
+                id: 22,
+                kind: TransferKind::Copy,
+                sources: vec![t.uri("src")],
+                dest_dir: t.uri("alias"),
+                overwrite: false,
+            },
+            ctl,
+        )
+        .await;
+    task.abort();
+    assert_eq!(result, Err(VfsError::WouldRecurse));
+    Ok(())
+}
+
+#[tokio::test]
+async fn deleting_ordinary_files_directory_keeps_unrelated_info() -> VfsResult<()> {
+    let t = TempDir::new("delete-info");
+    std::fs::create_dir_all(t.path().join("files")).unwrap_or_else(|e| panic!("{e}"));
+    std::fs::create_dir_all(t.path().join("info")).unwrap_or_else(|e| panic!("{e}"));
+    std::fs::write(t.path().join("files/item"), b"delete").unwrap_or_else(|e| panic!("{e}"));
+    std::fs::write(t.path().join("info/item.trashinfo"), b"keep").unwrap_or_else(|e| panic!("{e}"));
+    LocalPosixBackend::new().delete(&[t.uri("files/item")], CancellationToken::new()).await?;
+    assert!(t.path().join("info/item.trashinfo").exists());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cancelling_listing_with_full_receiver_stops_all_workers() -> VfsResult<()> {
+    let t = TempDir::new("blocked-listing");
+    for i in 0..100 {
+        write(&t.path().join(format!("item{i}")), 1);
+    }
+    let (tx, _rx) = mpsc::channel(1);
+    let cancel = CancellationToken::new();
+    let token = cancel.clone();
+    let dir = t.uri("");
+    let task = tokio::spawn(async move {
+        LocalPosixBackend::new().list_dir(&dir, ListOptions { first_batch: 1, batch: 1 }, tx, token).await
+    });
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    cancel.cancel();
+    let result = tokio::time::timeout(Duration::from_secs(2), task)
+        .await
+        .unwrap_or_else(|_| panic!("listing stayed blocked after cancellation"))
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(result, Err(VfsError::Cancelled));
+    Ok(())
+}
+
+#[tokio::test]
+async fn overwrite_success_replaces_complete_tree_and_preserves_source() -> VfsResult<()> {
+    let t = TempDir::new("overwrite-success");
+    for dir in ["src/item", "dst/item"] {
+        std::fs::create_dir_all(t.path().join(dir)).unwrap_or_else(|e| panic!("{e}"));
+    }
+    std::fs::write(t.path().join("src/item/new"), b"new").unwrap_or_else(|e| panic!("{e}"));
+    std::fs::write(t.path().join("dst/item/old"), b"old").unwrap_or_else(|e| panic!("{e}"));
+    let (ctl, _rx, _pause, _cancel) = control();
+    LocalPosixBackend::new()
+        .transfer(
+            TransferRequest {
+                id: 23,
+                kind: TransferKind::Copy,
+                sources: vec![t.uri("src/item")],
+                dest_dir: t.uri("dst"),
+                overwrite: true,
+            },
+            ctl,
+        )
+        .await?;
+    assert_eq!(std::fs::read(t.path().join("dst/item/new")).ok().as_deref(), Some(b"new".as_slice()));
+    assert!(!t.path().join("dst/item/old").exists());
+    assert!(t.path().join("src/item/new").exists());
+    assert!(
+        !std::fs::read_dir(t.path().join("dst"))
+            .unwrap_or_else(|e| panic!("{e}"))
+            .flatten()
+            .any(|e| e.file_name().to_string_lossy().starts_with(".gungnir-transfer-"))
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn listing_never_aliases_non_utf8_names_to_other_files() -> VfsResult<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let t = TempDir::new("invalid-utf8");
+    std::fs::write(t.path().join(std::ffi::OsStr::from_bytes(b"raw-\xff")), b"invalid")
+        .unwrap_or_else(|e| panic!("{e}"));
+    std::fs::write(t.path().join("raw-�"), b"valid").unwrap_or_else(|e| panic!("{e}"));
+    let (_, entries) = list(&LocalPosixBackend::new(), &t.uri(""), ListOptions::default()).await?;
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].name, "raw-�");
+    assert_eq!(entries[0].size, 5);
+    Ok(())
+}

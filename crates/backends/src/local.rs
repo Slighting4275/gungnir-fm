@@ -95,7 +95,9 @@ pub(crate) fn entry_from_metadata(name: String, uri: VfsUri, path: &Path, md: &f
 }
 
 fn entry_from_dirent(de: &DirEntry, dir: &VfsUri) -> Option<FileEntry> {
-    let name = de.file_name().to_string_lossy().into_owned();
+    // VfsUri is UTF-8-only. Never turn invalid bytes into a different,
+    // potentially existing filename that a destructive action could target.
+    let name = de.file_name().into_string().ok()?;
     let uri = dir.join(&name).ok()?;
     let md = de.metadata().ok()?; // fstatat(AT_SYMLINK_NOFOLLOW) relative to the dir fd
     Some(entry_from_metadata(name, uri, &de.path(), &md))
@@ -111,7 +113,7 @@ fn list_blocking(
 ) -> VfsResult<ListSummary> {
     let rd = fs::read_dir(path).map_err(io_err("opendir", path))?;
     let summary = Mutex::new(ListSummary::default());
-    let send = |batch: Vec<FileEntry>, skipped: u64| -> VfsResult<()> {
+    let send = |mut batch: Vec<FileEntry>, skipped: u64| -> VfsResult<()> {
         {
             let mut s = summary.lock().unwrap_or_else(PoisonError::into_inner);
             s.entries += batch.len() as u64;
@@ -120,7 +122,19 @@ fn list_blocking(
         if batch.is_empty() {
             return Ok(());
         }
-        sink.blocking_send(batch).map_err(|_| VfsError::Cancelled)
+        loop {
+            if cancel.is_cancelled() {
+                return Err(VfsError::Cancelled);
+            }
+            match sink.try_send(batch) {
+                Ok(()) => return Ok(()),
+                Err(mpsc::error::TrySendError::Closed(_)) => return Err(VfsError::Cancelled),
+                Err(mpsc::error::TrySendError::Full(pending)) => {
+                    batch = pending;
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }
+        }
     };
     let stat_chunk = |chunk: Vec<DirEntry>| -> VfsResult<()> {
         let n = chunk.len();
@@ -142,11 +156,13 @@ fn list_blocking(
     }
 
     let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<DirEntry>>(STAT_WORKERS * 2);
-    let rx = Mutex::new(rx);
+    let rx = Arc::new(Mutex::new(rx));
     let result: VfsResult<()> = std::thread::scope(|s| {
         let workers: Vec<_> = (0..STAT_WORKERS)
             .map(|_| {
-                s.spawn(|| -> VfsResult<()> {
+                let rx = Arc::clone(&rx);
+                let stat_chunk = &stat_chunk;
+                s.spawn(move || -> VfsResult<()> {
                     loop {
                         let next = rx.lock().unwrap_or_else(PoisonError::into_inner).recv();
                         match next {
@@ -157,6 +173,8 @@ fn list_blocking(
                 })
             })
             .collect();
+        // Only workers own the receiver, so a failed worker cannot leave the feeder blocked.
+        drop(rx);
         let mut chunk = Vec::with_capacity(opts.batch);
         let mut feed = || -> VfsResult<()> {
             for de in rd.by_ref() {
@@ -268,13 +286,16 @@ impl Copier<'_> {
             self.progress.files_done += 1;
         } else if ft.is_dir() {
             fs::create_dir(dst).map_err(io_err("mkdir", dst))?;
-            let mut children: Vec<_> =
-                fs::read_dir(src).map_err(io_err("opendir", src))?.filter_map(Result::ok).collect();
+            let mut children: Vec<_> = fs::read_dir(src)
+                .map_err(io_err("opendir", src))?
+                .collect::<Result<_, _>>()
+                .map_err(io_err("readdir", src))?;
             children.sort_by_key(DirEntry::file_name);
             for c in children {
                 self.copy_tree(&c.path(), &dst.join(c.file_name()))?;
             }
             fs::set_permissions(dst, fs::Permissions::from_mode(md.mode() & 0o7777)).map_err(io_err("chmod", dst))?;
+            set_times(dst, &md);
         } else if ft.is_file() {
             self.copy_file(src, dst, &md)?;
             self.progress.files_done += 1;
@@ -334,7 +355,8 @@ fn measure(p: &Path, cancel: &CancellationToken) -> VfsResult<(u64, u64)> {
     let md = fs::symlink_metadata(p).map_err(io_err("lstat", p))?;
     if md.is_dir() {
         let mut acc = (0, 0);
-        for c in fs::read_dir(p).map_err(io_err("opendir", p))?.filter_map(Result::ok) {
+        for c in fs::read_dir(p).map_err(io_err("opendir", p))? {
+            let c = c.map_err(io_err("readdir", p))?;
             let (b, f) = measure(&c.path(), cancel)?;
             acc = (acc.0 + b, acc.1 + f);
         }
@@ -344,12 +366,36 @@ fn measure(p: &Path, cancel: &CancellationToken) -> VfsResult<(u64, u64)> {
     }
 }
 
+fn create_transfer_stage(dir: &Path, id: u64) -> VfsResult<PathBuf> {
+    use std::os::unix::fs::DirBuilderExt;
+    for n in 0..10_000 {
+        let stage = dir.join(format!(".gungnir-transfer-{}-{id}-{n}", std::process::id()));
+        match fs::DirBuilder::new().mode(0o700).create(&stage) {
+            Ok(()) => return Ok(stage),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(io_err("mkdir", &stage)(e)),
+        }
+    }
+    Err(VfsError::AlreadyExists("transfer staging directory".into()))
+}
+
+fn exchange_paths(a: &Path, b: &Path) -> std::io::Result<()> {
+    let a = CString::new(a.as_os_str().as_bytes()).map_err(|_| std::io::ErrorKind::InvalidInput)?;
+    let b = CString::new(b.as_os_str().as_bytes()).map_err(|_| std::io::ErrorKind::InvalidInput)?;
+    // SAFETY: both paths are valid NUL-terminated strings. The exchange is atomic.
+    let result =
+        unsafe { libc::renameat2(libc::AT_FDCWD, a.as_ptr(), libc::AT_FDCWD, b.as_ptr(), libc::RENAME_EXCHANGE) };
+    if result == 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) }
+}
+
 fn transfer_blocking(req: &TransferRequest, ctl: &TransferControl) -> VfsResult<()> {
     let dest_dir = local(&req.dest_dir)?;
     let sources: Vec<PathBuf> = req.sources.iter().map(local).collect::<VfsResult<_>>()?;
+    let canonical_dest = fs::canonicalize(&dest_dir).map_err(io_err("realpath", &dest_dir))?;
     let mut totals = (0, 0);
     for s in &sources {
-        if dest_dir.starts_with(s) {
+        let md = fs::symlink_metadata(s).map_err(io_err("lstat", s))?;
+        if md.is_dir() && canonical_dest.starts_with(fs::canonicalize(s).map_err(io_err("realpath", s))?) {
             return Err(VfsError::WouldRecurse);
         }
         let (b, f) = measure(s, &ctl.cancel)?;
@@ -375,9 +421,30 @@ fn transfer_blocking(req: &TransferRequest, ctl: &TransferControl) -> VfsResult<
         let target_name =
             if req.overwrite { name.clone() } else { unique_name(&dest_dir, &name, |p| p.symlink_metadata().is_ok()) };
         let dst = dest_dir.join(&target_name);
-        if req.overwrite && dst.symlink_metadata().is_ok() && dst != *src {
-            remove_any(&dst)?;
+        // Stage replacements on the destination filesystem. Failure/cancellation must
+        // leave the existing destination intact, including when a folder copy fails.
+        if req.overwrite && dst.symlink_metadata().is_ok() {
+            let src_md = fs::symlink_metadata(src).map_err(io_err("lstat", src))?;
+            let dst_md = fs::symlink_metadata(&dst).map_err(io_err("lstat", &dst))?;
+            if src_md.dev() == dst_md.dev() && src_md.ino() == dst_md.ino() {
+                return Err(VfsError::BadRequest);
+            }
+            let stage = create_transfer_stage(&dest_dir, req.id)?;
+            let staged = stage.join("item");
+            let result = c.copy_tree(src, &staged).and_then(|()| {
+                c.checkpoint()?;
+                exchange_paths(&staged, &dst).map_err(io_err("replace", &dst))
+            });
+            // After the exchange the stage holds the old destination; before it,
+            // it holds only the partial copy. Never remove the destination on error.
+            let _ = remove_any(&stage);
+            result?;
+            if req.kind == TransferKind::Move {
+                remove_any(src)?;
+            }
+            continue;
         }
+        c.checkpoint()?;
         if req.kind == TransferKind::Move {
             match rename_noreplace(src, &dst) {
                 Ok(()) => {
@@ -416,7 +483,7 @@ fn remove_any(p: &Path) -> VfsResult<()> {
     }
     if let Some(name) = p.file_name()
         && let Some(parent) = p.parent()
-        && parent.ends_with("files")
+        && home_trash().is_ok_and(|trash| parent == trash.join("files"))
         && let Some(trash) = parent.parent()
     {
         let info = trash.join("info").join(format!("{}.trashinfo", name.to_string_lossy()));
@@ -471,19 +538,17 @@ fn restore_one(trash: &Path, name: &str) -> VfsResult<PathBuf> {
 
 fn empty_trash_dir(trash: &Path) -> VfsResult<()> {
     let files_dir = trash.join("files");
-    let info_dir = trash.join("info");
-    if files_dir.is_dir()
-        && let Ok(entries) = fs::read_dir(&files_dir)
-    {
-        for entry in entries.flatten() {
-            let _ = remove_any(&entry.path());
-        }
+    if !files_dir.exists() {
+        return Ok(());
     }
-    if info_dir.is_dir()
-        && let Ok(entries) = fs::read_dir(&info_dir)
-    {
-        for entry in entries.flatten() {
-            let _ = fs::remove_file(entry.path());
+    for entry in fs::read_dir(&files_dir).map_err(io_err("opendir", &files_dir))? {
+        let entry = entry.map_err(io_err("readdir", &files_dir))?;
+        remove_any(&entry.path())?;
+        let info = trash.join("info").join(format!("{}.trashinfo", entry.file_name().to_string_lossy()));
+        match fs::remove_file(&info) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(io_err("unlink", &info)(e)),
         }
     }
     Ok(())

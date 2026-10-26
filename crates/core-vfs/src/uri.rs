@@ -76,6 +76,9 @@ impl VfsUri {
             None => (rest, "/"),
         };
         let authority = percent_decode(authority)?;
+        if authority.contains('/') || authority.chars().any(char::is_control) {
+            return Err(VfsError::InvalidUri("invalid URI authority".into()));
+        }
         if authority.contains(['/', '@', ':']) && scheme == Scheme::Gungnir {
             return Err(VfsError::InvalidUri(format!("bad gungnir node {authority:?}")));
         }
@@ -120,7 +123,7 @@ impl VfsUri {
     pub fn gungnir(node: &str, path: &str) -> VfsResult<Self> {
         Self::parse(&format!(
             "gungnir://{node}{}",
-            if path.starts_with('/') { path.to_owned() } else { format!("/{path}") }
+            if path.starts_with('/') { percent_encode(path) } else { format!("/{}", percent_encode(path)) }
         ))
     }
 
@@ -254,7 +257,7 @@ impl VfsUri {
     /// The canonical, percent-encoded URI.
     #[must_use]
     pub fn to_uri_string(&self) -> String {
-        format!("{}://{}{}", self.scheme.as_str(), self.authority, percent_encode(&self.path))
+        format!("{}://{}{}", self.scheme.as_str(), percent_encode(&self.authority), percent_encode(&self.path))
     }
 }
 
@@ -334,6 +337,33 @@ mod tests {
 
     fn u(s: &str) -> VfsUri {
         VfsUri::parse(s).unwrap_or_else(|e| panic!("{s}: {e}"))
+    }
+
+    #[test]
+    fn breadcrumb_uris_point_at_each_ancestor() {
+        let uri = u("gungnir://odin/asgard/nested/leaf");
+        let crumbs: Vec<_> = uri.crumbs().into_iter().map(|(_, uri)| uri.to_uri_string()).collect();
+        assert_eq!(
+            crumbs,
+            [
+                "gungnir://odin/",
+                "gungnir://odin/asgard",
+                "gungnir://odin/asgard/nested",
+                "gungnir://odin/asgard/nested/leaf"
+            ]
+        );
+    }
+
+    #[test]
+    fn canonical_authority_and_constructor_preserve_percent_characters() {
+        for text in ["sftp://host%25/a", "smb://host%23/share", "gungnir://node%25/a"] {
+            let uri = VfsUri::parse(text).unwrap_or_else(|e| panic!("{e}"));
+            assert_eq!(VfsUri::parse(&uri.to_uri_string()).ok(), Some(uri));
+        }
+        let uri = VfsUri::gungnir("localhost", "/100%25 complete").unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(uri.path(), "/100%25 complete");
+        assert!(VfsUri::parse("sftp://bad%00host/path").is_err());
+        assert!(VfsUri::parse("sftp://bad%2Fhost/path").is_err());
     }
 
     #[test]

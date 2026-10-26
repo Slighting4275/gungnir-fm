@@ -131,9 +131,7 @@ export component Pane inherits Rectangle {
     in property <bool> split: false;
     in property <int> view-mode: 1;
     in property <int> renaming-index: -1;
-    in property <[CustomActionItem]> custom-actions: [
-        { id: "terminal", title: "Open Terminal Here" },
-    ];
+    in property <[CustomActionItem]> custom-actions: [];
     in property <PaneInfo> info: {
         tabs: [
             { title: "project_demo", location: "/home/user/Documents/project_demo", loading: false },
@@ -150,6 +148,9 @@ export component Pane inherits Rectangle {
         can-back: true,
         can-forward: false,
         cursor: 2,
+        is-trash: false,
+        selected-count: 2,
+        has-clipboard: false,
     };
     in property <[FileRow]> files: [
         { name: "release_v1", size-text: "", type-text: "Folder", modified-text: "2026-10-12 21:40", perms-text: "drwxr-xr-x", status-text: "", status: 0, icon: 0, is-dir: true, hidden: false, selected: false },
@@ -165,6 +166,14 @@ export component Pane inherits Rectangle {
     ];
     in-out property <int> thumbnail-rev: 0;
     in-out property <float> zoom-level: 1.0;
+    in-out property <int> context-index: -1;
+    property <bool> is-trash: root.info.is-trash;
+    property <bool> has-target: root.context-index >= 0 && root.context-index < root.files.length;
+    property <bool> target-is-dir: root.has-target ? root.files[root.context-index].is-dir : false;
+    property <bool> target-is-archive: root.has-target ? root.files[root.context-index].icon == 5 : false;
+    property <bool> target-selected: root.has-target ? root.files[root.context-index].selected : false;
+    property <int> effective-sel-count: root.target-selected ? Math.max(1, root.info.selected-count) : (root.has-target ? 1 : 0);
+    property <bool> is-multi-sel: root.effective-sel-count > 1;
 
     callback row-clicked(index: int, ctrl: bool, shift: bool);
     callback row-activated(index: int);
@@ -206,6 +215,8 @@ export component Pane inherits Rectangle {
     property <length> grid-cell-w: root.thumb-size + 16px;
     property <length> grid-cell-h: root.thumb-size + 40px;
     property <int> grid-cols: Math.max(1, Math.floor(list-area.width / root.grid-cell-w));
+    callback grid-columns-changed(count: int);
+    changed grid-cols => { root.grid-columns-changed(root.grid-cols); }
     property <int> cursor: root.info.cursor;
 
     // Keep the keyboard cursor in view.
@@ -313,38 +324,200 @@ export component Pane inherits Rectangle {
             }
             cm := ContextMenuArea {
                 Menu {
-                    MenuItem { title: "Open"; activated => { root.command("open"); } }
-                    MenuItem { title: "Open in New Tab"; activated => { root.command("open-in-tab"); } }
-                    MenuItem { title: "Open With…"; activated => { root.command("open-with"); } }
-                    MenuSeparator { }
-                    MenuItem { title: "Cut"; activated => { root.command("cut"); } }
-                    MenuItem { title: "Copy"; activated => { root.command("copy"); } }
-                    MenuItem { title: "Paste"; activated => { root.command("paste"); } }
-                    MenuSeparator { }
-                    MenuItem { title: "Copy to Other Pane (F5)"; activated => { root.command("copy-to-other"); } }
-                    MenuItem { title: "Move to Other Pane (F6)"; activated => { root.command("move-to-other"); } }
-                    MenuItem { title: "Rename… (F2)"; activated => { root.command("rename"); } }
-                    MenuItem { title: "New Folder… (F7)"; activated => { root.command("new-folder"); } }
-                    MenuSeparator { }
-                    MenuItem { title: "Restore from Trash"; activated => { root.command("restore"); } }
-                    MenuItem { title: "Empty Trash"; activated => { root.command("empty-trash"); } }
-                    MenuItem { title: "Move to Trash"; activated => { root.command("trash"); } }
-                    MenuItem { title: "Delete Permanently…"; activated => { root.command("delete"); } }
-                    MenuSeparator { }
-                    MenuItem { title: "Properties"; activated => { root.command("properties"); } }
-                    MenuItem { title: "Check File Hash…"; activated => { root.command("check-hash"); } }
-                    MenuItem { title: "Gungnir VFS Inspect"; activated => { root.command("inspect"); } }
-                    MenuSeparator { }
-                    MenuItem { title: "Compress…"; activated => { root.command("compress"); } }
-                    MenuItem { title: "Quick Compress to .tar.zst"; activated => { root.command("quick-compress-zst"); } }
-                    MenuItem { title: "Quick Compress to .zip"; activated => { root.command("quick-compress-zip"); } }
-                    MenuItem { title: "Extract Here"; activated => { root.command("extract-here"); } }
-                    MenuItem { title: "Extract to Subfolder…"; activated => { root.command("extract-to"); } }
-                    MenuItem { title: "Test Archive Integrity"; activated => { root.command("test-archive"); } }
-                    if root.custom-actions.length > 0: MenuSeparator { }
-                    for act in root.custom-actions: MenuItem {
+                    // -----------------------------------------------------------------
+                    // TRASH CONTEXT (when viewing trash: scheme)
+                    // -----------------------------------------------------------------
+                    if root.is-trash && root.has-target: MenuItem {
+                        title: root.is-multi-sel ? "Restore " + root.effective-sel-count + " Items from Trash" : "Restore from Trash";
+                        activated => { root.command("restore"); }
+                    }
+                    if root.is-trash && root.has-target: MenuItem {
+                        title: root.is-multi-sel ? "Delete " + root.effective-sel-count + " Items Permanently…" : "Delete Permanently…";
+                        activated => { root.command("delete"); }
+                    }
+                    if root.is-trash && !root.has-target: MenuItem {
+                        title: "Empty Trash";
+                        activated => { root.command("empty-trash"); }
+                    }
+                    if root.is-trash: MenuSeparator { }
+                    if root.is-trash && root.has-target: MenuItem {
+                        title: "Properties";
+                        activated => { root.command("properties"); }
+                    }
+                    if root.is-trash && !root.has-target: MenuItem {
+                        title: "Properties";
+                        activated => { root.command("folder-properties"); }
+                    }
+
+                    // -----------------------------------------------------------------
+                    // EMPTY BACKGROUND CONTEXT (non-trash folder background)
+                    // -----------------------------------------------------------------
+                    if !root.is-trash && !root.has-target: MenuItem {
+                        title: "New Folder… (F7)";
+                        activated => { root.command("new-folder"); }
+                    }
+                    if !root.is-trash && !root.has-target && root.info.has-clipboard: MenuItem {
+                        title: "Paste";
+                        activated => { root.command("paste"); }
+                    }
+                    if !root.is-trash && !root.has-target: MenuItem {
+                        title: "Open Terminal Here";
+                        activated => { root.command("open-terminal-folder"); }
+                    }
+                    if !root.is-trash && !root.has-target: MenuSeparator { }
+                    if !root.is-trash && !root.has-target: MenuItem {
+                        title: "Gungnir VFS Inspect";
+                        activated => { root.command("inspect-folder"); }
+                    }
+                    if !root.is-trash && !root.has-target: MenuItem {
+                        title: "Properties";
+                        activated => { root.command("folder-properties"); }
+                    }
+
+                    // -----------------------------------------------------------------
+                    // ITEM CONTEXT: PRIMARY ACTIONS
+                    // -----------------------------------------------------------------
+                    if !root.is-trash && root.has-target && !root.is-multi-sel: MenuItem {
+                        title: "Open";
+                        activated => { root.command("open"); }
+                    }
+                    if !root.is-trash && root.has-target && !root.is-multi-sel && root.target-is-dir: MenuItem {
+                        title: "Open in New Tab";
+                        activated => { root.command("open-in-tab"); }
+                    }
+                    if !root.is-trash && root.has-target && !root.is-multi-sel && !root.target-is-dir: MenuItem {
+                        title: "Open With…";
+                        activated => { root.command("open-with"); }
+                    }
+                    if !root.is-trash && root.has-target && !root.is-multi-sel && root.target-is-dir: MenuItem {
+                        title: "Open Terminal Here";
+                        activated => { root.command("open-terminal-here"); }
+                    }
+                    if !root.is-trash && root.has-target && !root.is-multi-sel: MenuSeparator { }
+
+                    // -----------------------------------------------------------------
+                    // ARCHIVE CONTEXT (Only when single archive is targeted)
+                    // -----------------------------------------------------------------
+                    if !root.is-trash && root.has-target && !root.is-multi-sel && root.target-is-archive: MenuItem {
+                        title: "Extract Here";
+                        activated => { root.command("extract-here"); }
+                    }
+                    if !root.is-trash && root.has-target && !root.is-multi-sel && root.target-is-archive: MenuItem {
+                        title: "Extract to Subfolder…";
+                        activated => { root.command("extract-to"); }
+                    }
+                    if !root.is-trash && root.has-target && !root.is-multi-sel && root.target-is-archive: MenuItem {
+                        title: "Test Archive Integrity";
+                        activated => { root.command("test-archive"); }
+                    }
+                    if !root.is-trash && root.has-target && !root.is-multi-sel && root.target-is-archive: MenuSeparator { }
+
+                    // -----------------------------------------------------------------
+                    // ITEM CONTEXT: CLIPBOARD & TRANSFERS
+                    // -----------------------------------------------------------------
+                    if !root.is-trash && root.has-target && root.target-is-dir && !root.is-multi-sel: MenuItem {
+                        title: "Open in New Window";
+                        activated => { root.command("open-in-new-window"); }
+                    }
+                    if !root.is-trash && root.has-target && root.target-is-dir && !root.is-multi-sel: MenuItem {
+                        title: "Open in Other Pane";
+                        activated => { root.command("open-in-other-pane"); }
+                    }
+                    if !root.is-trash && root.has-target: MenuItem {
+                        title: "Duplicate";
+                        activated => { root.command("duplicate"); }
+                    }
+                    if !root.is-trash && root.has-target: MenuItem {
+                        title: "Cut";
+                        activated => { root.command("cut"); }
+                    }
+                    if !root.is-trash && root.has-target: MenuItem {
+                        title: "Copy";
+                        activated => { root.command("copy"); }
+                    }
+                    if !root.is-trash && root.has-target && root.info.has-clipboard: MenuItem {
+                        title: root.target-is-dir && !root.is-multi-sel ? "Paste Into Folder" : "Paste";
+                        activated => { root.command(root.target-is-dir && !root.is-multi-sel ? "paste-into-folder" : "paste"); }
+                    }
+                    if !root.is-trash && root.has-target && root.split: MenuItem {
+                        title: "Copy to Other Pane (F5)";
+                        activated => { root.command("copy-to-other"); }
+                    }
+                    if !root.is-trash && root.has-target && root.split: MenuItem {
+                        title: "Move to Other Pane (F6)";
+                        activated => { root.command("move-to-other"); }
+                    }
+                    if !root.is-trash && root.has-target: MenuSeparator { }
+
+                    // -----------------------------------------------------------------
+                    // ITEM CONTEXT: RENAME & COMPRESS
+                    // -----------------------------------------------------------------
+                    if !root.is-trash && root.has-target: MenuItem {
+                        title: root.is-multi-sel ? "Rename " + root.effective-sel-count + " Files… (F2)" : "Rename… (F2)";
+                        activated => { root.command("rename"); }
+                    }
+                    if !root.is-trash && root.has-target: Menu {
+                        title: "Compress";
+                        MenuItem { title: "Compress…"; activated => { root.command("compress"); } }
+                        MenuItem { title: "Quick Compress to .tar.zst"; activated => { root.command("quick-compress-zst"); } }
+                        MenuItem { title: "Quick Compress to .zip"; activated => { root.command("quick-compress-zip"); } }
+                    }
+                    if !root.is-trash && root.has-target: MenuSeparator { }
+
+                    // -----------------------------------------------------------------
+                    // ITEM CONTEXT: TRASH & PERMANENT DELETE
+                    // -----------------------------------------------------------------
+                    if !root.is-trash && root.has-target: MenuItem {
+                        title: "Move to Trash";
+                        activated => { root.command("trash"); }
+                    }
+                    if !root.is-trash && root.has-target: MenuItem {
+                        title: "Delete Permanently…";
+                        activated => { root.command("delete"); }
+                    }
+
+                    // -----------------------------------------------------------------
+                    // ITEM CONTEXT: CUSTOM ACTIONS (user scripts)
+                    // -----------------------------------------------------------------
+                    if !root.is-trash && root.has-target && root.custom-actions.length > 0: MenuSeparator { }
+                    for act in (!root.is-trash && root.has-target ? root.custom-actions : []): MenuItem {
                         title: act.title;
                         activated => { root.custom-action(act.id); }
+                    }
+
+                    // -----------------------------------------------------------------
+                    // ITEM CONTEXT: INSPECT & HASH & PROPERTIES
+                    // -----------------------------------------------------------------
+                    if !root.is-trash && root.has-target: MenuSeparator { }
+                    if !root.is-trash && root.has-target && !root.target-is-dir && !root.is-multi-sel: MenuItem {
+                        title: "Check File Hash…";
+                        activated => { root.command("check-hash"); }
+                    }
+                    if !root.is-trash && root.has-target: MenuItem {
+                        title: "Gungnir VFS Inspect";
+                        activated => { root.command("inspect"); }
+                    }
+                    if !root.is-trash && root.has-target: MenuItem {
+                        title: "Properties";
+                        activated => { root.command("properties"); }
+                    }
+                }
+
+                bg-touch := TouchArea {
+                    pointer-event(e) => {
+                        if e.kind == PointerEventKind.down {
+                            root.focus-pane();
+                            if e.button == PointerEventButton.left {
+                                root.command("clear-selection");
+                            } else if e.button == PointerEventButton.right {
+                                root.context-index = -1;
+                                root.command("clear-selection");
+                                cm.show({
+                                    x: self.mouse-x,
+                                    y: self.mouse-y,
+                                });
+                            }
+                        }
                     }
                 }
 
@@ -382,6 +555,7 @@ export component Pane inherits Rectangle {
                                             root.row-clicked(idx, e.modifiers.control, e.modifiers.shift);
                                         }
                                     } else if e.button == PointerEventButton.right {
+                                        root.context-index = idx;
                                         root.row-context(idx);
                                         cm.show({
                                             x: self.absolute-position.x - cm.absolute-position.x + self.mouse-x,
@@ -561,6 +735,7 @@ export component Pane inherits Rectangle {
                                                 if e.button == PointerEventButton.left {
                                                     root.row-clicked(cell.idx, e.modifiers.control, e.modifiers.shift);
                                                 } else if e.button == PointerEventButton.right {
+                                                    root.context-index = cell.idx;
                                                     root.row-context(cell.idx);
                                                     cm.show({
                                                         x: self.absolute-position.x - cm.absolute-position.x + self.mouse-x,
@@ -623,24 +798,24 @@ export component Pane inherits Rectangle {
                         }
                     }
                 }
-            }
 
-            // Empty / error / loading states.
-            if root.files.length == 0: VerticalLayout {
-                alignment: center;
-                spacing: 8px;
-                Text {
-                    text: root.info.error != "" ? "Cannot open this location" : root.info.loading ? "Loading…" : root.info.filter != "" ? "No matches" : "This folder is empty";
-                    color: root.info.error != "" ? Theme.bad : Theme.text-faint;
-                    font-size: Theme.font-size-large;
-                    horizontal-alignment: center;
-                }
-                if root.info.error != "": Text {
-                    text: root.info.error;
-                    color: Theme.text-dim;
-                    font-size: Theme.font-size-small;
-                    horizontal-alignment: center;
-                    wrap: word-wrap;
+                // Empty / error / loading states.
+                if root.files.length == 0: VerticalLayout {
+                    alignment: center;
+                    spacing: 8px;
+                    Text {
+                        text: root.info.error != "" ? "Cannot open this location" : root.info.loading ? "Loading…" : root.info.filter != "" ? "No matches" : "This folder is empty";
+                        color: root.info.error != "" ? Theme.bad : Theme.text-faint;
+                        font-size: Theme.font-size-large;
+                        horizontal-alignment: center;
+                    }
+                    if root.info.error != "": Text {
+                        text: root.info.error;
+                        color: Theme.text-dim;
+                        font-size: Theme.font-size-small;
+                        horizontal-alignment: center;
+                        wrap: word-wrap;
+                    }
                 }
             }
         }

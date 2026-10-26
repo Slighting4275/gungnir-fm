@@ -12,8 +12,9 @@
 //! Every algorithm in this module is strictly 100% BIT-PERFECT LOSSLESS. Original file
 //! checksums (SHA-256 / BLAKE3) remain identical after decode.
 
-use std::ffi::{CStr, CString};
+use std::ffi::{CStr, CString, OsStr};
 use std::os::raw::{c_char, c_int, c_long, c_uint, c_void};
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 use thiserror::Error;
@@ -68,6 +69,7 @@ unsafe extern "C" {
     fn archive_read_support_filter_all(a: *mut c_void) -> c_int;
     fn archive_read_support_format_all(a: *mut c_void) -> c_int;
     fn archive_read_open_filename(a: *mut c_void, filename: *const c_char, block_size: usize) -> c_int;
+    fn archive_read_add_passphrase(a: *mut c_void, passphrase: *const c_char) -> c_int;
     fn archive_read_next_header(a: *mut c_void, entry: *mut *mut c_void) -> c_int;
     fn archive_read_data_block(a: *mut c_void, buff: *mut *const c_void, size: *mut usize, offset: *mut i64) -> c_int;
     fn archive_read_close(a: *mut c_void) -> c_int;
@@ -84,6 +86,7 @@ unsafe extern "C" {
     fn archive_write_add_filter_zstd(a: *mut c_void) -> c_int;
     fn archive_write_add_filter_lz4(a: *mut c_void) -> c_int;
     fn archive_write_set_filter_option(a: *mut c_void, m: *const c_char, o: *const c_char, v: *const c_char) -> c_int;
+    fn archive_write_set_format_option(a: *mut c_void, m: *const c_char, o: *const c_char, v: *const c_char) -> c_int;
     fn archive_write_open_filename(a: *mut c_void, filename: *const c_char) -> c_int;
     fn archive_write_header(a: *mut c_void, entry: *mut c_void) -> c_int;
     fn archive_write_data(a: *mut c_void, buff: *const c_void, size: usize) -> isize;
@@ -108,6 +111,8 @@ unsafe extern "C" {
     fn archive_entry_set_perm(entry: *mut c_void, perm: c_uint);
     fn archive_entry_mtime(entry: *mut c_void) -> i64;
     fn archive_entry_set_mtime(entry: *mut c_void, sec: i64, nsec: c_long);
+    fn archive_entry_hardlink(entry: *mut c_void) -> *const c_char;
+    fn archive_entry_set_hardlink(entry: *mut c_void, link: *const c_char);
     fn archive_entry_symlink(entry: *mut c_void) -> *const c_char;
     fn archive_entry_set_symlink(entry: *mut c_void, link: *const c_char);
 
@@ -135,6 +140,19 @@ impl Drop for ArchiveWriter {
                 let _ = archive_write_free(self.0);
             }
         }
+    }
+}
+
+impl ArchiveWriter {
+    fn finish(mut self) -> Result<(), ArchiveError> {
+        // Closing writes the final compressed blocks and can fail (e.g. ENOSPC).
+        let result = unsafe { archive_write_close(self.0) };
+        let error = if result != ARCHIVE_OK { Some(unsafe { get_archive_error(self.0) }) } else { None };
+        unsafe {
+            archive_write_free(self.0);
+        }
+        self.0 = std::ptr::null_mut();
+        if let Some(error) = error { Err(ArchiveError::Libarchive(error)) } else { Ok(()) }
     }
 }
 
@@ -307,11 +325,36 @@ pub fn compress_items(
     }
     let format = options.format.or_else(|| ArchiveFormat::from_path(dest_path)).unwrap_or(ArchiveFormat::TarZstd);
 
-    // If 7z format is requested with password or solid archiving, use 7z CLI if available
-    if (format == ArchiveFormat::SevenZip || options.password.is_some())
-        && let Ok(stats) = compress_via_7z_cli(dest_path, base_dir, items, options)
-    {
-        return Ok(stats);
+    let canonical_base = std::fs::canonicalize(base_dir)?;
+    let dest_absolute =
+        if dest_path.is_absolute() { dest_path.to_path_buf() } else { std::env::current_dir()?.join(dest_path) };
+    let dest_parent = std::fs::canonicalize(
+        dest_absolute.parent().ok_or_else(|| ArchiveError::UnsupportedFormat("Invalid output path".into()))?,
+    )?;
+    let canonical_dest = dest_parent.join(dest_absolute.file_name().ok_or(ArchiveError::EmptyItemList)?);
+    if std::fs::symlink_metadata(&canonical_dest).is_ok() {
+        return Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "Archive destination already exists").into());
+    }
+    for item in items {
+        let item = if item.is_absolute() { item.clone() } else { canonical_base.join(item) };
+        let metadata = std::fs::symlink_metadata(&item)?;
+        if metadata.is_dir() && canonical_dest.starts_with(std::fs::canonicalize(&item)?) {
+            return Err(ArchiveError::PathTraversal("Archive output is inside a source directory".into()));
+        }
+    }
+    // Encryption must fail closed: never retry by writing an unencrypted archive.
+    if options.password.is_some() {
+        if !matches!(format, ArchiveFormat::Zip | ArchiveFormat::SevenZip) {
+            return Err(ArchiveError::UnsupportedFormat("Encryption requires ZIP or 7-Zip".into()));
+        }
+        return compress_via_7z_cli(dest_path, base_dir, items, options);
+    }
+    if format == ArchiveFormat::SevenZip {
+        match compress_via_7z_cli(dest_path, base_dir, items, options) {
+            Ok(stats) => return Ok(stats),
+            Err(ArchiveError::ToolNotFound(_)) => {}
+            Err(e) => return Err(e),
+        }
     }
 
     // If Brotli format is requested, use brotli CLI pipeline
@@ -440,7 +483,14 @@ fn compress_items_libarchive(
             let _ = archive_write_set_filter_option(a, m.as_ptr(), o.as_ptr(), v.as_ptr());
         }
 
-        let c_dest = CString::new(dest_path.to_string_lossy().as_bytes())
+        if !matches!(format, ArchiveFormat::Zip | ArchiveFormat::SevenZip)
+            && archive_write_set_format_option(a, c"pax".as_ptr(), c"hdrcharset".as_ptr(), c"BINARY".as_ptr())
+                != ARCHIVE_OK
+        {
+            return Err(ArchiveError::Libarchive(get_archive_error(a)));
+        }
+
+        let c_dest = CString::new(dest_path.as_os_str().as_bytes())
             .map_err(|_| ArchiveError::Libarchive("Invalid destination path".into()))?;
         if archive_write_open_filename(a, c_dest.as_ptr()) != ARCHIVE_OK {
             return Err(ArchiveError::Libarchive(get_archive_error(a)));
@@ -451,6 +501,7 @@ fn compress_items_libarchive(
             let abs_item = if item.is_absolute() { item.clone() } else { base_dir.join(item) };
             add_item_recursive(a, &abs_item, base_dir, &mut stats)?;
         }
+        _guard.finish()?;
     }
 
     if let Ok(meta) = std::fs::metadata(dest_path) {
@@ -467,10 +518,11 @@ fn add_item_recursive(
     stats: &mut ArchiveStats,
 ) -> Result<(), ArchiveError> {
     let rel_path = path.strip_prefix(base_dir).unwrap_or(path);
-    let mut rel_str = rel_path.to_string_lossy().to_string();
-    if rel_str.is_empty() {
-        rel_str = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "entry".to_string());
-    }
+    let rel_name = if rel_path.as_os_str().is_empty() {
+        path.file_name().unwrap_or(OsStr::new("entry"))
+    } else {
+        rel_path.as_os_str()
+    };
 
     let meta = std::fs::symlink_metadata(path)?;
     let is_symlink = meta.file_type().is_symlink();
@@ -484,7 +536,7 @@ fn add_item_recursive(
         let _eguard = ArchiveEntry(entry);
 
         let c_path =
-            CString::new(rel_str.as_bytes()).map_err(|_| ArchiveError::Libarchive("Invalid entry path".into()))?;
+            CString::new(rel_name.as_bytes()).map_err(|_| ArchiveError::Libarchive("Invalid entry path".into()))?;
         archive_entry_set_pathname(entry, c_path.as_ptr());
 
         if let Ok(modified) = meta.modified()
@@ -499,11 +551,10 @@ fn add_item_recursive(
         if is_symlink {
             archive_entry_set_filetype(entry, AE_IFLNK);
             archive_entry_set_size(entry, 0);
-            if let Ok(target) = std::fs::read_link(path)
-                && let Ok(c_target) = CString::new(target.to_string_lossy().as_bytes())
-            {
-                archive_entry_set_symlink(entry, c_target.as_ptr());
-            }
+            let target = std::fs::read_link(path)?;
+            let c_target = CString::new(target.as_os_str().as_bytes())
+                .map_err(|_| ArchiveError::Libarchive("Invalid symlink target".into()))?;
+            archive_entry_set_symlink(entry, c_target.as_ptr());
             if archive_write_header(a, entry) != ARCHIVE_OK {
                 return Err(ArchiveError::Libarchive(get_archive_error(a)));
             }
@@ -516,12 +567,10 @@ fn add_item_recursive(
             }
             stats.directories_count += 1;
 
-            if let Ok(dir_entries) = std::fs::read_dir(path) {
-                for de in dir_entries.flatten() {
-                    add_item_recursive(a, &de.path(), base_dir, stats)?;
-                }
+            for de in std::fs::read_dir(path)? {
+                add_item_recursive(a, &de?.path(), base_dir, stats)?;
             }
-        } else {
+        } else if meta.is_file() {
             archive_entry_set_filetype(entry, AE_IFREG);
             archive_entry_set_size(entry, meta.len() as i64);
             if archive_write_header(a, entry) != ARCHIVE_OK {
@@ -537,12 +586,14 @@ fn add_item_recursive(
                     break;
                 }
                 let written = archive_write_data(a, buf.as_ptr() as *const c_void, n);
-                if written < 0 {
+                if written != n as isize {
                     return Err(ArchiveError::Libarchive(get_archive_error(a)));
                 }
             }
             stats.files_count += 1;
             stats.total_uncompressed_bytes += meta.len();
+        } else {
+            return Err(ArchiveError::UnsupportedFormat(format!("Special file: {}", path.display())));
         }
     }
     Ok(())
@@ -556,24 +607,34 @@ pub fn extract_archive(
 ) -> Result<ExtractStats, ArchiveError> {
     std::fs::create_dir_all(target_dir)?;
 
-    // If password provided and it's a 7z/zip/rar archive, attempt CLI fallback first
-    if let Some(pass) = password
-        && let Ok(stats) = extract_via_7z_cli(archive_path, target_dir, pass)
-    {
-        return Ok(stats);
-    }
-
-    // Try in-process libarchive extraction
-    match extract_archive_libarchive(archive_path, target_dir) {
-        Ok(stats) => Ok(stats),
-        Err(e) => {
-            // If libarchive encounters an unsupported sub-format (e.g. solid 7z), fallback to 7z CLI
-            if let Ok(stats) = extract_via_7z_cli(archive_path, target_dir, "") { Ok(stats) } else { Err(e) }
-        }
-    }
+    // Use the same validated extraction path for password-protected archives.
+    // Never retry rejected input through a CLI with different safety rules.
+    extract_archive_libarchive(archive_path, target_dir, password)
 }
 
-fn extract_archive_libarchive(archive_path: &Path, target_dir: &Path) -> Result<ExtractStats, ArchiveError> {
+fn safe_archive_path(path: &Path) -> Result<&Path, ArchiveError> {
+    let raw = path.as_os_str().as_bytes();
+    if raw.is_empty()
+        || raw.starts_with(b"\\")
+        || raw.windows(3).any(|part| part == b"..\\")
+        || path.components().any(|c| {
+            matches!(
+                c,
+                std::path::Component::ParentDir | std::path::Component::RootDir | std::path::Component::Prefix(_)
+            )
+        })
+    {
+        return Err(ArchiveError::PathTraversal(path.display().to_string()));
+    }
+    Ok(path)
+}
+
+fn extract_archive_libarchive(
+    archive_path: &Path,
+    target_dir: &Path,
+    password: Option<&str>,
+) -> Result<ExtractStats, ArchiveError> {
+    let target_dir = std::fs::canonicalize(target_dir)?;
     let t0 = Instant::now();
     let mut stats = ExtractStats::default();
 
@@ -586,6 +647,14 @@ fn extract_archive_libarchive(archive_path: &Path, target_dir: &Path) -> Result<
 
         archive_read_support_filter_all(a);
         archive_read_support_format_all(a);
+
+        if let Some(password) = password {
+            let pass =
+                CString::new(password).map_err(|_| ArchiveError::UnsupportedFormat("Password contains NUL".into()))?;
+            if archive_read_add_passphrase(a, pass.as_ptr()) != ARCHIVE_OK {
+                return Err(ArchiveError::Libarchive(get_archive_error(a)));
+            }
+        }
 
         let ext = archive_write_disk_new();
         if ext.is_null() {
@@ -600,7 +669,7 @@ fn extract_archive_libarchive(archive_path: &Path, target_dir: &Path) -> Result<
         archive_write_disk_set_options(ext, flags);
         archive_write_disk_set_standard_lookup(ext);
 
-        let c_path = CString::new(archive_path.to_string_lossy().as_bytes())
+        let c_path = CString::new(archive_path.as_os_str().as_bytes())
             .map_err(|_| ArchiveError::Libarchive("Invalid archive path".into()))?;
         if archive_read_open_filename(a, c_path.as_ptr(), 65536) != ARCHIVE_OK {
             return Err(ArchiveError::Libarchive(get_archive_error(a)));
@@ -620,40 +689,31 @@ fn extract_archive_libarchive(archive_path: &Path, target_dir: &Path) -> Result<
             if current_path_c.is_null() {
                 continue;
             }
-            let raw_path = CStr::from_ptr(current_path_c).to_string_lossy();
-            let sanitized = raw_path.trim_start_matches('/').trim_start_matches('\\');
-            if sanitized.contains("../") || sanitized.contains("..\\") {
-                return Err(ArchiveError::PathTraversal(raw_path.into_owned()));
-            }
-
-            for c in Path::new(sanitized).components() {
-                if matches!(
-                    c,
-                    std::path::Component::ParentDir | std::path::Component::RootDir | std::path::Component::Prefix(_)
-                ) {
-                    return Err(ArchiveError::PathTraversal(raw_path.into_owned()));
-                }
-            }
-
+            let raw_path = Path::new(OsStr::from_bytes(CStr::from_ptr(current_path_c).to_bytes()));
+            let sanitized = safe_archive_path(raw_path)?;
             let full_out = target_dir.join(sanitized);
-            if !full_out.starts_with(target_dir) {
-                return Err(ArchiveError::PathTraversal(raw_path.into_owned()));
+            // Validate links before archive_write_header can create them.
+            let symlink = archive_entry_symlink(entry);
+            if !symlink.is_null() {
+                safe_archive_path(Path::new(OsStr::from_bytes(CStr::from_ptr(symlink).to_bytes())))?;
             }
-            if let Some(parent) = full_out.parent() {
-                let _ = std::fs::create_dir_all(parent);
+            let hardlink = archive_entry_hardlink(entry);
+            if !hardlink.is_null() {
+                let raw_link = Path::new(OsStr::from_bytes(CStr::from_ptr(hardlink).to_bytes()));
+                let target = target_dir.join(safe_archive_path(raw_link)?);
+                let target = CString::new(target.as_os_str().as_encoded_bytes())
+                    .map_err(|_| ArchiveError::PathTraversal(raw_link.display().to_string()))?;
+                archive_entry_set_hardlink(entry, target.as_ptr());
             }
 
-            let c_full_out = CString::new(full_out.to_string_lossy().as_bytes())
+            let c_full_out = CString::new(full_out.as_os_str().as_bytes())
                 .map_err(|_| ArchiveError::Libarchive("Invalid output path".into()))?;
             archive_entry_set_pathname(entry, c_full_out.as_ptr());
 
             let write_header_res = archive_write_header(ext, entry);
             let ftype = archive_entry_filetype(entry);
             if write_header_res != ARCHIVE_OK && write_header_res != ARCHIVE_WARN {
-                // If directory already exists, proceed gracefully
-                if ftype != AE_IFDIR {
-                    return Err(ArchiveError::Libarchive(get_archive_error(ext)));
-                }
+                return Err(ArchiveError::Libarchive(get_archive_error(ext)));
             }
 
             let esize = archive_entry_size(entry);
@@ -682,25 +742,14 @@ fn extract_archive_libarchive(archive_path: &Path, target_dir: &Path) -> Result<
             } else if ftype == AE_IFDIR {
                 stats.directories_extracted += 1;
             } else if ftype == AE_IFLNK {
-                let symlink_c = archive_entry_symlink(entry);
-                if !symlink_c.is_null() {
-                    let target_str = CStr::from_ptr(symlink_c).to_string_lossy();
-                    for c in Path::new(&*target_str).components() {
-                        if matches!(
-                            c,
-                            std::path::Component::ParentDir
-                                | std::path::Component::RootDir
-                                | std::path::Component::Prefix(_)
-                        ) {
-                            return Err(ArchiveError::PathTraversal(format!("Symlink target traversal: {target_str}")));
-                        }
-                    }
-                }
                 stats.symlinks_extracted += 1;
             }
 
-            let _ = archive_write_finish_entry(ext);
+            if archive_write_finish_entry(ext) != ARCHIVE_OK {
+                return Err(ArchiveError::Libarchive(get_archive_error(ext)));
+            }
         }
+        _guard_ext.finish()?;
     }
 
     stats.elapsed_ms = t0.elapsed().as_millis() as u64;
@@ -721,7 +770,7 @@ pub fn list_archive(archive_path: &Path) -> Result<Vec<ArchiveEntryInfo>, Archiv
         archive_read_support_filter_all(a);
         archive_read_support_format_all(a);
 
-        let c_path = CString::new(archive_path.to_string_lossy().as_bytes())
+        let c_path = CString::new(archive_path.as_os_str().as_bytes())
             .map_err(|_| ArchiveError::Libarchive("Invalid archive path".into()))?;
         if archive_read_open_filename(a, c_path.as_ptr(), 65536) != ARCHIVE_OK {
             return Err(ArchiveError::Libarchive(get_archive_error(a)));
@@ -775,7 +824,7 @@ pub fn test_archive_integrity(archive_path: &Path) -> Result<usize, ArchiveError
         archive_read_support_filter_all(a);
         archive_read_support_format_all(a);
 
-        let c_path = CString::new(archive_path.to_string_lossy().as_bytes())
+        let c_path = CString::new(archive_path.as_os_str().as_bytes())
             .map_err(|_| ArchiveError::Libarchive("Invalid archive path".into()))?;
         if archive_read_open_filename(a, c_path.as_ptr(), 65536) != ARCHIVE_OK {
             return Err(ArchiveError::Libarchive(get_archive_error(a)));
@@ -841,11 +890,20 @@ fn compress_via_7z_cli(
     };
     cmd.arg(mx);
 
-    // Password & Header encryption
+    let format = options.format.or_else(|| ArchiveFormat::from_path(dest_path)).unwrap_or(ArchiveFormat::SevenZip);
+    cmd.arg(if format == ArchiveFormat::Zip { "-tzip" } else { "-t7z" });
     if let Some(ref pass) = options.password {
+        if pass.is_empty() {
+            return Err(ArchiveError::UnsupportedFormat("Password must not be empty".into()));
+        }
         cmd.arg(format!("-p{pass}"));
-        cmd.arg("-mhe=on");
+        if format == ArchiveFormat::SevenZip {
+            cmd.arg("-mhe=on");
+        } else {
+            cmd.arg("-mem=AES256");
+        }
     }
+    cmd.stdin(std::process::Stdio::null());
 
     cmd.arg("--");
     cmd.arg(dest_path);
@@ -877,39 +935,6 @@ fn compress_via_7z_cli(
         elapsed_ms: t0.elapsed().as_millis() as u64,
         ..Default::default()
     })
-}
-
-fn extract_via_7z_cli(archive_path: &Path, target_dir: &Path, password: &str) -> Result<ExtractStats, ArchiveError> {
-    let t0 = Instant::now();
-    let mut cmd = std::process::Command::new("7z");
-    cmd.arg("x");
-    cmd.arg("-y");
-    cmd.arg(format!("-o{}", target_dir.display()));
-    if !password.is_empty() {
-        cmd.arg(format!("-p{password}"));
-    } else {
-        cmd.arg("-p"); // Empty password / non-interactive
-    }
-    cmd.arg("--");
-    cmd.arg(archive_path);
-
-    let output = cmd.output().map_err(|e| {
-        if e.kind() == std::io::ErrorKind::NotFound {
-            ArchiveError::ToolNotFound("7z".into())
-        } else {
-            ArchiveError::Io(e)
-        }
-    })?;
-
-    if !output.status.success() {
-        return Err(ArchiveError::CliToolFailed {
-            tool: "7z".into(),
-            status: output.status.code().unwrap_or(-1),
-            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
-        });
-    }
-
-    Ok(ExtractStats { elapsed_ms: t0.elapsed().as_millis() as u64, ..Default::default() })
 }
 
 fn compress_via_brotli_cli(
@@ -1412,6 +1437,84 @@ mod tests {
     impl Drop for TestTempDir {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn write_test_tar(path: &Path, name: &str, kind: u8, link: &str) {
+        let mut header = [0u8; 512];
+        header[..name.len()].copy_from_slice(name.as_bytes());
+        header[100..108].copy_from_slice(b"0000644\0");
+        header[108..116].copy_from_slice(b"0000000\0");
+        header[116..124].copy_from_slice(b"0000000\0");
+        header[124..136].copy_from_slice(b"00000000000\0");
+        header[136..148].copy_from_slice(b"00000000000\0");
+        header[148..156].fill(b' ');
+        header[156] = kind;
+        header[157..157 + link.len()].copy_from_slice(link.as_bytes());
+        header[257..263].copy_from_slice(b"ustar\0");
+        header[263..265].copy_from_slice(b"00");
+        let sum: u32 = header.iter().map(|&b| u32::from(b)).sum();
+        header[148..156].copy_from_slice(format!("{sum:06o}\0 ").as_bytes());
+        let mut data = header.to_vec();
+        data.extend_from_slice(&[0; 1024]);
+        std::fs::write(path, data).unwrap();
+    }
+
+    #[test]
+    fn archive_round_trip_preserves_non_utf8_filenames() {
+        let t = TestTempDir::new("non-utf8");
+        let name = OsStr::from_bytes(b"raw-\xff.txt");
+        let source = t.path().join(name);
+        std::fs::write(&source, b"original bytes").unwrap();
+        let archive = t.path().join("bytes.tar");
+        compress_items(
+            &archive,
+            t.path(),
+            &[PathBuf::from(name)],
+            &ArchiveOptions { format: Some(ArchiveFormat::Tar), ..Default::default() },
+        )
+        .unwrap();
+        let output = t.path().join("output");
+        extract_archive(&archive, &output, None).unwrap();
+        assert_eq!(std::fs::read(output.join(name)).unwrap(), b"original bytes");
+        assert!(!output.join(name.to_string_lossy().as_ref()).exists());
+    }
+
+    #[test]
+    fn extraction_rejects_unsafe_symlink_before_creating_it() {
+        let t = TestTempDir::new("unsafe-symlink");
+        let archive = t.path().join("bad.tar");
+        write_test_tar(&archive, "bad-link", b'2', "../outside");
+        let output = t.path().join("output");
+        assert!(extract_archive(&archive, &output, None).is_err());
+        assert!(std::fs::symlink_metadata(output.join("bad-link")).is_err());
+    }
+
+    #[test]
+    fn extraction_never_retries_traversal_with_cli() {
+        let t = TestTempDir::new("traversal");
+        let archive = t.path().join("bad.tar");
+        write_test_tar(&archive, "../escaped", b'0', "");
+        let result = extract_archive(&archive, &t.path().join("output"), None);
+        assert!(matches!(result, Err(ArchiveError::PathTraversal(_))));
+        assert!(!t.path().join("escaped").exists());
+    }
+
+    #[test]
+    fn requested_encryption_never_falls_back_to_plaintext() {
+        let t = TestTempDir::new("encryption");
+        std::fs::write(t.path().join("secret.txt"), b"secret").unwrap();
+        let dest = t.path().join("secret.zip");
+        let opts = ArchiveOptions {
+            format: Some(ArchiveFormat::Zip),
+            password: Some("test-pass".into()),
+            ..Default::default()
+        };
+        if compress_items(&dest, t.path(), &[PathBuf::from("secret.txt")], &opts).is_ok() {
+            assert!(
+                test_archive_integrity(&dest).is_err(),
+                "password-protected data must not be readable without the password"
+            );
         }
     }
 

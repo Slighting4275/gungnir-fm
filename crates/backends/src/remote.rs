@@ -23,7 +23,7 @@ static TEST_MODE: AtomicBool = AtomicBool::new(false);
 /// system GVfs (network:///, sftp://, smb://) rather than inheriting GungnirVfs.
 fn gio_cmd() -> Command {
     let mut cmd = Command::new("gio");
-    cmd.env_remove("GIO_USE_VFS");
+    cmd.env_remove("GIO_USE_VFS").env("LC_ALL", "C");
     cmd
 }
 
@@ -155,13 +155,23 @@ impl VfsProvider for RemoteVfsBackend {
                 if cancel.is_cancelled() {
                     return Err(VfsError::Cancelled);
                 }
-                let chunk_size = if first { opts.first_batch } else { opts.batch };
+                let chunk_size = if first { opts.first_batch.max(1) } else { opts.batch.max(1) };
                 first = false;
                 let end = (pos + chunk_size).min(entries.len());
-                let batch = entries[pos..end].to_vec();
+                let mut batch = entries[pos..end].to_vec();
                 pos = end;
-                if sink.blocking_send(batch).is_err() {
-                    return Err(VfsError::Cancelled);
+                loop {
+                    if cancel.is_cancelled() {
+                        return Err(VfsError::Cancelled);
+                    }
+                    match sink.try_send(batch) {
+                        Ok(()) => break,
+                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => return Err(VfsError::Cancelled),
+                        Err(tokio::sync::mpsc::error::TrySendError::Full(pending)) => {
+                            batch = pending;
+                            std::thread::sleep(std::time::Duration::from_millis(5));
+                        }
+                    }
                 }
             }
 
@@ -301,7 +311,7 @@ impl VfsProvider for RemoteVfsBackend {
             let _ = ctl
                 .progress
                 .send(TransferProgress {
-                    id: 0,
+                    id: req.id,
                     bytes_done: 100,
                     bytes_total: 100,
                     files_done: req.sources.len() as u64,

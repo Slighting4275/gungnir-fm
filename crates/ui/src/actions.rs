@@ -103,7 +103,7 @@ impl CustomAction {
                     if pattern == "*/*" || pattern == "*" {
                         true
                     } else if let Some(prefix) = pattern.strip_suffix("/*") {
-                        item_mime.starts_with(prefix)
+                        item_mime.split_once('/').is_some_and(|(kind, _)| kind.eq_ignore_ascii_case(prefix))
                     } else {
                         item_mime.eq_ignore_ascii_case(pattern)
                     }
@@ -175,8 +175,12 @@ pub fn substitute_tokens(template: &str, active_dir: &str, targets: &[TargetItem
     let escaped_dir = shell_escape(active_dir);
     let first_path = targets.first().map(|t| shell_escape(&t.path.display().to_string())).unwrap_or_default();
     let all_paths = targets.iter().map(|t| shell_escape(&t.path.display().to_string())).collect::<Vec<_>>().join(" ");
-    let first_uri =
-        targets.first().map(|t| shell_escape(&t.uri)).unwrap_or_else(|| shell_escape(&format!("file://{active_dir}")));
+    let first_uri = targets.first().map(|t| shell_escape(&t.uri)).unwrap_or_else(|| {
+        let uri = core_vfs::VfsUri::from_local_path(Path::new(active_dir))
+            .map(|uri| uri.to_uri_string())
+            .unwrap_or_else(|_| format!("file://{active_dir}"));
+        shell_escape(&uri)
+    });
 
     let mut out = String::with_capacity(template.len() + 32);
     let mut chars = template.chars().peekable();
@@ -252,11 +256,11 @@ impl ActionRegistry {
                 id: "open_terminal_here".into(),
                 name: "Open Terminal Here".into(),
                 icon: "utilities-terminal".into(),
-                target: ActionTarget::Directory,
+                target: ActionTarget::Any,
                 mime_types: Vec::new(),
                 extensions: Vec::new(),
-                multiselection: false,
-                command: "alacritty --working-directory %d".into(),
+                multiselection: true,
+                command: "sh -c 't=\"${1:-$2}\"; if [ -n \"$t\" ] && [ -d \"$t\" ]; then d=\"$t\"; elif [ -n \"$t\" ] && [ -f \"$t\" ]; then d=\"$(dirname \"$t\")\"; elif [ -n \"$2\" ] && [ -d \"$2\" ]; then d=\"$2\"; else d=\".\"; fi; cd \"$d\" 2>/dev/null || exit 1; if [ -n \"$TERMINAL\" ] && command -v \"$TERMINAL\" >/dev/null 2>&1; then exec \"$TERMINAL\"; elif command -v xdg-terminal-exec >/dev/null 2>&1; then exec xdg-terminal-exec; elif command -v gnome-terminal >/dev/null 2>&1; then exec gnome-terminal --working-directory=\"$d\"; elif command -v ptyxis >/dev/null 2>&1; then exec ptyxis --working-directory=\"$d\"; elif command -v konsole >/dev/null 2>&1; then exec konsole --workdir \"$d\"; elif command -v xfce4-terminal >/dev/null 2>&1; then exec xfce4-terminal --working-directory=\"$d\"; elif command -v mate-terminal >/dev/null 2>&1; then exec mate-terminal --working-directory=\"$d\"; elif command -v foot >/dev/null 2>&1; then exec foot -D \"$d\"; elif command -v kitty >/dev/null 2>&1; then exec kitty --directory \"$d\"; elif command -v alacritty >/dev/null 2>&1; then exec alacritty --working-directory \"$d\"; elif command -v wezterm >/dev/null 2>&1; then exec wezterm start --cwd \"$d\"; elif command -v ghostty >/dev/null 2>&1; then exec ghostty --working-directory=\"$d\"; elif command -v tilix >/dev/null 2>&1; then exec tilix --working-directory=\"$d\"; elif command -v terminator >/dev/null 2>&1; then exec terminator --working-directory=\"$d\"; elif command -v lxterminal >/dev/null 2>&1; then exec lxterminal --working-directory=\"$d\"; elif command -v urxvt >/dev/null 2>&1; then exec urxvt; elif command -v rxvt >/dev/null 2>&1; then exec rxvt; elif command -v xterm >/dev/null 2>&1; then exec xterm; fi' -- %f %d".into(),
             },
             CustomAction {
                 id: "copy_path".into(),
@@ -266,7 +270,7 @@ impl ActionRegistry {
                 mime_types: Vec::new(),
                 extensions: Vec::new(),
                 multiselection: false,
-                command: "sh -c 'printf \"%s\" \"$1\" | (wl-copy 2>/dev/null || xclip -selection clipboard 2>/dev/null || true)' -- %f".into(),
+                command: "sh -c 'printf \"%s\" \"$1\" | (wl-copy 2>/dev/null || xclip -selection clipboard 2>/dev/null || xsel -b 2>/dev/null || true)' -- %f".into(),
             },
             CustomAction {
                 id: "compute_sha256".into(),
@@ -276,7 +280,7 @@ impl ActionRegistry {
                 mime_types: Vec::new(),
                 extensions: Vec::new(),
                 multiselection: false,
-                command: "sh -c 'sha256sum \"$1\" | (wl-copy 2>/dev/null || xclip -selection clipboard 2>/dev/null || true)' -- %f".into(),
+                command: "sh -c 'h=$(sha256sum \"$1\" | awk \"{print \\$1}\"); printf \"%s\" \"$h\" | (wl-copy 2>/dev/null || xclip -selection clipboard 2>/dev/null || xsel -b 2>/dev/null || true); if command -v notify-send >/dev/null 2>&1; then notify-send \"SHA-256 Checksum\" \"$h\"; fi' -- %f".into(),
             },
             CustomAction {
                 id: "verify_checksums".into(),
@@ -286,7 +290,7 @@ impl ActionRegistry {
                 mime_types: Vec::new(),
                 extensions: vec!["sha256".into(), "md5".into(), "sha512".into(), "sha1".into()],
                 multiselection: false,
-                command: "sh -c 'cd \"$(dirname \"$1\")\" && (sha256sum -c \"$1\" 2>&1 || md5sum -c \"$1\" 2>&1)' -- %f".into(),
+                command: "sh -c 'res=$(cd \"$(dirname \"$1\")\" && (sha256sum -c \"$1\" 2>&1 || md5sum -c \"$1\" 2>&1)); printf \"%s\\n\" \"$res\" | (wl-copy 2>/dev/null || xclip -selection clipboard 2>/dev/null || xsel -b 2>/dev/null || true); if command -v notify-send >/dev/null 2>&1; then notify-send \"Checksum Verification\" \"$res\"; fi' -- %f".into(),
             },
         ]
     }
@@ -300,7 +304,7 @@ impl ActionRegistry {
     /// Find a specific action by ID.
     #[must_use]
     pub fn get_action(&self, id: &str) -> Option<&CustomAction> {
-        self.actions.iter().find(|a| a.id == id)
+        self.actions.iter().find(|a| a.id == id || (id == "terminal" && a.id == "open_terminal_here"))
     }
 
     /// Number of registered actions.

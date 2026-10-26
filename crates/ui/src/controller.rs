@@ -204,6 +204,11 @@ pub enum Event {
         success: bool,
         message: String,
     },
+    MimeIndex(Box<crate::desktop::DesktopIndex>),
+    ClipboardPaste {
+        dest: VfsUri,
+        files: Result<Option<crate::clipboard::Files>, ()>,
+    },
     CustomAppSelected(String),
     Tick,
 }
@@ -306,7 +311,13 @@ impl Tab {
 
     /// The selection as entries, or the cursor row when nothing is selected.
     fn targets(&self) -> Vec<FileEntry> {
-        let sel: Vec<FileEntry> = self.entries.iter().filter(|e| self.selected.contains(&e.name)).cloned().collect();
+        let sel: Vec<FileEntry> = self
+            .visible
+            .iter()
+            .filter_map(|&i| self.entries.get(i as usize))
+            .filter(|e| self.selected.contains(&e.name))
+            .cloned()
+            .collect();
         if sel.is_empty() { self.entry_at(self.cursor).cloned().into_iter().collect() } else { sel }
     }
 }
@@ -327,6 +338,7 @@ impl Pane {
 }
 
 struct Transfer {
+    kind: TransferKind,
     title: String,
     dest: VfsUri,
     sources: Vec<VfsUri>,
@@ -628,11 +640,13 @@ pub struct Controller {
     tree_rows: Vec<String>,
     /// Ctrl+C / Ctrl+X: the items and whether they are cut (moved on paste).
     clipboard: Option<(Vec<VfsUri>, bool)>,
+    clipboard_service: Option<mpsc::Sender<crate::clipboard::Request>>,
     /// udisks2 over the system bus (None until connected, or without udisks).
     bus: Option<zbus::Connection>,
     devices: Vec<crate::drives::Device>,
     session_saver: Option<crate::session::SessionSaver>,
     actions: crate::actions::ActionRegistry,
+    mime_index: crate::desktop::DesktopIndex,
     terminal_open: bool,
     terminal_cwd: PathBuf,
     terminal_output: String,
@@ -778,10 +792,12 @@ impl Controller {
             tree_task: None,
             tree_rows: Vec::new(),
             clipboard: None,
+            clipboard_service: None,
             bus: None,
             devices: Vec::new(),
             session_saver: None,
             actions,
+            mime_index: crate::desktop::DesktopIndex::default(),
             terminal_open: false,
             terminal_cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
             terminal_output: String::from("Gungnir FM Embedded Terminal (F4)\nType shell commands and press Enter\n"),
@@ -813,6 +829,12 @@ impl Controller {
     }
 
     fn start(&mut self) {
+        self.clipboard_service = Some(crate::clipboard::spawn(self.tx.clone()));
+        let tx = self.tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let index = crate::desktop::DesktopIndex::load(&crate::desktop::Dirs::from_env());
+            let _ = tx.blocking_send(Msg::Ev(Event::MimeIndex(Box::new(index))));
+        });
         if let Some(ref path) = self.cfg.session_file {
             let (saver, _handle) = crate::session::SessionSaver::spawn(path.clone());
             self.session_saver = Some(saver);
@@ -875,22 +897,26 @@ impl Controller {
                 }
             }
         });
-        // Package update poller.
-        let format = self.package_format;
-        let tx = self.tx.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(500)).await;
-            let check = crate::updater::check_for_update(format).await;
-            let _ = tx.send(Msg::Ev(Event::UpdateCheckResult(check))).await;
-
-            loop {
-                tokio::time::sleep(Duration::from_secs(3600)).await;
+        // Unit-test controller harnesses must not perform real network checks.
+        #[cfg(not(test))]
+        {
+            // Package update poller.
+            let format = self.package_format;
+            let tx = self.tx.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(500)).await;
                 let check = crate::updater::check_for_update(format).await;
-                if tx.send(Msg::Ev(Event::UpdateCheckResult(check))).await.is_err() {
-                    break;
+                let _ = tx.send(Msg::Ev(Event::UpdateCheckResult(check))).await;
+
+                loop {
+                    tokio::time::sleep(Duration::from_secs(3600)).await;
+                    let check = crate::updater::check_for_update(format).await;
+                    if tx.send(Msg::Ev(Event::UpdateCheckResult(check))).await.is_err() {
+                        break;
+                    }
                 }
-            }
-        });
+            });
+        }
     }
 
     // ---- view pushes ------------------------------------------------------------------
@@ -927,6 +953,9 @@ impl Controller {
             can_back: !t.back.is_empty(),
             can_forward: !t.forward.is_empty(),
             cursor: i32::try_from(t.cursor).unwrap_or(0),
+            is_trash: t.location.scheme() == Scheme::Trash,
+            selected_count: i32::try_from(t.selected.len()).unwrap_or(0),
+            has_clipboard: self.clipboard.is_some() || crate::clipboard::available(),
         };
         self.ui.send(Update::Pane { pane: p, view });
         self.push_custom_actions(p);
@@ -935,42 +964,93 @@ impl Controller {
     fn push_custom_actions(&self, p: usize) {
         let t = self.panes[p].tab();
         let active_dir = t.location.to_local_path().unwrap_or_default();
+        let idx = &self.mime_index;
         let targets: Vec<crate::actions::TargetItem> = t
             .targets()
             .into_iter()
             .map(|e| {
                 let path = e.uri.to_local_path().unwrap_or_else(|| PathBuf::from(e.uri.path()));
+                let mime = Some(idx.mime_for(&e.name, e.is_navigable()));
                 crate::actions::TargetItem {
                     name: e.name.clone(),
                     path,
                     uri: e.uri.to_uri_string(),
                     is_dir: e.is_navigable(),
-                    mime: None,
+                    mime,
                 }
             })
             .collect();
         let matching = self.actions.matching_actions(&active_dir, &targets);
         let items: Vec<crate::CustomActionItem> = matching
             .into_iter()
+            .filter(|a| a.id != "open_terminal_here" && a.id != "terminal")
             .map(|a| crate::CustomActionItem { id: a.id.clone().into(), title: a.name.clone().into() })
             .collect();
         self.ui.send(Update::CustomActions { pane: p, actions: items });
     }
 
+    fn launch_terminal_at(&mut self, target_dir: PathBuf) {
+        if let Some(term_name) = launch_terminal_in(&target_dir) {
+            self.say(format!("Opened {term_name} in {}", target_dir.display()), false);
+        } else {
+            // Fallback: open embedded terminal drawer in target_dir
+            self.terminal_open = true;
+            self.terminal_cwd = target_dir.clone();
+            self.push_terminal();
+            self.say(format!("Opened terminal drawer in {}", target_dir.display()), false);
+        }
+    }
+
+    fn open_terminal_here(&mut self, pane: usize) {
+        let t = self.panes[pane].tab();
+        let targets = t.targets();
+        let target_dir = if let Some(first) = targets.first() {
+            if first.is_navigable() {
+                first.uri.to_local_path().unwrap_or_else(|| {
+                    t.location
+                        .to_local_path()
+                        .unwrap_or_else(|| self.cfg.home.to_local_path().unwrap_or_else(|| PathBuf::from(".")))
+                })
+            } else if let Some(local_path) = first.uri.to_local_path() {
+                local_path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| {
+                    t.location
+                        .to_local_path()
+                        .unwrap_or_else(|| self.cfg.home.to_local_path().unwrap_or_else(|| PathBuf::from(".")))
+                })
+            } else {
+                t.location
+                    .to_local_path()
+                    .unwrap_or_else(|| self.cfg.home.to_local_path().unwrap_or_else(|| PathBuf::from(".")))
+            }
+        } else {
+            t.location
+                .to_local_path()
+                .unwrap_or_else(|| self.cfg.home.to_local_path().unwrap_or_else(|| PathBuf::from(".")))
+        };
+
+        self.launch_terminal_at(target_dir);
+    }
+
     fn run_custom_action(&mut self, pane: usize, id: &str) {
+        if id == "open_terminal_here" || id == "terminal" {
+            self.open_terminal_here(pane);
+            return;
+        }
         let t = self.panes[pane].tab();
         let active_dir = t.location.to_local_path().unwrap_or_default();
+        let idx = &self.mime_index;
         let targets: Vec<crate::actions::TargetItem> = t
             .targets()
             .into_iter()
             .map(|e| {
                 let path = e.uri.to_local_path().unwrap_or_else(|| PathBuf::from(e.uri.path()));
+                let mime = Some(idx.mime_for(&e.name, e.is_navigable()));
                 crate::actions::TargetItem {
                     name: e.name.clone(),
                     path,
                     uri: e.uri.to_uri_string(),
                     is_dir: e.is_navigable(),
-                    mime: None,
+                    mime,
                 }
             })
             .collect();
@@ -1414,7 +1494,7 @@ impl Controller {
         view_gen: u64,
         order: Option<Vec<u32>>,
         visible: Vec<u32>,
-        rows: Vec<RowItem>,
+        mut rows: Vec<RowItem>,
     ) {
         let Some(ti) = self.tab_index(pane, tab) else { return };
         let active = self.is_active_tab(pane, tab);
@@ -1428,6 +1508,9 @@ impl Controller {
             t.order = o;
         }
         t.visible = visible;
+        let visible_names: HashSet<&str> =
+            t.visible.iter().filter_map(|&i| t.entries.get(i as usize)).map(|e| e.name.as_str()).collect();
+        t.selected.retain(|name| visible_names.contains(name.as_str()));
         let want = t.pending_select.take().or(cursor_entry);
         if let Some(name) = want
             && let Some(pos) = t.visible.iter().position(|&i| t.entries.get(i as usize).is_some_and(|e| e.name == name))
@@ -1436,6 +1519,9 @@ impl Controller {
         }
         t.cursor = t.cursor.min(t.visible.len().saturating_sub(1));
         if active {
+            for row in &mut rows {
+                row.selected = t.selected.contains(row.name.as_str());
+            }
             self.ui.send(Update::Rows { pane, rows });
         }
         self.push_pane(pane);
@@ -1593,6 +1679,7 @@ impl Controller {
         if !changes.is_empty() {
             self.ui.send(Update::Selection { pane, changes });
         }
+        self.push_pane(pane);
         self.push_status();
     }
 
@@ -1898,13 +1985,8 @@ impl Controller {
         // All conflicts resolved!
         self.ui.send(Update::CloseDialog);
 
-        let mut final_sources = Vec::new();
-        let mut replace_any = false;
-        let dest_path = match dest.scheme() {
-            Scheme::File => dest.to_local_path(),
-            Scheme::Gungnir if dest.authority().is_empty() => Some(PathBuf::from(dest.path())),
-            _ => None,
-        };
+        let mut copies = Vec::new();
+        let mut replacements = Vec::new();
 
         for s in sources {
             if let Some((_, act)) = resolutions.iter().find(|(src_uri, _)| src_uri == &s) {
@@ -1913,39 +1995,32 @@ impl Controller {
                         continue;
                     }
                     ConflictAction::Replace => {
-                        if let (Some(dp), Some(name)) = (&dest_path, s.file_name()) {
-                            let _ = std::fs::remove_file(dp.join(name));
-                            let _ = std::fs::remove_dir_all(dp.join(name));
-                        }
-                        replace_any = true;
-                        final_sources.push(s);
+                        replacements.push(s);
                     }
                     ConflictAction::ReplaceIfNewer => {
                         let is_newer = conflicts.iter().find(|c| c.src == s).map(|c| c.src_is_newer).unwrap_or(false);
                         if is_newer {
-                            if let (Some(dp), Some(name)) = (&dest_path, s.file_name()) {
-                                let _ = std::fs::remove_file(dp.join(name));
-                                let _ = std::fs::remove_dir_all(dp.join(name));
-                            }
-                            replace_any = true;
-                            final_sources.push(s);
+                            replacements.push(s);
                         }
                     }
                     ConflictAction::AutoRename => {
-                        final_sources.push(s);
+                        copies.push(s);
                     }
                 }
             } else {
-                final_sources.push(s);
+                copies.push(s);
             }
         }
 
-        if final_sources.is_empty() {
+        if copies.is_empty() && replacements.is_empty() {
             self.say("Transfer skipped (all conflicting files skipped)", false);
             return;
         }
 
-        self.execute_transfer(kind, final_sources, dest, replace_any);
+        // Auto-rename and replacement need separate requests: overwrite is a
+        // request-wide flag. Never delete a destination in the controller.
+        self.execute_transfer(kind, copies, dest.clone(), false);
+        self.execute_transfer(kind, replacements, dest, true);
     }
 
     fn execute_transfer(&mut self, kind: TransferKind, sources: Vec<VfsUri>, dest: VfsUri, overwrite: bool) {
@@ -1978,6 +2053,7 @@ impl Controller {
         self.transfers.push((
             id,
             Transfer {
+                kind,
                 title,
                 dest: dest.clone(),
                 sources: sources.clone(),
@@ -2037,6 +2113,51 @@ impl Controller {
                 let c = self.panes[p].tab().cursor;
                 self.activate(p, c);
             }
+            "new-window" | "open-in-new-window" => {
+                let location = if name == "open-in-new-window" {
+                    self.panes[p]
+                        .tab()
+                        .targets()
+                        .into_iter()
+                        .find(FileEntry::is_navigable)
+                        .map(|e| e.uri)
+                        .unwrap_or_else(|| self.panes[p].tab().location.clone())
+                } else {
+                    self.panes[p].tab().location.clone()
+                };
+                let tx = self.tx.clone();
+                tokio::task::spawn_blocking(move || {
+                    let result = std::env::current_exe()
+                        .and_then(|exe| {
+                            std::process::Command::new(exe)
+                                .arg(location.to_uri_string())
+                                .stdin(std::process::Stdio::null())
+                                .stdout(std::process::Stdio::null())
+                                .stderr(std::process::Stdio::null())
+                                .spawn()
+                        })
+                        .map(|_| "Opened new window".to_owned())
+                        .map_err(|e| format!("Could not open window: {e}"));
+                    let _ = tx.blocking_send(Msg::Ev(Event::Op { result, reload: Vec::new(), select: None }));
+                });
+            }
+            "duplicate" => {
+                let t = self.panes[p].tab();
+                let sources = t.targets().into_iter().map(|e| e.uri).collect();
+                self.execute_transfer(TransferKind::Copy, sources, t.location.clone(), false);
+            }
+            "open-in-other-pane" => {
+                if let Some(folder) = self.panes[p].tab().targets().into_iter().find(FileEntry::is_navigable) {
+                    self.dual = true;
+                    self.push_flags();
+                    self.navigate_to(1 - p, folder.uri);
+                }
+            }
+            "new-tab" => self.new_tab(p, None),
+            "close-tab" => self.close_tab(p, self.panes[p].active),
+            "next-tab" => self.cycle_tab(p, 1),
+            "prev-tab" => self.cycle_tab(p, -1),
+            "open-terminal-here" => self.open_terminal_here(p),
             "open-with" => self.open_with(p),
             "open-in-tab" => {
                 if let Some(e) = self.panes[p].tab().targets().into_iter().find(FileEntry::is_navigable) {
@@ -2051,6 +2172,13 @@ impl Controller {
                 let cut = name == "cut";
                 let n = uris.len();
                 self.clipboard = Some((uris, cut));
+                if let (Some(service), Some(files)) = (&self.clipboard_service, self.clipboard.clone()) {
+                    let _ = service.try_send(crate::clipboard::Request::Write(files));
+                }
+                self.push_pane(0);
+                if self.panes.len() > 1 {
+                    self.push_pane(1);
+                }
                 self.say(
                     format!(
                         "{} {n} item{} (Ctrl+V to paste)",
@@ -2060,16 +2188,19 @@ impl Controller {
                     false,
                 );
             }
-            "paste" => {
-                let Some((uris, cut)) = self.clipboard.clone() else {
-                    self.say("Nothing to paste", true);
-                    return;
+            "paste" | "paste-into-folder" => {
+                let dest = if name == "paste-into-folder" {
+                    let targets = self.panes[p].tab().targets();
+                    let Some(folder) = targets.first().filter(|e| e.is_navigable()) else { return };
+                    folder.uri.clone()
+                } else {
+                    self.panes[p].tab().location.clone()
                 };
-                if cut {
-                    self.clipboard = None; // a cut is pasted once
+                if let Some(service) = &self.clipboard_service
+                    && service.try_send(crate::clipboard::Request::Read(dest)).is_err()
+                {
+                    self.say("Clipboard is busy; try again", true);
                 }
-                let dest = self.panes[p].tab().location.clone();
-                self.start_transfer(if cut { TransferKind::Move } else { TransferKind::Copy }, uris, dest);
             }
             "copy-to-other" => self.transfer(TransferKind::Copy),
             "move-to-other" => self.transfer(TransferKind::Move),
@@ -2079,11 +2210,20 @@ impl Controller {
                     self.run_command("batch-rename");
                 } else {
                     let t = self.panes[p].tab();
-                    if let Some(e) = t.entry_at(t.cursor) {
-                        self.renaming = Some((p, t.cursor, e.uri.clone()));
+                    let target_entry = targets.first();
+                    let target_idx = target_entry
+                        .and_then(|target| {
+                            t.visible
+                                .iter()
+                                .position(|&ei| t.entries.get(ei as usize).is_some_and(|e| e.name == target.name))
+                        })
+                        .unwrap_or(t.cursor);
+
+                    if let Some(e) = t.entry_at(target_idx) {
+                        self.renaming = Some((p, target_idx, e.uri.clone()));
                         self.ui.send(Update::Rename {
                             pane: i32::try_from(p).unwrap_or(0),
-                            index: i32::try_from(t.cursor).unwrap_or(0),
+                            index: i32::try_from(target_idx).unwrap_or(0),
                         });
                     }
                 }
@@ -2228,7 +2368,8 @@ impl Controller {
             }
             "check-hash" => {
                 let t = self.panes[p].tab();
-                let Some(e) = t.entry_at(t.cursor) else { return };
+                let targets = t.targets();
+                let Some(e) = targets.first() else { return };
                 let Some(local_path) = e.uri.to_local_path() else {
                     self.say("Checksum verification is supported on local files", true);
                     return;
@@ -2542,8 +2683,8 @@ impl Controller {
                     return;
                 }
                 let t = self.panes[p].tab();
-                let Some(&idx) = t.visible.get(t.cursor) else { return };
-                let Some(e) = t.entries.get(idx as usize) else { return };
+                let targets = t.targets();
+                let Some(e) = targets.first() else { return };
                 let cat = format::category(e);
                 let ext = format::extension(&e.name);
                 let uri_str = e.uri.to_uri_string();
@@ -2602,7 +2743,8 @@ impl Controller {
             }
             "inspect" => {
                 let t = self.panes[p].tab();
-                let uri = t.entry_at(t.cursor).map_or_else(|| t.location.clone(), |e| e.uri.clone());
+                let targets = t.targets();
+                let uri = targets.first().map_or_else(|| t.location.clone(), |e| e.uri.clone());
                 let Ok(provider) = self.registry.resolve(&uri) else { return };
                 let tx = self.tx.clone();
                 let title = format!("Gungnir VFS Inspect · {}", provider.kind().badge());
@@ -2611,6 +2753,26 @@ impl Controller {
                     let _ = tx.send(Msg::Ev(Event::Info { title, kind: DialogKind::Inspect, result })).await;
                 });
             }
+            "inspect-folder" => {
+                let t = self.panes[p].tab();
+                let uri = t.location.clone();
+                let Ok(provider) = self.registry.resolve(&uri) else { return };
+                let tx = self.tx.clone();
+                let title = format!("Gungnir VFS Inspect · {}", provider.kind().badge());
+                tokio::spawn(async move {
+                    let result = provider.inspect(&uri).await;
+                    let _ = tx.send(Msg::Ev(Event::Info { title, kind: DialogKind::Inspect, result })).await;
+                });
+            }
+            "open-terminal-folder" => {
+                let t = self.panes[p].tab();
+                let target_dir = t
+                    .location
+                    .to_local_path()
+                    .unwrap_or_else(|| self.cfg.home.to_local_path().unwrap_or_else(|| PathBuf::from(".")));
+                self.launch_terminal_at(target_dir);
+            }
+            "folder-properties" => self.folder_properties(p),
             "toggle-hidden" => {
                 self.show_hidden = !self.show_hidden;
                 self.push_flags();
@@ -2644,10 +2806,15 @@ impl Controller {
                 self.push_flags();
                 self.trigger_save_session();
             }
-            "select-all" => {
+            "select-all" | "invert-selection" => {
                 let t = self.panes[p].tab();
-                let all: HashSet<String> =
-                    t.visible.iter().filter_map(|&i| t.entries.get(i as usize)).map(|e| e.name.clone()).collect();
+                let all: HashSet<String> = t
+                    .visible
+                    .iter()
+                    .filter_map(|&i| t.entries.get(i as usize))
+                    .filter(|e| name == "select-all" || !t.selected.contains(&e.name))
+                    .map(|e| e.name.clone())
+                    .collect();
                 self.set_selection(p, all);
             }
             "clear-selection" => {
@@ -2840,6 +3007,30 @@ impl Controller {
                 ..Default::default()
             }));
         }
+    }
+
+    fn folder_properties(&mut self, pane: usize) {
+        let t = self.panes[pane].tab();
+        let rows = vec![
+            ("Location".to_owned(), t.location.display()),
+            ("Items".to_owned(), rows::thousands(t.entries.len())),
+            (
+                "Free".to_owned(),
+                t.volume
+                    .map(|v| format!("{} of {}", format::size(v.free_bytes), format::size(v.total_bytes)))
+                    .unwrap_or_default(),
+            ),
+        ];
+        self.dialog = Some(PendingDialog::Info);
+        self.ui.send(Update::Dialog(DialogView {
+            kind: DialogKind::Properties,
+            title: format!("Properties · {}", t.location.display()),
+            message: String::new(),
+            rows,
+            input: String::new(),
+            preview_path: None,
+            ..Default::default()
+        }));
     }
 
     fn refresh_properties_dialog(&mut self) {
@@ -3159,15 +3350,15 @@ impl Controller {
             Command::RowActivated { pane, index } => self.activate(pane, index),
             Command::RowContext { pane, index } => {
                 self.focus_pane(pane);
+                self.panes[pane].tab_mut().cursor = index;
                 let t = self.panes[pane].tab();
                 if let Some(e) = t.entry_at(index)
                     && !t.selected.contains(&e.name)
                 {
                     let name = e.name.clone();
-                    self.panes[pane].tab_mut().cursor = index;
                     self.set_selection(pane, [name].into());
-                    self.push_pane(pane);
                 }
+                self.push_pane(pane);
             }
             Command::MoveCursor { pane, delta, extend } => self.move_cursor(pane, delta, extend),
             Command::SortBy { pane, column } => {
@@ -3524,7 +3715,7 @@ impl Controller {
                     self.say(format!("Updated permissions: {:o}", mode & 0o777), false);
                     self.refresh_properties_dialog();
                     let loc = self.panes[p].tab().location.clone();
-                    self.load(p, loc, false);
+                    self.load(p, loc, true);
                 }
             }
         }
@@ -3673,7 +3864,7 @@ impl Controller {
                                     if matches {
                                         let display_line = line.trim();
                                         let line_preview = if display_line.len() > 60 {
-                                            format!("{}...", &display_line[..60])
+                                            format!("{}...", &display_line[..display_line.floor_char_boundary(60)])
                                         } else {
                                             display_line.to_string()
                                         };
@@ -3718,7 +3909,7 @@ impl Controller {
             let proposed = if find_pattern.is_empty() && !replace_pattern.is_empty() {
                 format!("{replace_pattern}{old_name}")
             } else if is_numbering {
-                let num_str = format!("{:02}", start_num + idx);
+                let num_str = format!("{:02}", start_num.saturating_add(idx));
                 find_pattern.replace('#', &num_str)
             } else if !find_pattern.is_empty() {
                 old_name.replace(find_pattern, replace_pattern)
@@ -3753,22 +3944,47 @@ impl Controller {
 
         let tx = self.tx.clone();
         tokio::task::spawn(async move {
-            let mut count = 0;
-            for (uri, new_name) in new_names {
-                if uri.file_name() != Some(new_name.as_str())
-                    && !new_name.trim().is_empty()
-                    && provider.rename(&uri, &new_name).await.is_ok()
-                {
-                    count += 1;
+            let result = async {
+                // Validate every target before changing any file. Never turn a
+                // collision or backend failure into a misleading success message.
+                let mut destinations = HashSet::new();
+                let mut planned = Vec::new();
+                for (uri, new_name) in new_names {
+                    let target = uri.parent().ok_or(VfsError::BadRequest)?.join(&new_name)?;
+                    if !destinations.insert(target.clone()) {
+                        return Err(VfsError::AlreadyExists(target.display()));
+                    }
+                    if target == uri {
+                        continue;
+                    }
+                    match provider.stat(&target).await {
+                        Ok(_) => return Err(VfsError::AlreadyExists(target.display())),
+                        Err(VfsError::NotFound(_)) => {}
+                        Err(e) => return Err(e),
+                    }
+                    planned.push((uri, new_name));
                 }
+                let mut renamed: Vec<(VfsUri, String)> = Vec::new();
+                for (uri, new_name) in planned {
+                    match provider.rename(&uri, &new_name).await {
+                        Ok(target) => renamed.push((target, uri.file_name().ok_or(VfsError::BadRequest)?.to_owned())),
+                        Err(e) => {
+                            for (target, original_name) in renamed.iter().rev() {
+                                if let Err(rollback) = provider.rename(target, original_name).await {
+                                    return Err(VfsError::Transport(format!(
+                                        "Rename failed: {e}; rollback failed: {rollback}"
+                                    )));
+                                }
+                            }
+                            return Err(e);
+                        }
+                    }
+                }
+                Ok(format!("Successfully renamed {} files", renamed.len()))
             }
-            let _ = tx
-                .send(Msg::Ev(Event::Op {
-                    result: Ok(format!("Successfully renamed {count} files")),
-                    reload: vec![loc],
-                    select: None,
-                }))
-                .await;
+            .await
+            .map_err(|e: VfsError| e.to_string());
+            let _ = tx.send(Msg::Ev(Event::Op { result, reload: vec![loc], select: None })).await;
         });
     }
 
@@ -4271,6 +4487,22 @@ impl Controller {
                 }
             }
             Event::TransferEnded { id, result } => {
+                if result.is_ok()
+                    && let Some((_, transfer)) = self.transfers.iter().find(|(i, _)| *i == id)
+                    && transfer.kind == TransferKind::Move
+                {
+                    if let Some(service) = &self.clipboard_service {
+                        let _ = service.try_send(crate::clipboard::Request::Moved(transfer.sources.clone()));
+                    }
+                    if let Some((pending, true)) = &mut self.clipboard {
+                        pending.retain(|uri| !transfer.sources.contains(uri));
+                        if pending.is_empty() {
+                            self.clipboard = None;
+                        }
+                    }
+                    self.push_pane(0);
+                    self.push_pane(1);
+                }
                 let Some((_, t)) = self.transfers.iter_mut().find(|(i, _)| *i == id) else { return };
                 t.took.get_or_insert_with(|| t.started.elapsed());
                 t.progress.state = match &result {
@@ -4348,10 +4580,22 @@ impl Controller {
                     ..Default::default()
                 }));
             }
+            Event::MimeIndex(index) => {
+                self.mime_index = *index;
+                self.push_custom_actions(0);
+                self.push_custom_actions(1);
+            }
+            Event::ClipboardPaste { dest, files } => {
+                if let Some((uris, cut)) = files.unwrap_or_else(|()| self.clipboard.clone()) {
+                    self.start_transfer(if cut { TransferKind::Move } else { TransferKind::Copy }, uris, dest);
+                } else {
+                    self.say("Nothing to paste", true);
+                }
+            }
             Event::TerminalOutput { text, reload_loc } => {
                 self.terminal_output.push_str(&text);
                 if self.terminal_output.len() > 30_000 {
-                    let cut = self.terminal_output.len() - 25_000;
+                    let cut = self.terminal_output.ceil_char_boundary(self.terminal_output.len() - 25_000);
                     self.terminal_output.drain(..cut);
                 }
                 self.push_terminal();
@@ -4428,4 +4672,203 @@ fn build_places(home: &VfsUri, bookmarks: Option<&std::path::Path>) -> (Vec<Plac
         .map(|s| s.lines().filter_map(|l| VfsUri::parse(l).ok()).collect())
         .unwrap_or_default();
     (out, marks)
+}
+
+/// Launch an external terminal emulator in `dir` with fallback detection.
+fn launch_terminal_in(dir: &Path) -> Option<&'static str> {
+    #[cfg(unix)]
+    use std::os::unix::process::CommandExt;
+
+    let target_dir = if dir.is_dir() {
+        dir.to_path_buf()
+    } else if let Some(parent) = dir.parent().filter(|p| p.is_dir()) {
+        parent.to_path_buf()
+    } else {
+        PathBuf::from(".")
+    };
+
+    let try_spawn = |mut cmd: std::process::Command, name: &'static str| -> Option<&'static str> {
+        cmd.current_dir(&target_dir);
+        cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+        #[cfg(unix)]
+        cmd.process_group(0);
+        match cmd.spawn() {
+            Ok(mut child) => {
+                let _ = std::thread::Builder::new().stack_size(64 * 1024).spawn(move || {
+                    let _ = child.wait();
+                });
+                Some(name)
+            }
+            Err(_) => None,
+        }
+    };
+
+    let dir_str = target_dir.display().to_string();
+
+    // 1. $TERMINAL environment variable if set
+    if let Ok(term) = std::env::var("TERMINAL") {
+        let t = term.trim();
+        if !t.is_empty() {
+            let mut cmd = std::process::Command::new(t);
+            cmd.current_dir(dir);
+            if let Some(n) = try_spawn(cmd, "custom $TERMINAL") {
+                return Some(n);
+            }
+        }
+    }
+
+    // 2. xdg-terminal-exec (freedesktop terminal spec)
+    {
+        let mut cmd = std::process::Command::new("xdg-terminal-exec");
+        cmd.current_dir(dir);
+        if let Some(n) = try_spawn(cmd, "xdg-terminal-exec") {
+            return Some(n);
+        }
+    }
+
+    // 3. GNOME Terminal
+    {
+        let mut cmd = std::process::Command::new("gnome-terminal");
+        cmd.arg(format!("--working-directory={dir_str}"));
+        if let Some(n) = try_spawn(cmd, "GNOME Terminal") {
+            return Some(n);
+        }
+    }
+
+    // 4. Ptyxis
+    {
+        let mut cmd = std::process::Command::new("ptyxis");
+        cmd.arg(format!("--working-directory={dir_str}"));
+        if let Some(n) = try_spawn(cmd, "Ptyxis") {
+            return Some(n);
+        }
+    }
+
+    // 5. Konsole
+    {
+        let mut cmd = std::process::Command::new("konsole");
+        cmd.args(["--workdir", &dir_str]);
+        if let Some(n) = try_spawn(cmd, "Konsole") {
+            return Some(n);
+        }
+    }
+
+    // 6. XFCE4 Terminal
+    {
+        let mut cmd = std::process::Command::new("xfce4-terminal");
+        cmd.arg(format!("--working-directory={dir_str}"));
+        if let Some(n) = try_spawn(cmd, "XFCE Terminal") {
+            return Some(n);
+        }
+    }
+
+    // 7. MATE Terminal
+    {
+        let mut cmd = std::process::Command::new("mate-terminal");
+        cmd.arg(format!("--working-directory={dir_str}"));
+        if let Some(n) = try_spawn(cmd, "MATE Terminal") {
+            return Some(n);
+        }
+    }
+
+    // 8. Foot
+    {
+        let mut cmd = std::process::Command::new("foot");
+        cmd.args(["-D", &dir_str]);
+        if let Some(n) = try_spawn(cmd, "Foot") {
+            return Some(n);
+        }
+    }
+
+    // 9. Kitty
+    {
+        let mut cmd = std::process::Command::new("kitty");
+        cmd.args(["--directory", &dir_str]);
+        if let Some(n) = try_spawn(cmd, "Kitty") {
+            return Some(n);
+        }
+    }
+
+    // 10. Alacritty
+    {
+        let mut cmd = std::process::Command::new("alacritty");
+        cmd.args(["--working-directory", &dir_str]);
+        if let Some(n) = try_spawn(cmd, "Alacritty") {
+            return Some(n);
+        }
+    }
+
+    // 11. WezTerm
+    {
+        let mut cmd = std::process::Command::new("wezterm");
+        cmd.args(["start", "--cwd", &dir_str]);
+        if let Some(n) = try_spawn(cmd, "WezTerm") {
+            return Some(n);
+        }
+    }
+
+    // 12. Ghostty
+    {
+        let mut cmd = std::process::Command::new("ghostty");
+        cmd.arg(format!("--working-directory={dir_str}"));
+        if let Some(n) = try_spawn(cmd, "Ghostty") {
+            return Some(n);
+        }
+    }
+
+    // 13. Tilix
+    {
+        let mut cmd = std::process::Command::new("tilix");
+        cmd.arg(format!("--working-directory={dir_str}"));
+        if let Some(n) = try_spawn(cmd, "Tilix") {
+            return Some(n);
+        }
+    }
+
+    // 14. Terminator
+    {
+        let mut cmd = std::process::Command::new("terminator");
+        cmd.args(["--working-directory", &dir_str]);
+        if let Some(n) = try_spawn(cmd, "Terminator") {
+            return Some(n);
+        }
+    }
+
+    // 15. LXTerminal
+    {
+        let mut cmd = std::process::Command::new("lxterminal");
+        cmd.arg(format!("--working-directory={dir_str}"));
+        if let Some(n) = try_spawn(cmd, "LXTerminal") {
+            return Some(n);
+        }
+    }
+
+    // 16. rxvt-unicode / urxvt
+    {
+        let mut cmd = std::process::Command::new("urxvt");
+        cmd.current_dir(dir);
+        if let Some(n) = try_spawn(cmd, "urxvt") {
+            return Some(n);
+        }
+    }
+
+    // 17. rxvt
+    {
+        let mut cmd = std::process::Command::new("rxvt");
+        cmd.current_dir(dir);
+        if let Some(n) = try_spawn(cmd, "rxvt") {
+            return Some(n);
+        }
+    }
+
+    // 18. XTerm
+    {
+        let mut cmd = std::process::Command::new("xterm");
+        cmd.current_dir(dir);
+        if let Some(n) = try_spawn(cmd, "XTerm") {
+            return Some(n);
+        }
+    }
+
+    None
 }
