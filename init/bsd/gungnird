@@ -1,0 +1,24 @@
+#!/bin/sh
+#
+# PROVIDE: gungnird
+# REQUIRE: LOGIN cleanvar
+# KEYWORD: shutdown
+#
+# Add the following lines to /etc/rc.conf to enable gungnird:
+# gungnird_enable="YES"
+# gungnird_flags="--idle-timeout 0"
+#
+
+. /etc/rc.subr
+
+name="gungnird"
+rcvar="gungnird_enable"
+
+command="/usr/local/bin/gungnird"
+pidfile="/var/run/${name}.pid"
+command_args="--idle-timeout 0"
+
+load_rc_config $name
+: ${gungnird_enable:="NO"}
+
+run_rc_command "$1"

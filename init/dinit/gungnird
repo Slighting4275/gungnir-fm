@@ -1,0 +1,7 @@
+# dinit service configuration for Gungnir Virtual Filesystem Daemon (gungnird)
+# Compatible with Chimera Linux, Artix Linux, and dinit supervisors
+type = process
+command = /usr/local/bin/gungnird --idle-timeout 0
+restart = true
+smooth-recovery = true
+logfile = /var/log/dinit/gungnird.log

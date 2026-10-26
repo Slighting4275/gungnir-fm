@@ -6,13 +6,13 @@ Gungnir FM is architected to run natively across Linux and BSD distributions wit
 
 | Init / Supervisor | Configuration Location | Readiness Mechanism | Execution Model |
 | :--- | :--- | :--- | :--- |
-| **systemd** | `init/systemd/gungnir-fm.service` | Datagram `$NOTIFY_SOCKET` (zero libsystemd) | Foreground (`--foreground`) |
-| **OpenRC** | `init/openrc/gungnir-fm` | Process check / `/run/gungnir-fm.pid` | Supervised background / foreground |
-| **runit** | `init/runit/gungnir-fm/run` | Process tracking via PID | Foreground supervised (`--foreground`) |
-| **s6 & s6-rc** | `init/s6/gungnir-fm/` | Pipe fd notification (`--ready-fd 3`) | Foreground supervised |
-| **dinit** | `init/dinit/gungnir-fm` | Pipe fd notification (`pipefd:3`) | Foreground supervised |
+| **systemd** | `init/systemd/gungnir-fm.service`<br>`init/systemd/gungnird.service`<br>`init/systemd/gungnird.socket` | Datagram `$NOTIFY_SOCKET` / Socket activation | Foreground (`--foreground`) / Daemon (`gungnird`) |
+| **OpenRC** | `init/openrc/gungnir-fm`<br>`init/openrc/gungnird` | Process check / `/run/*.pid` | Supervised background / foreground |
+| **runit** | `init/runit/gungnir-fm/run`<br>`init/runit/gungnird/run` | Process tracking via PID | Foreground supervised (`--foreground`) |
+| **s6 & s6-rc** | `init/s6/gungnir-fm/`<br>`init/s6/gungnird/run` | Pipe fd notification (`--ready-fd 3`) | Foreground supervised |
+| **dinit** | `init/dinit/gungnir-fm`<br>`init/dinit/gungnird` | Pipe fd notification (`pipefd:3`) | Foreground supervised |
 | **SysVinit / inittab**| `init/sysvinit/gungnir-fm` | PID file (`--pidfile /run/gungnir-fm.pid`) | `start-stop-daemon` |
-| **BSD Init (rc.subr)**| `init/bsd/gungnir_fm` | PID file (`--pidfile /var/run/gungnir_fm.pid`)| Native `rc.subr` |
+| **BSD Init (rc.subr)**| `init/bsd/gungnir_fm`<br>`init/bsd/gungnird` | PID file (`--pidfile /var/run/*.pid`)| Native `rc.subr` |
 | **GNU Shepherd** | `init/shepherd/gungnir-fm.scm` | Fork-exec supervisor | Foreground supervised |
 | **BusyBox init** | `init/busybox/rc.gungnir-fm` | PID file / inittab respawn | Foreground / start-stop-daemon |
 | **Toybox init** | `init/busybox/rc.gungnir-fm` | PID file / inittab respawn | Foreground / start-stop-daemon |

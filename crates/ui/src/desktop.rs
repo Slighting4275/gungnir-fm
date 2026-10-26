@@ -36,7 +36,7 @@ impl Dirs {
             std::env::var_os(var).map(PathBuf::from).filter(|p| p.is_absolute()).unwrap_or(fallback)
         };
         let mut data = vec![abs("XDG_DATA_HOME", home.join(".local/share"))];
-        data.extend(env_dirs("XDG_DATA_DIRS", "/usr/local/share:/usr/share"));
+        data.extend(env_dirs("XDG_DATA_DIRS", "/usr/local/share:/usr/share:/usr/pkg/share"));
         let mut config = vec![abs("XDG_CONFIG_HOME", home.join(".config"))];
         config.extend(env_dirs("XDG_CONFIG_DIRS", "/etc/xdg"));
         Self { data, config }

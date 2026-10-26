@@ -120,7 +120,7 @@ install: release
 # Install locally for the current user (no root required)
 install-user:
 	@$(MAKE) install PREFIX="$(HOME)/.local"
-	@if [ -f "$(HOME)/.local/bin/gungnird" ] && command -v systemctl >/dev/null 2>&1; then \
+	@if [ -f "$(HOME)/.local/bin/gungnird" ] && [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then \
 		echo "==> Configuring systemd user services for gungnird..."; \
 		$(INSTALL_DIR) "$(HOME)/.config/systemd/user"; \
 		$(INSTALL_DATA) "init/systemd/gungnird.service" "$(HOME)/.config/systemd/user/gungnird.service"; \
@@ -150,7 +150,7 @@ uninstall:
 
 # Uninstall local user installation
 uninstall-user:
-	@if command -v systemctl >/dev/null 2>&1; then \
+	@if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then \
 		systemctl --user disable --now gungnird.service gungnird.socket 2>/dev/null || true; \
 		$(RM) "$(HOME)/.config/systemd/user/gungnird.service" "$(HOME)/.config/systemd/user/gungnird.socket"; \
 		systemctl --user daemon-reload 2>/dev/null || true; \

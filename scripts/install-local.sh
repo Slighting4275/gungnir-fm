@@ -13,7 +13,7 @@ icon="$HOME/.local/share/icons/hicolor/scalable/apps/gungnir-fm.svg"
 desktop="$HOME/.local/share/applications/gungnir-fm.desktop"
 
 if [ "${1:-}" = "--uninstall" ]; then
-    if command -v systemctl >/dev/null 2>&1; then
+    if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
         systemctl --user disable --now gungnird.service gungnird.socket 2>/dev/null || true
         rm -f "$HOME/.config/systemd/user/gungnird.service" "$HOME/.config/systemd/user/gungnird.socket"
         systemctl --user daemon-reload 2>/dev/null || true
@@ -29,13 +29,18 @@ if [ "${1:-}" = "--uninstall" ]; then
     exit 0
 fi
 
-cargo build --release --offline --manifest-path "$here/Cargo.toml" -p gungnir-fm || exit 1
+cargo build --release --locked --manifest-path "$here/Cargo.toml" -p gungnir-fm || exit 1
 
 mkdir -p "$HOME/.local/bin" "$(dirname -- "$icon")" "$(dirname -- "$desktop")"
 cp -f "$here/target/release/gungnir-fm" "$bin"
 chmod 755 "$bin"
 
-# Install gungnir-vfs daemon and GIO module if available
+# Build and install companion gungnir-vfs daemon if not already present
+if [ ! -f "$daemon_bin" ] && [ ! -f "$here/.build/gungnird/release/gungnird" ] && [ ! -f "$here/../gungnir-vfs/.build/target/release/gungnird" ]; then
+    echo "==> Building companion gungnird daemon..."
+    "$here/scripts/build-gungnird.sh" || echo "Note: gungnird daemon build skipped; gungnir-fm will operate with standard local POSIX VFS."
+fi
+
 if [ -f "$here/.build/gungnird/release/gungnird" ]; then
     cp -f "$here/.build/gungnird/release/gungnird" "$daemon_bin"
     chmod 755 "$daemon_bin"
@@ -44,8 +49,8 @@ elif [ -f "$here/../gungnir-vfs/.build/target/release/gungnird" ]; then
     chmod 755 "$daemon_bin"
 fi
 
-# Install and enable systemd user service & socket for automatic daemon management
-if [ -f "$daemon_bin" ] && command -v systemctl >/dev/null 2>&1; then
+# Install and enable systemd user service & socket for automatic daemon management (Linux systemd systems)
+if [ -f "$daemon_bin" ] && [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
     user_systemd="$HOME/.config/systemd/user"
     mkdir -p "$user_systemd"
     cp -f "$here/init/systemd/gungnird.service" "$user_systemd/gungnird.service"

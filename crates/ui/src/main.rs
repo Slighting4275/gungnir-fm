@@ -295,24 +295,48 @@ fn create_app_window() -> Result<AppWindow, Box<dyn std::error::Error>> {
 }
 
 fn autostart_gungnird() {
-    // 1. Try systemd user socket if available
-    let _ = std::process::Command::new("systemctl")
-        .args(["--user", "start", "gungnird.socket"])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
+    // 1. Try systemd user socket if running under systemd on Linux
+    #[cfg(target_os = "linux")]
+    {
+        if std::path::Path::new("/run/systemd/system").exists() {
+            let systemd_ok = std::process::Command::new("systemctl")
+                .args(["--user", "start", "gungnird.socket"])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
 
-    // 2. Also try direct spawn if gungnird binary exists
-    let candidates = [
+            if systemd_ok {
+                return;
+            }
+        }
+    }
+
+    // 2. Direct spawn fallback across all Linux and BSD distributions
+    // (OpenRC, runit, s6, dinit, SysVinit, FreeBSD, OpenBSD, NetBSD, DragonFly BSD)
+    let mut candidates = vec![
         dirs::home_dir().map(|h| h.join(".local/bin/gungnird")),
         Some(std::path::PathBuf::from("/usr/local/bin/gungnird")),
+        Some(std::path::PathBuf::from("/usr/pkg/bin/gungnird")),
+        Some(std::path::PathBuf::from("/opt/local/bin/gungnird")),
         Some(std::path::PathBuf::from("/usr/bin/gungnird")),
     ];
 
+    if let Some(path_var) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path_var) {
+            candidates.push(Some(dir.join("gungnird")));
+        }
+    }
+
     for candidate in candidates.into_iter().flatten() {
         if candidate.is_file() {
-            let _ = std::process::Command::new(candidate)
-                .args(["--idle-timeout", "0", "--seccomp"])
+            let mut cmd = std::process::Command::new(candidate);
+            cmd.args(["--idle-timeout", "0"]);
+            #[cfg(target_os = "linux")]
+            cmd.arg("--seccomp");
+
+            let _ = cmd
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
