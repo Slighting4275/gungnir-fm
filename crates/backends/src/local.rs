@@ -525,7 +525,7 @@ fn restore_one(trash: &Path, name: &str) -> VfsResult<PathBuf> {
             break;
         }
     }
-    let orig = orig_path.ok_or(VfsError::BadRequest)?;
+    let orig = orig_path.filter(|path| path.is_absolute()).ok_or(VfsError::BadRequest)?;
     if let Some(parent) = orig.parent()
         && !parent.is_dir()
     {
@@ -598,19 +598,25 @@ fn trash_one(trash: &Path, src: &Path) -> VfsResult<()> {
             trash_encode(src),
             crate::time::trash_date(SystemTime::now())
         );
-        f.write_all(body.as_bytes()).map_err(io_err("write", &info_path))?;
-        return match rename_noreplace(src, &files.join(&cand)) {
-            Ok(()) => Ok(()),
+        if let Err(e) = f.write_all(body.as_bytes()) {
+            let _ = fs::remove_file(&info_path);
+            return Err(io_err("write", &info_path)(e));
+        }
+        match rename_noreplace(src, &files.join(&cand)) {
+            Ok(()) => return Ok(()),
             Err(e) => {
                 let _ = fs::remove_file(&info_path);
-                if e.raw_os_error() == Some(libc::EXDEV) {
+                if e.kind() == std::io::ErrorKind::AlreadyExists {
+                    continue;
+                }
+                return if e.raw_os_error() == Some(libc::EXDEV) {
                     Err(VfsError::Unsupported(format!(
                         "{} is on another filesystem than the trash; use Shift+Delete to delete it permanently",
                         src.display()
                     )))
                 } else {
                     Err(VfsError::from_io("rename", &e, &src.display().to_string()))
-                }
+                };
             }
         };
     }
@@ -661,12 +667,32 @@ impl VfsProvider for LocalPosixBackend {
         .await
     }
 
+    async fn create_file(&self, uri: &VfsUri) -> VfsResult<()> {
+        if uri.scheme() != Scheme::File {
+            return Err(VfsError::Unsupported("Restore items before editing the Trash".into()));
+        }
+        let path = local(uri)?;
+        tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .await
+            .map(|_| ())
+            .map_err(io_err("create", &path))
+    }
+
     async fn create_dir(&self, uri: &VfsUri) -> VfsResult<()> {
+        if uri.scheme() != Scheme::File {
+            return Err(VfsError::Unsupported("Cannot create folders in the Trash".into()));
+        }
         let path = local(uri)?;
         tokio::fs::create_dir(&path).await.map_err(io_err("mkdir", &path))
     }
 
     async fn rename(&self, uri: &VfsUri, new_name: &str) -> VfsResult<VfsUri> {
+        if uri.scheme() != Scheme::File {
+            return Err(VfsError::Unsupported("Restore items before renaming them".into()));
+        }
         let parent = uri.parent().ok_or(VfsError::BadRequest)?;
         let to = parent.join(new_name)?;
         let (a, b) = (local(uri)?, local(&to)?);
@@ -689,6 +715,9 @@ impl VfsProvider for LocalPosixBackend {
     }
 
     async fn trash(&self, uris: &[VfsUri]) -> VfsResult<()> {
+        if uris.iter().any(|uri| uri.scheme() != Scheme::File) {
+            return Err(VfsError::BadRequest);
+        }
         let paths: Vec<PathBuf> = uris.iter().map(local).collect::<VfsResult<_>>()?;
         blocking(move || {
             let trash = home_trash()?;
@@ -700,7 +729,12 @@ impl VfsProvider for LocalPosixBackend {
     async fn restore(&self, uris: &[VfsUri]) -> VfsResult<()> {
         let items: Vec<String> = uris
             .iter()
-            .map(|u| u.file_name().ok_or(VfsError::BadRequest).map(|s| s.to_owned()))
+            .map(|u| {
+                if u.scheme() != Scheme::Trash || !u.parent().is_some_and(|parent| parent.is_root()) {
+                    return Err(VfsError::BadRequest);
+                }
+                u.file_name().ok_or(VfsError::BadRequest).map(str::to_owned)
+            })
             .collect::<VfsResult<_>>()?;
         blocking(move || {
             let trash = home_trash()?;
@@ -720,7 +754,14 @@ impl VfsProvider for LocalPosixBackend {
         .await
     }
 
+    fn can_transfer(&self, src: &VfsUri, dest: &VfsUri) -> bool {
+        src.scheme() == Scheme::File && dest.scheme() == Scheme::File
+    }
+
     async fn transfer(&self, req: TransferRequest, ctl: TransferControl) -> VfsResult<()> {
+        if req.dest_dir.scheme() != Scheme::File || req.sources.iter().any(|uri| uri.scheme() != Scheme::File) {
+            return Err(VfsError::Unsupported("Use Trash or Restore instead of transferring Trash paths".into()));
+        }
         let progress = ctl.progress.clone();
         let id = req.id;
         let r = blocking(move || transfer_blocking(&req, &ctl)).await;
@@ -827,4 +868,83 @@ fn xattrs(path: &Path) -> Vec<(String, String)> {
         out.push((String::from_utf8_lossy(name).into_owned(), v));
     }
     out
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod trash_tests {
+    use super::*;
+
+    struct Sandbox(PathBuf);
+    impl Sandbox {
+        fn new(label: &str) -> Self {
+            let path = std::env::temp_dir().join(format!("gungnir-trash-unit-{label}-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&path);
+            fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+    }
+    impl Drop for Sandbox {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn orphaned_trash_name_uses_next_available_name() {
+        let t = Sandbox::new("orphan");
+        let trash = t.0.join("Trash");
+        fs::create_dir_all(trash.join("files")).unwrap();
+        fs::write(trash.join("files/item"), b"existing orphan").unwrap();
+        let source = t.0.join("item");
+        fs::write(&source, b"new item").unwrap();
+        trash_one(&trash, &source).unwrap();
+        assert_eq!(fs::read(trash.join("files/item")).unwrap(), b"existing orphan");
+        assert_eq!(fs::read(trash.join("files/item.2")).unwrap(), b"new item");
+        assert!(!trash.join("info/item.trashinfo").exists());
+        assert!(trash.join("info/item.2.trashinfo").exists());
+        assert_eq!(restore_one(&trash, "item.2").unwrap(), source);
+    }
+
+    #[test]
+    fn restore_refuses_relative_metadata_paths_without_moving_item() {
+        let t = Sandbox::new("relative");
+        let trash = t.0.join("Trash");
+        fs::create_dir_all(trash.join("files")).unwrap();
+        fs::create_dir_all(trash.join("info")).unwrap();
+        fs::write(trash.join("files/item"), b"keep").unwrap();
+        fs::write(trash.join("info/item.trashinfo"), b"[Trash Info]\nPath=relative-parent/item\n").unwrap();
+        assert_eq!(restore_one(&trash, "item"), Err(VfsError::BadRequest));
+        assert!(trash.join("files/item").exists());
+        assert!(trash.join("info/item.trashinfo").exists());
+    }
+
+    #[test]
+    fn failed_restore_collision_keeps_both_files_and_metadata() {
+        let t = Sandbox::new("collision");
+        let trash = t.0.join("Trash");
+        let source = t.0.join("item");
+        fs::write(&source, b"old").unwrap();
+        trash_one(&trash, &source).unwrap();
+        fs::write(&source, b"new").unwrap();
+        assert!(matches!(restore_one(&trash, "item"), Err(VfsError::AlreadyExists(_))));
+        assert_eq!(fs::read(&source).unwrap(), b"new");
+        assert_eq!(fs::read(trash.join("files/item")).unwrap(), b"old");
+        assert!(trash.join("info/item.trashinfo").exists());
+    }
+
+    #[tokio::test]
+    async fn restore_accepts_only_top_level_trash_uris() {
+        let backend = LocalPosixBackend::new();
+        for uri in [
+            VfsUri::parse("/this-is-not-a-trash-entry").unwrap(),
+            VfsUri::trash("/").unwrap(),
+            VfsUri::trash("folder/nested").unwrap(),
+        ] {
+            assert_eq!(backend.restore(&[uri]).await, Err(VfsError::BadRequest));
+        }
+        assert!(backend.rename(&VfsUri::trash("item").unwrap(), "changed").await.is_err());
+        assert!(backend.create_dir(&VfsUri::trash("orphan").unwrap()).await.is_err());
+        assert!(!backend.can_transfer(&VfsUri::parse("/item").unwrap(), &VfsUri::trash("/").unwrap()));
+    }
 }

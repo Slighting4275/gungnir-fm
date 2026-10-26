@@ -358,3 +358,17 @@ async fn listing_never_aliases_non_utf8_names_to_other_files() -> VfsResult<()> 
     assert_eq!(entries[0].size, 5);
     Ok(())
 }
+
+#[tokio::test]
+async fn empty_file_creation_never_overwrites_existing_entries() -> VfsResult<()> {
+    let t = TempDir::new("create-file");
+    let b = LocalPosixBackend::new();
+    b.create_file(&t.uri("empty.txt")).await?;
+    assert_eq!(std::fs::read(t.path().join("empty.txt")).ok(), Some(Vec::new()));
+    std::fs::write(t.path().join("empty.txt"), b"keep").unwrap_or_else(|e| panic!("{e}"));
+    assert!(matches!(b.create_file(&t.uri("empty.txt")).await, Err(VfsError::AlreadyExists(_))));
+    assert_eq!(std::fs::read(t.path().join("empty.txt")).ok().as_deref(), Some(b"keep".as_slice()));
+    std::os::unix::fs::symlink("empty.txt", t.path().join("link")).unwrap_or_else(|e| panic!("{e}"));
+    assert!(matches!(b.create_file(&t.uri("link")).await, Err(VfsError::AlreadyExists(_))));
+    Ok(())
+}

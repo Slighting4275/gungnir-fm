@@ -100,22 +100,44 @@ fn list(v: &str) -> Vec<String> {
 
 /// `TryExec`: an absolute path that exists, or a name found on `$PATH`.
 fn try_exec_ok(prog: &str) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    let executable = |path: &Path| {
+        if !path.is_file() {
+            return false;
+        }
+        let Ok(path) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
+            return false;
+        };
+        // SAFETY: path is a valid NUL-terminated string, and X_OK only checks access.
+        unsafe { libc::access(path.as_ptr(), libc::X_OK) == 0 }
+    };
     if prog.contains('/') {
-        return Path::new(prog).exists();
+        return Path::new(prog).is_absolute() && executable(Path::new(prog));
     }
-    std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(prog).is_file()))
+    !prog.is_empty()
+        && std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| executable(&d.join(prog))))
 }
 
 /// All `*.desktop` files below `dir`, with their desktop IDs (`sub/x.desktop` -> `sub-x.desktop`).
 fn desktop_files(dir: &Path, prefix: &str, out: &mut Vec<(String, PathBuf)>) {
-    let Ok(rd) = std::fs::read_dir(dir) else { return };
-    for e in rd.filter_map(Result::ok) {
-        let name = e.file_name().to_string_lossy().into_owned();
-        let path = e.path();
-        if path.is_dir() {
-            desktop_files(&path, &format!("{prefix}{name}-"), out);
-        } else if name.ends_with(".desktop") {
-            out.push((format!("{prefix}{name}"), path));
+    let mut pending = vec![(dir.to_owned(), prefix.to_owned(), Vec::<PathBuf>::new())];
+    while let Some((dir, prefix, mut ancestors)) = pending.pop() {
+        let Ok(canonical) = std::fs::canonicalize(&dir) else { continue };
+        if ancestors.len() >= 64 || ancestors.contains(&canonical) {
+            continue;
+        }
+        ancestors.push(canonical);
+        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+        let mut entries: Vec<_> = rd.filter_map(Result::ok).collect();
+        entries.sort_by_key(std::fs::DirEntry::file_name);
+        for entry in entries {
+            let Some(name) = entry.file_name().to_str().map(str::to_owned) else { continue };
+            let path = entry.path();
+            if path.is_dir() {
+                pending.push((path, format!("{prefix}{name}-"), ancestors.clone()));
+            } else if name.ends_with(".desktop") {
+                out.push((format!("{prefix}{name}"), path));
+            }
         }
     }
 }
@@ -651,6 +673,22 @@ pub fn mime_description(mime: &str) -> String {
     }
 }
 
+/// Run the platform opener and surface a failed exit status rather than claiming
+/// a file opened merely because the process could be spawned.
+pub fn open_default_with(program: &std::ffi::OsStr, target: &std::ffi::OsStr) -> std::io::Result<()> {
+    let status = std::process::Command::new(program)
+        .arg(target)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(format!("Default application opener exited with {status}")))
+    }
+}
+
 /// Assign `desktop_id` as the default application for `mime` in `config_dir/mimeapps.list`.
 ///
 /// # Errors
@@ -791,25 +829,160 @@ pub fn reset_default_app(mime: &str) -> std::io::Result<()> {
     if let Some(cfg) = dirs.config.first() { reset_default_app_in(cfg, mime) } else { Ok(()) }
 }
 
-/// Creates a user desktop file in `data_dir/applications` for a custom command.
+pub fn set_default_app_with_dirs(dirs: Option<&Dirs>, mime: &str, id: &str) -> std::io::Result<()> {
+    if let Some(dirs) = dirs {
+        let dir = dirs.config.first().ok_or_else(|| std::io::Error::other("No desktop config directory"))?;
+        set_default_app_in(dir, mime, id)
+    } else {
+        set_default_app(mime, id)
+    }
+}
+
+pub fn reset_default_app_with_dirs(dirs: Option<&Dirs>, mime: &str) -> std::io::Result<()> {
+    if let Some(dirs) = dirs {
+        let dir = dirs.config.first().ok_or_else(|| std::io::Error::other("No desktop config directory"))?;
+        reset_default_app_in(dir, mime)
+    } else {
+        reset_default_app(mime)
+    }
+}
+
+pub fn create_custom_desktop_entry_with_dirs(dirs: Option<&Dirs>, cmd: &str, name: &str) -> std::io::Result<String> {
+    if let Some(dirs) = dirs {
+        let dir = dirs.data.first().ok_or_else(|| std::io::Error::other("No desktop data directory"))?;
+        create_custom_desktop_entry_in(dir, cmd, name)
+    } else {
+        create_custom_desktop_entry(cmd, name)
+    }
+}
+
+fn custom_tokens(command: &str) -> std::io::Result<Vec<String>> {
+    let invalid = || std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid custom application command");
+    if command.contains(['\0', '\n', '\r']) {
+        return Err(invalid());
+    }
+    let (mut quote, mut escaped, mut started) = (None, false, false);
+    let (mut args, mut token) = (Vec::new(), String::new());
+    let mut chars = command.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if escaped {
+            token.push(ch);
+            escaped = false;
+            started = true;
+            continue;
+        }
+        match (quote, ch) {
+            (Some('\''), '\'') | (Some('"'), '"') => quote = None,
+            (Some('\''), _) => token.push(ch),
+            (Some('"'), '\\') if chars.peek().is_some_and(|ch| !matches!(ch, '\\' | '"' | '$' | '`')) => {
+                token.push('\\');
+                started = true;
+            }
+            (_, '\\') => {
+                escaped = true;
+                started = true;
+            }
+            (None, '\'' | '"') => {
+                quote = Some(ch);
+                started = true;
+            }
+            (None, ch) if ch.is_whitespace() => {
+                if started {
+                    args.push(std::mem::take(&mut token));
+                    started = false;
+                }
+            }
+            _ => {
+                token.push(ch);
+                started = true;
+            }
+        }
+    }
+    if quote.is_some() || escaped {
+        return Err(invalid());
+    }
+    if started {
+        args.push(token);
+    }
+    if args.first().is_none_or(|arg| arg.is_empty()) {
+        return Err(invalid());
+    }
+    Ok(args)
+}
+
+pub fn custom_command_name(command: &str) -> std::io::Result<String> {
+    let args = custom_tokens(command)?;
+    Ok(Path::new(&args[0])
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| args[0].clone()))
+}
+
+fn custom_exec(command: &str) -> std::io::Result<String> {
+    let args = custom_tokens(command)?;
+    let quote = |arg: &str| {
+        let mut output = String::from("\"");
+        for ch in arg.chars() {
+            if matches!(ch, '\\' | '"' | '$' | '`') {
+                output.push('\\');
+            }
+            if ch == '%' {
+                output.push('%');
+            }
+            output.push(ch);
+        }
+        output.push('"');
+        output
+    };
+    Ok(format!("{} %f", args.iter().map(|arg| quote(arg)).collect::<Vec<_>>().join(" ")))
+}
+
+pub fn launch_custom(command: &str, files: &[PathBuf]) -> std::io::Result<usize> {
+    let app = App {
+        id: String::new(),
+        name: "Custom application".into(),
+        exec: custom_exec(command)?,
+        icon: String::new(),
+        path: PathBuf::new(),
+        mimes: Vec::new(),
+        no_display: true,
+    };
+    launch(&app, files)
+}
+
+/// Create a distinct user desktop entry, preserving quoted arguments and never
+/// replacing another custom command with the same display name.
 pub fn create_custom_desktop_entry_in(data_dir: &Path, cmd: &str, name: &str) -> std::io::Result<String> {
+    use std::io::Write;
+    if name.contains(['\0', '\n', '\r']) {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid application name"));
+    }
+    let exec = custom_exec(cmd)?;
     let app_dir = data_dir.join("applications");
     std::fs::create_dir_all(&app_dir)?;
     let safe_name: String = name.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').collect();
     let safe_name = if safe_name.is_empty() { "custom-app".to_string() } else { safe_name };
-    let id = format!("userapp-{safe_name}.desktop");
-    let path = app_dir.join(&id);
-
-    let content = format!(
-        "[Desktop Entry]\n\
-         Type=Application\n\
-         Name={name}\n\
-         Exec=\"{cmd}\" %f\n\
-         Categories=Other;\n\
-         NoDisplay=true\n"
-    );
-    std::fs::write(&path, content)?;
-    Ok(id)
+    let content =
+        format!("[Desktop Entry]\nType=Application\nName={name}\nExec={exec}\nCategories=Other;\nNoDisplay=true\n");
+    for attempt in 0..10_000 {
+        let id = if attempt == 0 {
+            format!("userapp-{safe_name}.desktop")
+        } else {
+            format!("userapp-{safe_name}-{attempt}.desktop")
+        };
+        let path = app_dir.join(&id);
+        let mut file = match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        };
+        if let Err(error) = file.write_all(content.as_bytes()) {
+            let _ = std::fs::remove_file(&path);
+            return Err(error);
+        }
+        return Ok(id);
+    }
+    Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "No free custom application name"))
 }
 
 /// Creates a user desktop file in `$XDG_DATA_HOME/applications` for a custom command.
@@ -837,6 +1010,70 @@ mod tests {
             mimes: Vec::new(),
             no_display: false,
         }
+    }
+
+    #[test]
+    fn custom_commands_preserve_arguments_percent_and_distinct_entries() {
+        let command = r#""/opt/My App/viewer" --title "100% ready""#;
+        assert_eq!(custom_tokens(r#"app "\n" "" a\ b"#).unwrap(), ["app", r"\n", "", "a b"]);
+        assert_eq!(
+            custom_tokens("'/opt/My App/viewer' --title 'hello there'").unwrap(),
+            ["/opt/My App/viewer", "--title", "hello there"]
+        );
+        assert_eq!(custom_command_name(r#""/opt/My App/viewer" --title "test""#).unwrap(), "viewer");
+        let entry = App {
+            id: "custom.desktop".into(),
+            name: "Custom".into(),
+            exec: custom_exec(command).unwrap(),
+            icon: String::new(),
+            path: PathBuf::new(),
+            mimes: Vec::new(),
+            no_display: true,
+        };
+        assert_eq!(
+            command_lines(&entry, &[PathBuf::from("/tmp/file name")]),
+            vec![vec!["/opt/My App/viewer", "--title", "100% ready", "/tmp/file name"]]
+        );
+        for bad in ["", "\"unterminated", "program\nInjected=true"] {
+            assert!(custom_exec(bad).is_err());
+        }
+        let t = Tree::new("distinct-custom");
+        let first = create_custom_desktop_entry_in(&t.0, "player --one", "Player").unwrap();
+        let contents = std::fs::read(t.0.join("applications").join(&first)).unwrap();
+        let second = create_custom_desktop_entry_in(&t.0, "player --two", "Player").unwrap();
+        assert_ne!(first, second);
+        assert_eq!(std::fs::read(t.0.join("applications").join(first)).unwrap(), contents);
+    }
+
+    #[test]
+    fn desktop_scan_ignores_symlink_cycles_and_nonexecutable_tryexec() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.bug-check/test-bin")
+            .join(format!("desktop-cycle-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("app.desktop"), "[Desktop Entry]\nType=Application\nName=App\nExec=true\n").unwrap();
+        std::os::unix::fs::symlink(&dir, dir.join("loop")).unwrap();
+        let mut entries = Vec::new();
+        desktop_files(&dir, "", &mut entries);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].0, "app.desktop");
+        let executable = dir.join("program");
+        std::fs::write(&executable, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(!try_exec_ok(executable.to_str().unwrap()));
+        assert!(!try_exec_ok(dir.to_str().unwrap()));
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(try_exec_ok(executable.to_str().unwrap()));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn default_opener_reports_nonzero_exit_status() {
+        use std::ffi::OsStr;
+        assert!(open_default_with(OsStr::new("/usr/bin/false"), OsStr::new("/unused target")).is_err());
+        assert!(open_default_with(OsStr::new("/usr/bin/true"), OsStr::new("/unused target")).is_ok());
     }
 
     #[test]

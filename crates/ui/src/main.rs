@@ -601,6 +601,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         actions_dir: Some(actions_dir),
         session_file: Some(session_file),
         initial_session: if args.is_empty() { saved_session.clone() } else { None },
+        desktop_dirs: None,
         trace: std::env::var_os("GUNGNIR_FM_TRACE").is_some(),
     };
 

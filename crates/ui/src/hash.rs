@@ -48,9 +48,21 @@ pub enum HashMatch {
     Mismatch,
 }
 
+fn open_regular(path: &Path) -> std::io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let file = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK).open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Only regular files can be hashed or verified",
+        ));
+    }
+    Ok(file)
+}
+
 /// Computes MD5, SHA-1, SHA-256, and SHA-512 concurrently in a single streaming pass.
 pub fn compute_hashes(path: &Path) -> Result<FileHashes, std::io::Error> {
-    let file = File::open(path)?;
+    let file = open_regular(path)?;
     let metadata = file.metadata()?;
     let file_size = metadata.len();
     let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("unknown").to_string();
@@ -112,7 +124,7 @@ pub fn verify_hash(hashes: &FileHashes, expected: &str) -> HashMatch {
 
 /// Verifies a checksum file (like `SHA256SUMS` or `file.sha256`) against files in the same directory.
 pub fn verify_checksum_file(path: &Path) -> Result<Vec<(String, bool)>, std::io::Error> {
-    let file = File::open(path)?;
+    let file = open_regular(path)?;
     let parent = path.parent().unwrap_or(Path::new("."));
     let reader = BufReader::new(file);
     let mut results = Vec::new();
@@ -179,6 +191,22 @@ pub fn verify_checksum_file(path: &Path) -> Result<Vec<(String, bool)>, std::io:
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn hash_and_checksum_readers_reject_fifos_and_directories() {
+        use std::os::unix::ffi::OsStrExt;
+        let dir = std::env::temp_dir().join(format!("gungnir-hash-special-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("{e}"));
+        let fifo = dir.join("pipe");
+        let c_path = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap_or_else(|e| panic!("{e}"));
+        // SAFETY: valid path in an isolated test directory.
+        assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
+        for path in [&fifo, &dir] {
+            assert_eq!(compute_hashes(path).err().map(|e| e.kind()), Some(std::io::ErrorKind::InvalidInput));
+            assert_eq!(verify_checksum_file(path).err().map(|e| e.kind()), Some(std::io::ErrorKind::InvalidInput));
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn checksum_files_preserve_filename_spaces_stars_and_escapes() {

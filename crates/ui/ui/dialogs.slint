@@ -10,7 +10,10 @@ import { Glyph } from "widgets.slint";
 export enum DialogKind {
     none,
     new-folder,
+    new-file,
+    select-pattern,
     confirm-delete,
+    confirm-open,
     properties,
     inspect,
     error,
@@ -30,6 +33,8 @@ component DialogButton inherits Rectangle {
     in property <string> label;
     in property <bool> primary;
     in property <bool> danger;
+    in property <bool> enabled: true;
+    opacity: root.enabled ? 1.0 : 0.45;
     callback clicked;
     height: 30px;
     width: max(84px, t.preferred-width + 28px);
@@ -47,6 +52,7 @@ component DialogButton inherits Rectangle {
         vertical-alignment: center;
     }
     touch := TouchArea {
+        enabled: root.enabled;
         mouse-cursor: pointer;
         clicked => { root.clicked(); }
     }
@@ -105,6 +111,7 @@ export component DialogOverlay inherits Rectangle {
     in property <string> perms-group: "";
     in property <string> perms-others: "";
     in-out property <bool> perms-executable: false;
+    in property <bool> perms-editable: false;
     callback accept(text: string);
     callback cancel();
     callback choose(index: int);
@@ -218,10 +225,10 @@ export component DialogOverlay inherits Rectangle {
                 wrap: word-wrap;
             }
             field := LineEdit {
-                visible: root.kind == DialogKind.new-folder || root.kind == DialogKind.connect-server || root.kind == DialogKind.hash;
-                height: (root.kind == DialogKind.new-folder || root.kind == DialogKind.connect-server || root.kind == DialogKind.hash) ? 32px : 0px;
+                visible: root.kind == DialogKind.new-folder || root.kind == DialogKind.new-file || root.kind == DialogKind.select-pattern || root.kind == DialogKind.connect-server || root.kind == DialogKind.hash;
+                height: (root.kind == DialogKind.new-folder || root.kind == DialogKind.new-file || root.kind == DialogKind.select-pattern || root.kind == DialogKind.connect-server || root.kind == DialogKind.hash) ? 32px : 0px;
                 text <=> root.input;
-                placeholder-text: root.kind == DialogKind.new-folder ? "Folder name" : root.kind == DialogKind.connect-server ? "sftp://user@host/path or smb://host/share" : "Paste expected hash to verify…";
+                placeholder-text: root.kind == DialogKind.new-folder ? "Folder name" : root.kind == DialogKind.new-file ? "Document name" : root.kind == DialogKind.select-pattern ? "For example: *.txt" : root.kind == DialogKind.connect-server ? "sftp://user@host/path or smb://host/share" : "Paste expected hash to verify…";
                 accepted(t) => { root.accept(t); }
                 key-pressed(e) => {
                     if e.text == Key.Escape {
@@ -630,14 +637,14 @@ export component DialogOverlay inherits Rectangle {
                                 horizontal-alignment: center;
                                 vertical-alignment: center;
                             }
-                            TouchArea { clicked => { root.perms-executable = !root.perms-executable; } }
+                            TouchArea { enabled: root.perms-editable; clicked => { root.perms-executable = !root.perms-executable; } }
                         }
                         Text {
                             text: "Allow executing file as program";
                             color: Theme.text;
                             font-size: Theme.font-size;
                             vertical-alignment: center;
-                            TouchArea { clicked => { root.perms-executable = !root.perms-executable; } }
+                            TouchArea { enabled: root.perms-editable; clicked => { root.perms-executable = !root.perms-executable; } }
                         }
                     }
                     HorizontalLayout {
@@ -645,8 +652,9 @@ export component DialogOverlay inherits Rectangle {
                         DialogButton {
                             label: "Apply Permissions";
                             primary: true;
+                            enabled: root.perms-editable;
                             clicked => {
-                                root.custom-action("apply-permissions:" + (root.perms-executable ? "exec" : "noexec"));
+                                if root.perms-editable { root.custom-action("apply-permissions:" + (root.perms-executable ? "exec" : "noexec")); }
                             }
                         }
                     }
@@ -881,16 +889,16 @@ export component DialogOverlay inherits Rectangle {
                 }
                 if root.kind != DialogKind.conflict && root.kind != DialogKind.search && root.kind != DialogKind.batch-rename && root.kind != DialogKind.compare-panes && root.kind != DialogKind.compress: HorizontalLayout {
                     spacing: 8px;
-                    if root.kind == DialogKind.new-folder || root.kind == DialogKind.confirm-delete || root.kind == DialogKind.connect-server: DialogButton {
+                    if root.kind == DialogKind.new-folder || root.kind == DialogKind.new-file || root.kind == DialogKind.select-pattern || root.kind == DialogKind.confirm-delete || root.kind == DialogKind.confirm-open || root.kind == DialogKind.connect-server: DialogButton {
                         label: "Cancel";
                         clicked => { root.cancel(); }
                     }
                     DialogButton {
-                        label: root.kind == DialogKind.new-folder ? "Create" : root.kind == DialogKind.connect-server ? "Connect" : root.kind == DialogKind.confirm-delete ? "Delete" : "Close";
+                        label: root.kind == DialogKind.new-folder || root.kind == DialogKind.new-file ? "Create" : root.kind == DialogKind.select-pattern ? "Select" : root.kind == DialogKind.connect-server ? "Connect" : root.kind == DialogKind.confirm-delete ? "Delete" : root.kind == DialogKind.confirm-open ? "Open" : "Close";
                         primary: true;
                         danger: root.kind == DialogKind.confirm-delete;
                         clicked => {
-                            if root.kind == DialogKind.new-folder || root.kind == DialogKind.confirm-delete || root.kind == DialogKind.connect-server {
+                            if root.kind == DialogKind.new-folder || root.kind == DialogKind.new-file || root.kind == DialogKind.select-pattern || root.kind == DialogKind.confirm-delete || root.kind == DialogKind.confirm-open || root.kind == DialogKind.connect-server {
                                 root.accept(root.input);
                             } else {
                                 root.cancel();

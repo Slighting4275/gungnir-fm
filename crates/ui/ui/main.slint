@@ -169,6 +169,7 @@ export component AppWindow inherits Window {
     in property <string> dialog-perms-group: "";
     in property <string> dialog-perms-others: "";
     in-out property <bool> dialog-perms-executable: false;
+    in property <bool> dialog-perms-editable: false;
 
     // ---- Callbacks to the Rust controller -----------------------------------------
     callback navigate(pane: int, location: string);
@@ -252,7 +253,7 @@ export component AppWindow inherits Window {
     }
 
     changed dialog-kind => {
-        if root.dialog-kind == DialogKind.new-folder || root.dialog-kind == DialogKind.connect-server || root.dialog-kind == DialogKind.hash {
+        if root.dialog-kind == DialogKind.new-folder || root.dialog-kind == DialogKind.new-file || root.dialog-kind == DialogKind.select-pattern || root.dialog-kind == DialogKind.connect-server || root.dialog-kind == DialogKind.hash {
             dialog.focus-input();
         } else if root.dialog-kind == DialogKind.none {
             key-handler.focus();
@@ -272,6 +273,7 @@ export component AppWindow inherits Window {
             MenuItem { title: "Close Tab"; shortcut: @keys(Control + W); activated => { root.tab-close(root.active-pane, root.active-info.active-tab); } }
             MenuItem { title: "Open Terminal Here"; shortcut: @keys(Control + Shift + Return); activated => { root.command("open-terminal-here"); } }
             MenuSeparator { }
+            MenuItem { title: "New Document…"; activated => { root.command("new-file"); } }
             MenuItem { title: "New Folder…"; shortcut: @keys(F7); activated => { root.command("new-folder"); } }
             MenuItem { title: "Check File Hash…"; activated => { root.command("check-hash"); } }
             MenuItem { title: "Properties"; shortcut: @keys(Alt + Return); activated => { root.command("properties"); } }
@@ -293,6 +295,7 @@ export component AppWindow inherits Window {
             MenuItem { title: "Move to Trash (Delete)"; activated => { root.command("trash"); } }
             MenuItem { title: "Delete Permanently… (Shift+Delete)"; activated => { root.command("delete"); } }
             MenuSeparator { }
+            MenuItem { title: "Select Items Matching…"; activated => { root.command("select-pattern"); } }
             MenuItem { title: "Invert Selection"; activated => { root.command("invert-selection"); } }
             MenuItem { title: "Duplicate"; activated => { root.command("duplicate"); } }
             MenuItem { title: "Select All (Ctrl+A)"; activated => { root.command("select-all"); } }
@@ -426,6 +429,7 @@ export component AppWindow inherits Window {
             if e.modifiers.control && (e.text == "c" || e.text == "C") { root.command("copy"); return accept; }
             if e.modifiers.control && (e.text == "x" || e.text == "X") { root.command("cut"); return accept; }
             if e.modifiers.control && (e.text == "v" || e.text == "V") { root.command("paste"); return accept; }
+            if e.modifiers.control && (e.text == "s" || e.text == "S") { root.command("select-pattern"); return accept; }
             if e.modifiers.control && (e.text == "a" || e.text == "A") { root.command("select-all"); return accept; }
             if e.modifiers.control && (e.text == "+" || e.text == "=") {
                 root.zoom-level = Math.min(3.5, root.zoom-level + 0.25);
@@ -753,6 +757,7 @@ export component AppWindow inherits Window {
             perms-group: root.dialog-perms-group;
             perms-others: root.dialog-perms-others;
             perms-executable <=> root.dialog-perms-executable;
+            perms-editable: root.dialog-perms-editable;
             preview-image: root.preview-image;
             preview-detail: root.preview-detail;
             accept(t) => { root.dialog-accept(t); }

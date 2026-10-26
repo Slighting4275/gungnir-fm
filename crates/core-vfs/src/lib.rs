@@ -11,6 +11,7 @@
 pub mod error;
 pub mod format;
 pub mod model;
+pub mod pattern;
 pub mod provider;
 pub mod sort;
 pub mod uri;

@@ -74,6 +74,12 @@ pub trait VfsProvider: Send + Sync + 'static {
 
     async fn create_dir(&self, uri: &VfsUri) -> VfsResult<()>;
 
+    /// Create an empty regular file exclusively; never replace an existing entry.
+    async fn create_file(&self, uri: &VfsUri) -> VfsResult<()> {
+        let _ = uri;
+        Err(VfsError::Unsupported(format!("{} cannot create an empty file", self.kind().badge())))
+    }
+
     /// Rename within the same directory; returns the new URI.
     async fn rename(&self, uri: &VfsUri, new_name: &str) -> VfsResult<VfsUri>;
 

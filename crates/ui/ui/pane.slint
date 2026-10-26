@@ -353,6 +353,10 @@ export component Pane inherits Rectangle {
                     // EMPTY BACKGROUND CONTEXT (non-trash folder background)
                     // -----------------------------------------------------------------
                     if !root.is-trash && !root.has-target: MenuItem {
+                        title: "New Document…";
+                        activated => { root.command("new-file"); }
+                    }
+                    if !root.is-trash && !root.has-target: MenuItem {
                         title: "New Folder… (F7)";
                         activated => { root.command("new-folder"); }
                     }

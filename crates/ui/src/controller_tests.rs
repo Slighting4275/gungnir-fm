@@ -27,6 +27,14 @@ struct Harness {
     tx: mpsc::Sender<Msg>,
     rx: std_mpsc::Receiver<Update>,
     _rt: tokio::runtime::Runtime,
+    _desktop_sandbox: DesktopSandbox,
+}
+
+struct DesktopSandbox(std::path::PathBuf);
+impl Drop for DesktopSandbox {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }
 
 fn uri(s: &str) -> VfsUri {
@@ -34,19 +42,31 @@ fn uri(s: &str) -> VfsUri {
 }
 
 fn start(left: &str, right: &str, mock: MockConfig) -> Harness {
+    start_with_local(left, right, mock, true)
+}
+
+fn start_with_local(left: &str, right: &str, mock: MockConfig, include_local: bool) -> Harness {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
         .build()
         .unwrap_or_else(|e| panic!("{e}"));
     let mut reg = VfsRegistry::new();
-    reg.register(Arc::new(LocalPosixBackend::new()));
+    if include_local {
+        reg.register(Arc::new(LocalPosixBackend::new()));
+    }
     reg.register(Arc::new(MockGungnirBackend::new(mock)));
     reg.register(Arc::new(backends::RemoteVfsBackend::sftp()));
     reg.register(Arc::new(backends::RemoteVfsBackend::smb()));
     reg.register(Arc::new(backends::RemoteVfsBackend::network()));
     let (utx, urx) = std_mpsc::channel();
     let (tx, rx) = mpsc::channel(4096);
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let sandbox = temp_dir(&format!("desktop-settings-{}", NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+    let desktop_dirs = crate::desktop::Dirs {
+        config: vec![sandbox.join("config")],
+        data: vec![sandbox.join("data"), std::path::PathBuf::from("/usr/share")],
+    };
     let cfg = Config {
         left: uri(left),
         right: uri(right),
@@ -59,11 +79,12 @@ fn start(left: &str, right: &str, mock: MockConfig) -> Harness {
         actions_dir: None,
         session_file: None,
         initial_session: None,
+        desktop_dirs: Some(desktop_dirs),
         trace: false,
     };
     let c = Controller::new(reg, Arc::new(Recorder(Mutex::new(utx))), tx.clone(), cfg);
     rt.spawn(c.run(rx));
-    Harness { tx, rx: urx, _rt: rt }
+    Harness { tx, rx: urx, _rt: rt, _desktop_sandbox: DesktopSandbox(sandbox) }
 }
 
 impl Harness {
@@ -1231,5 +1252,251 @@ fn cancelled_cut_paste_keeps_clipboard_for_retry() {
     assert_eq!(std::fs::read(tmp.join("retry/item")).unwrap(), b"source");
     assert_eq!(std::fs::read(tmp.join("dest/item")).unwrap(), b"existing");
     assert!(!tmp.join("source/item").exists());
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[test]
+fn properties_of_special_file_does_not_block_controller_or_hash_it() {
+    use std::os::unix::ffi::OsStrExt;
+    let tmp = temp_dir("fifo-properties");
+    let path = tmp.join("pipe");
+    let c_path = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+    // SAFETY: valid path in an isolated test directory.
+    assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
+    let h = start(tmp.to_str().unwrap(), "gungnir://odin/asgard", MockConfig::instant());
+    h.until(Duration::from_secs(5), |u| full_rows(u, 0, 1));
+    h.send(Command::Run("properties".into()));
+    let updates = h.until(
+        Duration::from_secs(5),
+        |u| matches!(u, Update::Dialog(d) if d.title == "pipe Properties" && !d.rows.is_empty()),
+    );
+    let view = updates
+        .iter()
+        .find_map(|u| match u {
+            Update::Dialog(d) if !d.rows.is_empty() => Some(d),
+            _ => None,
+        })
+        .unwrap();
+    assert!(!view.rows.iter().any(|(key, _)| key == "SHA-256"));
+    assert!(!view.perms_editable);
+    h.send(Command::SetDarkMode(false));
+    h.until(Duration::from_secs(1), |u| matches!(u, Update::Flags(f) if !f.dark_mode));
+    h.send(Command::DialogCancel);
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[test]
+fn properties_refresh_stays_on_original_file_after_selection_changes() {
+    let tmp = temp_dir("properties-target");
+    std::fs::write(tmp.join("a.txt"), b"a").unwrap();
+    std::fs::write(tmp.join("b.txt"), b"bbbb").unwrap();
+    let h = start(tmp.to_str().unwrap(), "gungnir://odin/asgard", MockConfig::instant());
+    h.until(Duration::from_secs(5), |u| full_rows(u, 0, 2));
+    h.send(Command::Run("properties".into()));
+    h.until(
+        Duration::from_secs(5),
+        |u| matches!(u, Update::Dialog(d) if d.title == "a.txt Properties" && !d.rows.is_empty()),
+    );
+    h.send(Command::RowClicked { pane: 0, index: 1, ctrl: false, shift: false });
+    h.send(Command::DialogCustomAction {
+        action: "tab-1".into(),
+        opt1: false,
+        opt2: false,
+        extra1: String::new(),
+        extra2: String::new(),
+    });
+    let updates = h.until(
+        Duration::from_secs(5),
+        |u| matches!(u, Update::Dialog(d) if d.title == "a.txt Properties" && !d.rows.is_empty()),
+    );
+    let view = updates
+        .iter()
+        .find_map(|u| match u {
+            Update::Dialog(d) if !d.rows.is_empty() => Some(d),
+            _ => None,
+        })
+        .unwrap();
+    assert!(view.rows.iter().any(|(key, value)| key == "Name" && value == "a.txt"));
+    assert!(view.rows.iter().any(|(key, value)| key == "Size" && value.contains("1 bytes")));
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[test]
+fn properties_late_results_do_not_reopen_cancelled_dialog() {
+    let tmp = temp_dir("properties-cancel");
+    std::fs::write(tmp.join("file.txt"), b"test").unwrap();
+    let h = start(tmp.to_str().unwrap(), "gungnir://odin/asgard", MockConfig::instant());
+    h.until(Duration::from_secs(5), |u| full_rows(u, 0, 1));
+    h.send(Command::Run("properties".into()));
+    h.send(Command::DialogCancel);
+    h.until(Duration::from_secs(5), |u| matches!(u, Update::CloseDialog));
+    assert!(!h.drain_for(Duration::from_millis(150)).iter().any(|u| matches!(u, Update::Dialog(_))));
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[test]
+fn new_document_and_folder_use_captured_directory_and_exact_names() {
+    let tmp = temp_dir("new-document");
+    for name in ["original", "other"] {
+        std::fs::create_dir(tmp.join(name)).unwrap();
+    }
+    let h = start(tmp.join("original").to_str().unwrap(), "gungnir://odin/asgard", MockConfig::instant());
+    h.until(Duration::from_secs(5), |u| matches!(u, Update::Pane { pane: 0, view } if !view.loading));
+    h.send(Command::Run("new-file".into()));
+    h.until(Duration::from_secs(5), |u| matches!(u, Update::Dialog(d) if d.kind == crate::DialogKind::NewFile));
+    h.send(Command::Navigate { pane: 0, location: tmp.join("other").display().to_string() });
+    h.send(Command::DialogAccept(" exact name.txt ".into()));
+    h.until(Duration::from_secs(5), |u| matches!(u, Update::Status(s) if s.message == "Created  exact name.txt "));
+    assert_eq!(std::fs::read(tmp.join("original/ exact name.txt ")).unwrap(), b"");
+    assert!(!tmp.join("other/ exact name.txt ").exists());
+    h.send(Command::Run("new-folder".into()));
+    h.until(Duration::from_secs(5), |u| matches!(u, Update::Dialog(d) if d.kind == crate::DialogKind::NewFolder));
+    h.send(Command::Navigate { pane: 0, location: tmp.join("original").display().to_string() });
+    h.send(Command::DialogAccept("Kept here".into()));
+    h.until(Duration::from_secs(5), |u| matches!(u, Update::Status(s) if s.message == "Created Kept here"));
+    assert!(tmp.join("other/Kept here").is_dir());
+    assert!(!tmp.join("original/Kept here").exists());
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[test]
+fn select_pattern_selects_only_visible_matching_names() {
+    let tmp = temp_dir("pattern-selection");
+    for name in ["a.txt", "b.txt", "c.png", ".hidden.txt"] {
+        std::fs::write(tmp.join(name), b"test").unwrap();
+    }
+    let h = start(tmp.to_str().unwrap(), "gungnir://odin/asgard", MockConfig::instant());
+    h.until(Duration::from_secs(5), |u| full_rows(u, 0, 3));
+    h.send(Command::Run("select-pattern".into()));
+    h.until(Duration::from_secs(5), |u| matches!(u, Update::Dialog(d) if d.kind == crate::DialogKind::SelectPattern));
+    h.send(Command::DialogAccept("*.txt".into()));
+    h.until(Duration::from_secs(5), |u| matches!(u, Update::Status(s) if s.selection.starts_with("2 selected")));
+    h.send(Command::Run("duplicate".into()));
+    h.until(Duration::from_secs(5), |u| matches!(u, Update::Status(s) if s.message.contains("finished")));
+    assert!(tmp.join("a (copy).txt").exists() && tmp.join("b (copy).txt").exists());
+    assert!(!tmp.join("c (copy).png").exists());
+    assert!(!tmp.join(".hidden (copy).txt").exists());
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[test]
+fn empty_trash_requires_confirmation_and_can_be_cancelled() {
+    // This harness intentionally has no local provider, so even a regression
+    // cannot touch the user's actual Trash.
+    let h = start_with_local("gungnir://odin/asgard", "gungnir://odin/asgard", MockConfig::instant(), false);
+    h.until(Duration::from_secs(5), |u| full_rows(u, 0, 7));
+    h.send(Command::Run("empty-trash".into()));
+    h.until(Duration::from_secs(5), |u| matches!(u, Update::Dialog(d) if d.kind == crate::DialogKind::ConfirmDelete && d.title == "Empty Trash permanently?"));
+    h.send(Command::DialogCancel);
+    h.until(Duration::from_secs(5), |u| matches!(u, Update::CloseDialog));
+    assert!(
+        !h.drain_for(Duration::from_millis(50))
+            .iter()
+            .any(|u| matches!(u, Update::Status(s) if s.message == "Trash emptied"))
+    );
+}
+
+#[test]
+fn open_multiple_selected_folders_uses_new_tabs() {
+    let tmp = temp_dir("open-folders");
+    for name in ["alpha", "beta"] {
+        std::fs::create_dir(tmp.join(name)).unwrap();
+    }
+    let h = start(tmp.to_str().unwrap(), "gungnir://odin/asgard", MockConfig::instant());
+    h.until(Duration::from_secs(5), |u| full_rows(u, 0, 2));
+    h.send(Command::Run("select-all".into()));
+    h.send(Command::Run("open".into()));
+    let updates =
+        h.until(Duration::from_secs(5), |u| matches!(u, Update::Pane { pane: 0, view } if view.tabs.len() == 3));
+    let view = updates
+        .iter()
+        .find_map(|u| match u {
+            Update::Pane { pane: 0, view } if view.tabs.len() == 3 => Some(view),
+            _ => None,
+        })
+        .unwrap();
+    assert!(view.tabs.iter().any(|t| t.location.ends_with("/alpha")));
+    assert!(view.tabs.iter().any(|t| t.location.ends_with("/beta")));
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[test]
+fn opening_many_items_asks_before_starting_them() {
+    let tmp = temp_dir("open-many");
+    for i in 0..11 {
+        std::fs::create_dir(tmp.join(format!("folder{i}"))).unwrap();
+    }
+    let h = start(tmp.to_str().unwrap(), "gungnir://odin/asgard", MockConfig::instant());
+    h.until(Duration::from_secs(5), |u| full_rows(u, 0, 11));
+    h.send(Command::Run("select-all".into()));
+    h.send(Command::Run("open".into()));
+    h.until(Duration::from_secs(5), |u| matches!(u, Update::Dialog(d) if d.kind == crate::DialogKind::ConfirmOpen));
+    h.send(Command::DialogCancel);
+    h.until(Duration::from_secs(5), |u| matches!(u, Update::CloseDialog));
+    h.send(Command::SetDarkMode(false));
+    assert!(
+        !h.until(Duration::from_secs(5), |u| matches!(u, Update::Flags(f) if !f.dark_mode))
+            .iter()
+            .any(|u| matches!(u, Update::Pane { pane: 0, view } if view.tabs.len() > 1))
+    );
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[test]
+fn default_application_changes_use_the_harness_desktop_sandbox() {
+    let tmp = temp_dir("default-app-isolation");
+    std::fs::write(tmp.join("example.txt"), b"test").unwrap();
+    let h = start(tmp.to_str().unwrap(), "gungnir://odin/asgard", MockConfig::instant());
+    h.until(Duration::from_secs(5), |u| full_rows(u, 0, 1));
+    h.send(Command::Run("properties".into()));
+    h.until(
+        Duration::from_secs(5),
+        |u| matches!(u, Update::Dialog(d) if !d.rows.is_empty() && d.kind == crate::DialogKind::Properties),
+    );
+    h.send(Command::DialogCustomAction {
+        action: "set-default-app:test-sandbox.desktop".into(),
+        opt1: false,
+        opt2: false,
+        extra1: String::new(),
+        extra2: String::new(),
+    });
+    h.until(
+        Duration::from_secs(5),
+        |u| matches!(u, Update::Status(s) if s.message.starts_with("Set test-sandbox.desktop as default application")),
+    );
+    let config = std::fs::read_to_string(h._desktop_sandbox.0.join("config/mimeapps.list")).unwrap();
+    assert!(config.contains("text/plain=test-sandbox.desktop;"));
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[test]
+fn executable_permission_toggle_refuses_directories_and_symlink_targets() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = temp_dir("permissions-targets");
+    std::fs::create_dir(tmp.join("folder")).unwrap();
+    std::fs::write(tmp.join(".target"), b"target").unwrap();
+    std::fs::set_permissions(tmp.join(".target"), std::fs::Permissions::from_mode(0o600)).unwrap();
+    std::os::unix::fs::symlink(".target", tmp.join("link")).unwrap();
+    let h = start(tmp.to_str().unwrap(), "gungnir://odin/asgard", MockConfig::instant());
+    h.until(Duration::from_secs(5), |u| full_rows(u, 0, 2));
+    for (index, action) in [(0, "apply-permissions:noexec"), (1, "apply-permissions:exec")] {
+        h.send(Command::RowClicked { pane: 0, index, ctrl: false, shift: false });
+        h.send(Command::Run("properties".into()));
+        h.until(
+            Duration::from_secs(5),
+            |u| matches!(u, Update::Dialog(d) if !d.rows.is_empty() && d.kind == crate::DialogKind::Properties),
+        );
+        h.send(Command::DialogCustomAction {
+            action: action.into(),
+            opt1: false,
+            opt2: false,
+            extra1: String::new(),
+            extra2: String::new(),
+        });
+        h.send(Command::DialogCancel);
+        h.until(Duration::from_secs(5), |u| matches!(u, Update::CloseDialog));
+    }
+    assert_ne!(std::fs::metadata(tmp.join("folder")).unwrap().permissions().mode() & 0o111, 0);
+    assert_eq!(std::fs::metadata(tmp.join(".target")).unwrap().permissions().mode() & 0o777, 0o600);
     let _ = std::fs::remove_dir_all(tmp);
 }

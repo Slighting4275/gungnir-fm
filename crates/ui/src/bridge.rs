@@ -56,6 +56,7 @@ pub struct DialogView {
     pub perms_group: String,
     pub perms_others: String,
     pub perms_executable: bool,
+    pub perms_editable: bool,
 }
 
 impl Default for DialogView {
@@ -81,6 +82,7 @@ impl Default for DialogView {
             perms_group: String::new(),
             perms_others: String::new(),
             perms_executable: false,
+            perms_editable: false,
         }
     }
 }
@@ -344,6 +346,7 @@ pub fn apply(ui: &AppWindow, u: Update) {
             ui.set_dialog_perms_group(SharedString::from(d.perms_group));
             ui.set_dialog_perms_others(SharedString::from(d.perms_others));
             ui.set_dialog_perms_executable(d.perms_executable);
+            ui.set_dialog_perms_editable(d.perms_editable);
             ui.set_dialog_kind(d.kind);
         }
         Update::CloseDialog => {
@@ -364,6 +367,7 @@ pub fn apply(ui: &AppWindow, u: Update) {
             ui.set_dialog_perms_group(SharedString::new());
             ui.set_dialog_perms_others(SharedString::new());
             ui.set_dialog_perms_executable(false);
+            ui.set_dialog_perms_editable(false);
         }
         Update::CustomCommand(c) => {
             ui.set_dialog_custom_command(c.into());

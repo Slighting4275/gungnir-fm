@@ -128,6 +128,15 @@ pub async fn check_for_update(format: PackageFormat) -> UpdateCheckResult {
         };
     }
 
+    if cfg!(test) {
+        return UpdateCheckResult {
+            available: false,
+            version: String::new(),
+            format,
+            details: "Offline unit test".into(),
+        };
+    }
+
     // Check environment-specific update mechanisms
     match format {
         PackageFormat::Flatpak => {
@@ -310,7 +319,7 @@ fn parse_remote_tags_json(json_str: &str) -> Result<String, String> {
 /// Perform auto-update for the current package format.
 pub async fn perform_update(format: PackageFormat, target_version: &str) -> Result<String, String> {
     // In test/simulation mode
-    if std::env::var_os("GUNGNIR_TEST_UPDATE_SIMULATE").is_some() {
+    if cfg!(test) || std::env::var_os("GUNGNIR_TEST_UPDATE_SIMULATE").is_some() {
         tokio::time::sleep(Duration::from_millis(200)).await;
         return Ok(format!(
             "Simulated {} package update to {} completed successfully",

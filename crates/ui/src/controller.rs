@@ -14,8 +14,8 @@ use std::time::{Duration, Instant};
 
 use core_vfs::sort::sort_order;
 use core_vfs::{
-    BackendKind, CancellationToken, FileEntry, ListOptions, ListSummary, MountInfo, Scheme, SortColumn, SortKey,
-    TransferControl, TransferKind, TransferProgress, TransferRequest, TransferState, VfsError, VfsProvider,
+    BackendKind, CancellationToken, FileEntry, FileKind, ListOptions, ListSummary, MountInfo, Scheme, SortColumn,
+    SortKey, TransferControl, TransferKind, TransferProgress, TransferRequest, TransferState, VfsError, VfsProvider,
     VfsRegistry, VfsResult, VfsUri, VolumeInfo, WatchEvent, format,
 };
 use slint::SharedString;
@@ -205,6 +205,14 @@ pub enum Event {
         message: String,
     },
     MimeIndex(Box<crate::desktop::DesktopIndex>),
+    ApplicationLaunched {
+        generation: u64,
+        result: Result<String, String>,
+    },
+    PropertiesReady {
+        generation: u64,
+        view: Box<DialogView>,
+    },
     ClipboardPaste {
         dest: VfsUri,
         files: Result<Option<crate::clipboard::Files>, ()>,
@@ -235,6 +243,8 @@ pub struct Config {
     pub actions_dir: Option<PathBuf>,
     pub session_file: Option<PathBuf>,
     pub initial_session: Option<crate::session::SessionState>,
+    /// Explicit desktop settings for embedded/test instances; None uses XDG.
+    pub desktop_dirs: Option<crate::desktop::Dirs>,
     pub trace: bool,
 }
 
@@ -374,7 +384,18 @@ pub enum ConflictAction {
 
 enum PendingDialog {
     NewFolder {
+        dir: VfsUri,
+    },
+    NewFile {
+        dir: VfsUri,
+    },
+    SelectPattern {
         pane: usize,
+    },
+    EmptyTrash,
+    OpenMany {
+        pane: usize,
+        entries: Vec<FileEntry>,
     },
     ConnectServer {
         pane: usize,
@@ -390,6 +411,8 @@ enum PendingDialog {
     },
     Properties {
         pane: usize,
+        entry: FileEntry,
+        backend: Option<BackendKind>,
         target_name: String,
         local_path: Option<PathBuf>,
         mime: String,
@@ -647,6 +670,7 @@ pub struct Controller {
     session_saver: Option<crate::session::SessionSaver>,
     actions: crate::actions::ActionRegistry,
     mime_index: crate::desktop::DesktopIndex,
+    properties_generation: u64,
     terminal_open: bool,
     terminal_cwd: PathBuf,
     terminal_output: String,
@@ -798,6 +822,7 @@ impl Controller {
             session_saver: None,
             actions,
             mime_index: crate::desktop::DesktopIndex::default(),
+            properties_generation: 0,
             terminal_open: false,
             terminal_cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
             terminal_output: String::from("Gungnir FM Embedded Terminal (F4)\nType shell commands and press Enter\n"),
@@ -828,11 +853,16 @@ impl Controller {
         }
     }
 
+    fn desktop_dirs(&self) -> crate::desktop::Dirs {
+        self.cfg.desktop_dirs.clone().unwrap_or_else(crate::desktop::Dirs::from_env)
+    }
+
     fn start(&mut self) {
         self.clipboard_service = Some(crate::clipboard::spawn(self.tx.clone()));
+        let desktop_dirs = self.desktop_dirs();
         let tx = self.tx.clone();
         tokio::task::spawn_blocking(move || {
-            let index = crate::desktop::DesktopIndex::load(&crate::desktop::Dirs::from_env());
+            let index = crate::desktop::DesktopIndex::load(&desktop_dirs);
             let _ = tx.blocking_send(Msg::Ev(Event::MimeIndex(Box::new(index))));
         });
         if let Some(ref path) = self.cfg.session_file {
@@ -1760,47 +1790,64 @@ impl Controller {
     // ---- actions ----------------------------------------------------------------------
 
     fn activate(&mut self, pane: usize, index: usize) {
-        let Some(e) = self.panes[pane].tab().entry_at(index).cloned() else { return };
-        if e.is_navigable() {
-            self.navigate_to(pane, e.uri);
+        let Some(entry) = self.panes[pane].tab().entry_at(index).cloned() else { return };
+        self.open_entry(pane, entry, false);
+    }
+
+    fn open_selection(&mut self, pane: usize) {
+        let entries = self.panes[pane].tab().targets();
+        if entries.len() > 10 {
+            let n = entries.len();
+            self.dialog = Some(PendingDialog::OpenMany { pane, entries });
+            self.ui.send(Update::Dialog(DialogView {
+                kind: DialogKind::ConfirmOpen,
+                title: format!("Open {n} items?"),
+                message: "Files will open in their default applications and folders in new tabs.".into(),
+                ..Default::default()
+            }));
             return;
         }
-        let path = match e.uri.scheme() {
-            Scheme::File => e.uri.to_local_path(),
-            Scheme::Gungnir if e.uri.authority().is_empty() => Some(PathBuf::from(e.uri.path())),
-            Scheme::Trash => {
-                backends::local::home_trash().ok().map(|t| t.join("files").join(e.uri.path().trim_start_matches('/')))
+        let tabs = entries.len() > 1;
+        for entry in entries {
+            self.open_entry(pane, entry, tabs);
+        }
+    }
+
+    fn open_entry(&mut self, pane: usize, entry: FileEntry, new_tab: bool) {
+        if entry.is_navigable() {
+            if new_tab {
+                self.new_tab(pane, Some(entry.uri));
+            } else {
+                self.navigate_to(pane, entry.uri);
             }
-            Scheme::Recent | Scheme::Network | Scheme::Gungnir | Scheme::Sftp | Scheme::Smb => None,
+            return;
+        }
+        if entry.uri.scheme() == Scheme::Trash {
+            self.say("Restore this file before opening it", true);
+            return;
+        }
+        if entry.kind == FileKind::Special {
+            self.say("Special files cannot be opened as documents", true);
+            return;
+        }
+        let target = match entry.uri.scheme() {
+            Scheme::File => entry.uri.to_local_path().map(PathBuf::into_os_string),
+            Scheme::Gungnir if entry.uri.authority().is_empty() || entry.uri.authority() == "localhost" => {
+                Some(std::ffi::OsString::from(entry.uri.path()))
+            }
+            Scheme::Sftp | Scheme::Smb => Some(std::ffi::OsString::from(entry.uri.to_uri_string())),
+            _ => None,
         };
-        let Some(path) = path else {
-            self.say(format!("{} lives on a remote/cluster node and cannot be opened locally yet", e.name), true);
+        let Some(target) = target else {
+            self.say("This location cannot be opened by a desktop application", true);
             return;
         };
-        // Guarantee path is absolute so xdg-open never interprets it as a switch flag
-        let path = if path.is_absolute() {
-            path
-        } else if let Ok(cwd) = std::env::current_dir() {
-            cwd.join(path)
-        } else {
-            path
-        };
         let tx = self.tx.clone();
-        let name = e.name.clone();
+        let name = entry.name;
         tokio::task::spawn_blocking(move || {
-            let r = std::process::Command::new("xdg-open")
-                .arg(&path)
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn();
-            let result = match r {
-                Ok(mut child) => {
-                    let _ = child.wait();
-                    Ok(format!("Opened {name}"))
-                }
-                Err(e) => Err(format!("xdg-open {}: {e}", path.display())),
-            };
+            let result = crate::desktop::open_default_with(std::ffi::OsStr::new("xdg-open"), &target)
+                .map(|()| format!("Opened {name}"))
+                .map_err(|e| format!("Could not open {name}: {e}"));
             let _ = tx.blocking_send(Msg::Ev(Event::Op { result, reload: Vec::new(), select: None }));
         });
     }
@@ -2108,11 +2155,26 @@ impl Controller {
             return; // menu shortcuts while a dialog is open
         }
         let p = self.active_pane;
+        if self.panes[p].tab().location.scheme() == Scheme::Trash
+            && matches!(
+                name,
+                "new-file"
+                    | "new-folder"
+                    | "rename"
+                    | "batch-rename"
+                    | "paste"
+                    | "paste-into-folder"
+                    | "duplicate"
+                    | "cut"
+                    | "copy-to-other"
+                    | "move-to-other"
+            )
+        {
+            self.say("Restore items before editing or transferring them from the Trash", true);
+            return;
+        }
         match name {
-            "open" => {
-                let c = self.panes[p].tab().cursor;
-                self.activate(p, c);
-            }
+            "open" => self.open_selection(p),
             "new-window" | "open-in-new-window" => {
                 let location = if name == "open-in-new-window" {
                     self.panes[p]
@@ -2282,16 +2344,33 @@ impl Controller {
             "compare-panes" => {
                 self.compare_panes();
             }
-            "new-folder" => {
-                self.dialog = Some(PendingDialog::NewFolder { pane: p });
-                let loc = self.panes[p].tab().location.display();
+            "new-folder" | "new-file" => {
+                let dir = self.panes[p].tab().location.clone();
+                if dir.scheme() == Scheme::Trash {
+                    self.say("Restore items before editing the Trash", true);
+                    return;
+                }
+                let file = name == "new-file";
+                self.dialog = Some(if file {
+                    PendingDialog::NewFile { dir: dir.clone() }
+                } else {
+                    PendingDialog::NewFolder { dir: dir.clone() }
+                });
                 self.ui.send(Update::Dialog(DialogView {
-                    kind: DialogKind::NewFolder,
-                    title: "New Folder".into(),
-                    message: format!("in {loc}"),
-                    rows: Vec::new(),
-                    input: "New Folder".into(),
-                    preview_path: None,
+                    kind: if file { DialogKind::NewFile } else { DialogKind::NewFolder },
+                    title: if file { "New Document" } else { "New Folder" }.into(),
+                    message: format!("in {}", dir.display()),
+                    input: if file { "Untitled Document.txt" } else { "New Folder" }.into(),
+                    ..Default::default()
+                }));
+            }
+            "select-pattern" => {
+                self.dialog = Some(PendingDialog::SelectPattern { pane: p });
+                self.ui.send(Update::Dialog(DialogView {
+                    kind: DialogKind::SelectPattern,
+                    title: "Select Items".into(),
+                    message: "Select visible names matching a pattern (* matches any text, ? one character).".into(),
+                    input: "*".into(),
                     ..Default::default()
                 }));
             }
@@ -2333,19 +2412,13 @@ impl Controller {
                 });
             }
             "empty-trash" => {
-                let trash_root = match VfsUri::trash("/") {
-                    Ok(u) => u,
-                    Err(e) => {
-                        self.say(e.to_string(), true);
-                        return;
-                    }
-                };
-                let Ok(provider) = self.registry.resolve(&trash_root) else { return };
-                let loc = self.panes[p].tab().location.clone();
-                self.spawn_op(vec![loc, trash_root], None, async move {
-                    provider.empty_trash().await?;
-                    Ok("Trash emptied".to_owned())
-                });
+                self.dialog = Some(PendingDialog::EmptyTrash);
+                self.ui.send(Update::Dialog(DialogView {
+                    kind: DialogKind::ConfirmDelete,
+                    title: "Empty Trash permanently?".into(),
+                    message: "All items in the Trash will be permanently deleted. This cannot be undone.".into(),
+                    ..Default::default()
+                }));
             }
             "delete" => {
                 let targets = self.panes[p].tab().targets();
@@ -2961,12 +3034,13 @@ impl Controller {
             let local_path = e.uri.to_local_path();
             let is_dir = e.is_navigable();
             let name = e.name.clone();
-            let idx = crate::desktop::DesktopIndex::load(&crate::desktop::Dirs::from_env());
-            let mime = idx.mime_for(&name, is_dir);
-            let mime_desc = crate::desktop::mime_description(&mime);
-            let (_items, selected_app_id, _sel_idx) = build_open_with_items(&idx, &mime);
+            let mime = self.mime_index.mime_for(&name, is_dir);
+            let mime_desc = String::new();
+            let selected_app_id = None;
             self.dialog = Some(PendingDialog::Properties {
                 pane,
+                entry: e.clone(),
+                backend: self.panes[pane].tab().backend,
                 target_name: name,
                 local_path,
                 mime,
@@ -3034,39 +3108,67 @@ impl Controller {
     }
 
     fn refresh_properties_dialog(&mut self) {
-        if let Some(PendingDialog::Properties {
-            pane,
+        let Some(PendingDialog::Properties {
+            entry,
+            backend,
             target_name,
             local_path,
             mime,
-            mime_desc,
             current_tab,
             selected_app_id,
-        }) = &mut self.dialog
-        {
-            let p = *pane;
-            let name = target_name.clone();
-            let lp = local_path.clone();
-            let m = mime.clone();
-            let desc = mime_desc.clone();
-            let tab = *current_tab;
+            ..
+        }) = &self.dialog
+        else {
+            return;
+        };
+        let (entry, backend, name, lp, m, tab, selected_app_id) = (
+            entry.clone(),
+            *backend,
+            target_name.clone(),
+            local_path.clone(),
+            mime.clone(),
+            *current_tab,
+            selected_app_id.clone(),
+        );
+        let editable = entry.kind == FileKind::File && lp.is_some();
+        self.properties_generation += 1;
+        let generation = self.properties_generation;
+        let tx = self.tx.clone();
+        // Publish the modal immediately. File I/O, hashes and external thumbnail
+        // tools run on the blocking pool and cannot stop navigation or cancellation.
+        self.ui.send(Update::Dialog(DialogView {
+            kind: DialogKind::Properties,
+            title: format!("{name} Properties"),
+            input: name.clone(),
+            message: "Loading file details…".into(),
+            properties_tab: tab,
+            perms_editable: false,
+            ..Default::default()
+        }));
+        let desktop_dirs = self.desktop_dirs();
+        tokio::task::spawn_blocking(move || {
+            let mut entry = entry;
+            if let Some(path) = lp.as_ref()
+                && let Ok(metadata) = std::fs::symlink_metadata(path)
+            {
+                use std::os::unix::fs::PermissionsExt;
+                entry.mode = metadata.permissions().mode() & 0o7777;
+                entry.modified = metadata.modified().ok();
+                entry.size = if metadata.is_dir() { 0 } else { metadata.len() };
+            }
+            let idx = crate::desktop::DesktopIndex::load(&desktop_dirs);
+            let (open_with_apps, _, mut selected_app_index) = build_open_with_items(&idx, &m);
 
-            let idx = crate::desktop::DesktopIndex::load(&crate::desktop::Dirs::from_env());
-            let (open_with_apps, new_sel_id, mut selected_app_index) = build_open_with_items(&idx, &m);
-
-            if let Some(sel_id) = selected_app_id {
-                if let Some(pos) = open_with_apps.iter().position(|a| a.id.as_str() == sel_id) {
-                    selected_app_index = pos as i32;
-                }
-            } else {
-                *selected_app_id = new_sel_id;
+            if let Some(sel_id) = selected_app_id.as_ref()
+                && let Some(pos) = open_with_apps.iter().position(|a| a.id.as_str() == sel_id)
+            {
+                selected_app_index = pos as i32;
             }
 
             let mut preview_path = None;
             let mut rows = Vec::new();
 
-            let t = self.panes[p].tab();
-            let maybe_e = t.targets().first().cloned().or_else(|| t.entries.iter().find(|e| e.name == name).cloned());
+            let maybe_e = Some(entry);
             if let Some(ref e) = maybe_e {
                 let cat = format::category(e);
                 let ext = format::extension(&e.name);
@@ -3109,11 +3211,11 @@ impl Controller {
                         "VFS status".to_owned(),
                         if e.vfs.status.label().is_empty() { "local".into() } else { e.vfs.status.label().into() },
                     ),
-                    ("Backend".to_owned(), t.backend.map(|b| b.badge().to_owned()).unwrap_or_default()),
+                    ("Backend".to_owned(), backend.map(|b| b.badge().to_owned()).unwrap_or_default()),
                     ("URI".to_owned(), e.uri.to_uri_string()),
                 ];
                 if let Some(local_p) = e.uri.to_local_path()
-                    && !e.is_navigable()
+                    && e.kind == FileKind::File
                     && e.size <= 256 * 1024 * 1024
                     && let Ok(hashes) = crate::hash::compute_hashes(&local_p)
                 {
@@ -3146,7 +3248,7 @@ impl Controller {
             let perms_others = format_perm_bits(current_mode & 7).to_string();
             let perms_executable = (current_mode & 0o111) != 0;
 
-            self.ui.send(Update::Dialog(DialogView {
+            let view = DialogView {
                 kind: DialogKind::Properties,
                 title: format!("{name} Properties"),
                 message: String::new(),
@@ -3157,15 +3259,17 @@ impl Controller {
                 open_with_apps,
                 selected_app_index,
                 custom_command: String::new(),
-                mime_type: m,
-                mime_desc: desc,
+                mime_type: m.clone(),
+                mime_desc: crate::desktop::mime_description(&m),
                 perms_owner,
                 perms_group,
                 perms_others,
                 perms_executable,
+                perms_editable: editable,
                 ..Default::default()
-            }));
-        }
+            };
+            let _ = tx.blocking_send(Msg::Ev(Event::PropertiesReady { generation, view: Box::new(view) }));
+        });
     }
 
     fn new_tab(&mut self, pane: usize, at: Option<VfsUri>) {
@@ -3591,34 +3695,42 @@ impl Controller {
         }
     }
 
-    fn handle_open_with_app(&mut self, app_id: &str) {
-        if let Some(PendingDialog::Properties { local_path: Some(ref path), .. }) = self.dialog {
-            let path = path.clone();
-            let idx = crate::desktop::DesktopIndex::load(&crate::desktop::Dirs::from_env());
-            if let Some(app) = idx.all_apps().into_iter().find(|a| a.id == app_id) {
-                let _ = crate::desktop::launch(app, &[path]);
-                self.dialog = None;
-                self.ui.send(Update::CloseDialog);
-            }
-        }
+    fn launch_properties_app(&self, launch: impl FnOnce() -> Result<String, String> + Send + 'static) {
+        let tx = self.tx.clone();
+        let generation = self.properties_generation;
+        tokio::task::spawn_blocking(move || {
+            let result = launch();
+            let _ = tx.blocking_send(Msg::Ev(Event::ApplicationLaunched { generation, result }));
+        });
     }
 
-    fn handle_open_custom(&mut self, cmd: &str) {
-        if let Some(PendingDialog::Properties { local_path: Some(ref path), .. }) = self.dialog {
-            let path = path.clone();
-            let trimmed = cmd.trim();
-            if !trimmed.is_empty() {
-                let words: Vec<&str> = trimmed.split_whitespace().collect();
-                if let Some(bin) = words.first() {
-                    let mut c = std::process::Command::new(bin);
-                    c.args(&words[1..]);
-                    c.arg(&path);
-                    let _ = c.spawn();
-                    self.dialog = None;
-                    self.ui.send(Update::CloseDialog);
-                }
-            }
-        }
+    fn handle_open_with_app(&mut self, app_id: &str) {
+        let Some(PendingDialog::Properties { local_path: Some(path), .. }) = &self.dialog else { return };
+        let path = path.clone();
+        let dirs = self.desktop_dirs();
+        let app_id = app_id.to_owned();
+        self.launch_properties_app(move || {
+            let index = crate::desktop::DesktopIndex::load(&dirs);
+            let app = index
+                .all_apps()
+                .into_iter()
+                .find(|app| app.id == app_id)
+                .ok_or_else(|| "Application is no longer available".to_owned())?;
+            crate::desktop::launch(app, &[path])
+                .map(|_| format!("Opened with {}", app.name))
+                .map_err(|error| error.to_string())
+        });
+    }
+
+    fn handle_open_custom(&mut self, command: &str) {
+        let Some(PendingDialog::Properties { local_path: Some(path), .. }) = &self.dialog else { return };
+        let path = path.clone();
+        let command = command.to_owned();
+        self.launch_properties_app(move || {
+            crate::desktop::launch_custom(&command, &[path])
+                .map(|_| "Opened with custom application".into())
+                .map_err(|error| error.to_string())
+        });
     }
 
     fn handle_open_selected(&mut self) {
@@ -3633,7 +3745,7 @@ impl Controller {
             let m = mime.clone();
             let desc = mime_desc.clone();
             *selected_app_id = Some(app_id.to_string());
-            match crate::desktop::set_default_app(&m, app_id) {
+            match crate::desktop::set_default_app_with_dirs(self.cfg.desktop_dirs.as_ref(), &m, app_id) {
                 Ok(()) => {
                     self.say(format!("Set {app_id} as default application for {desc}"), false);
                     self.refresh_properties_dialog();
@@ -3653,15 +3765,21 @@ impl Controller {
             if trimmed.is_empty() {
                 return;
             }
-            let bin_name = trimmed.split_whitespace().next().unwrap_or(trimmed);
-            let app_name = Path::new(bin_name)
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| bin_name.to_string());
-            match crate::desktop::create_custom_desktop_entry(trimmed, &app_name) {
+            let app_name = match crate::desktop::custom_command_name(trimmed) {
+                Ok(name) => name,
+                Err(error) => {
+                    self.say(format!("Invalid application command: {error}"), true);
+                    return;
+                }
+            };
+            match crate::desktop::create_custom_desktop_entry_with_dirs(
+                self.cfg.desktop_dirs.as_ref(),
+                trimmed,
+                &app_name,
+            ) {
                 Ok(desktop_id) => {
                     *selected_app_id = Some(desktop_id.clone());
-                    match crate::desktop::set_default_app(&m, &desktop_id) {
+                    match crate::desktop::set_default_app_with_dirs(self.cfg.desktop_dirs.as_ref(), &m, &desktop_id) {
                         Ok(()) => {
                             self.say(format!("Set {app_name} as default application for {desc}"), false);
                             self.refresh_properties_dialog();
@@ -3682,7 +3800,7 @@ impl Controller {
         if let Some(PendingDialog::Properties { mime, mime_desc, .. }) = &self.dialog {
             let m = mime.clone();
             let desc = mime_desc.clone();
-            match crate::desktop::reset_default_app(&m) {
+            match crate::desktop::reset_default_app_with_dirs(self.cfg.desktop_dirs.as_ref(), &m) {
                 Ok(()) => {
                     self.say(format!("Reset default application for {desc} to system default"), false);
                     self.refresh_properties_dialog();
@@ -3696,7 +3814,11 @@ impl Controller {
 
     fn handle_apply_permissions(&mut self, is_exec: bool) {
         let (p, path) = match &self.dialog {
-            Some(PendingDialog::Properties { pane, local_path: Some(path), .. }) => (*pane, path.clone()),
+            Some(PendingDialog::Properties { pane, local_path: Some(path), entry, .. })
+                if entry.kind == FileKind::File =>
+            {
+                (*pane, path.clone())
+            }
             _ => return,
         };
         #[cfg(unix)]
@@ -4107,12 +4229,13 @@ impl Controller {
             }
             let is_dir = e.is_navigable();
             let name = e.name.clone();
-            let idx = crate::desktop::DesktopIndex::load(&crate::desktop::Dirs::from_env());
-            let mime = idx.mime_for(&name, is_dir);
-            let mime_desc = crate::desktop::mime_description(&mime);
-            let (_items, selected_app_id, _sel_idx) = build_open_with_items(&idx, &mime);
+            let mime = self.mime_index.mime_for(&name, is_dir);
+            let mime_desc = String::new();
+            let selected_app_id = None;
             self.dialog = Some(PendingDialog::Properties {
                 pane,
+                entry: e.clone(),
+                backend: self.panes[pane].tab().backend,
                 target_name: name,
                 local_path,
                 mime,
@@ -4150,8 +4273,9 @@ impl Controller {
             return;
         }
         let tx = self.tx.clone();
+        let desktop_dirs = self.desktop_dirs();
         tokio::task::spawn_blocking(move || {
-            let idx = crate::desktop::DesktopIndex::load(&crate::desktop::Dirs::from_env());
+            let idx = crate::desktop::DesktopIndex::load(&desktop_dirs);
             let (first, is_dir) = &local[0];
             let name = first.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             let mime = idx.mime_for(&name, *is_dir);
@@ -4314,18 +4438,47 @@ impl Controller {
     fn dialog_accept(&mut self, text: String) {
         let Some(d) = self.dialog.take() else { return };
         self.ui.send(Update::CloseDialog);
+        let creating_file = matches!(&d, PendingDialog::NewFile { .. });
         match d {
-            PendingDialog::NewFolder { pane } => {
-                let dir = self.panes[pane].tab().location.clone();
-                let name = text.trim().to_owned();
+            PendingDialog::NewFolder { dir } | PendingDialog::NewFile { dir } => {
+                let file = creating_file;
+                let name = text;
                 let uri = match dir.join(&name) {
-                    Ok(u) => u,
+                    Ok(uri) => uri,
                     Err(e) => return self.say(e.to_string(), true),
                 };
                 let Ok(provider) = self.registry.resolve(&uri) else { return };
                 self.spawn_op(vec![dir.clone()], Some((dir, name.clone())), async move {
-                    provider.create_dir(&uri).await?;
+                    if file {
+                        provider.create_file(&uri).await?;
+                    } else {
+                        provider.create_dir(&uri).await?;
+                    }
                     Ok(format!("Created {name}"))
+                });
+            }
+            PendingDialog::OpenMany { pane, entries } => {
+                for entry in entries {
+                    self.open_entry(pane, entry, true);
+                }
+            }
+            PendingDialog::SelectPattern { pane } => {
+                let tab = self.panes[pane].tab();
+                let selected = tab
+                    .visible
+                    .iter()
+                    .filter_map(|&i| tab.entries.get(i as usize))
+                    .filter(|entry| core_vfs::pattern::matches_name_pattern(&text, &entry.name))
+                    .map(|entry| entry.name.clone())
+                    .collect();
+                self.set_selection(pane, selected);
+            }
+            PendingDialog::EmptyTrash => {
+                let Ok(root) = VfsUri::trash("/") else { return };
+                let Ok(provider) = self.registry.resolve(&root) else { return };
+                self.spawn_op(vec![root], None, async move {
+                    provider.empty_trash().await?;
+                    Ok("Trash emptied".into())
                 });
             }
             PendingDialog::ConnectServer { pane } => {
@@ -4579,6 +4732,39 @@ impl Controller {
                     preview_path: None,
                     ..Default::default()
                 }));
+            }
+            Event::ApplicationLaunched { generation, result } => {
+                if generation == self.properties_generation
+                    && matches!(self.dialog, Some(PendingDialog::Properties { .. }))
+                {
+                    match result {
+                        Ok(message) => {
+                            self.dialog = None;
+                            self.ui.send(Update::CloseDialog);
+                            self.say(message, false);
+                        }
+                        Err(message) => self.say(format!("Could not open application: {message}"), true),
+                    }
+                }
+            }
+            Event::PropertiesReady { generation, mut view } => {
+                if generation == self.properties_generation
+                    && let Some(PendingDialog::Properties { selected_app_id, mime, mime_desc, .. }) = &mut self.dialog
+                {
+                    *mime = view.mime_type.clone();
+                    *mime_desc = view.mime_desc.clone();
+                    if let Some(id) = selected_app_id.as_ref() {
+                        if let Some(i) = view.open_with_apps.iter().position(|app| app.id.as_str() == id) {
+                            view.selected_app_index = i as i32;
+                        }
+                    } else {
+                        *selected_app_id = usize::try_from(view.selected_app_index)
+                            .ok()
+                            .and_then(|i| view.open_with_apps.get(i))
+                            .map(|app| app.id.to_string());
+                    }
+                    self.ui.send(Update::Dialog(*view));
+                }
             }
             Event::MimeIndex(index) => {
                 self.mime_index = *index;

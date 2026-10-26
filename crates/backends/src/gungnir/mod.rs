@@ -584,6 +584,12 @@ impl VfsProvider for GungnirVfsBackend {
         Ok(e)
     }
 
+    async fn create_file(&self, uri: &VfsUri) -> VfsResult<()> {
+        let path = local_path(uri)?;
+        self.gate(&path)?;
+        self.local.create_file(&file_uri(&path)?).await
+    }
+
     async fn create_dir(&self, uri: &VfsUri) -> VfsResult<()> {
         let path = local_path(uri)?;
         self.gate(&path)?;

@@ -277,3 +277,17 @@ async fn mixed_same_device_and_cross_device_moves_do_not_recopy_moved_sources() 
     assert!(!external.path().join("remote.txt").exists());
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn live_empty_file_creation_is_exclusive() -> VfsResult<()> {
+    let t = TempDir::new("live-create-file");
+    let Some(d) = Daemon::start(t.path()) else { return Ok(()) };
+    let b = GungnirVfsBackend::connect(d.sock.clone()).await?;
+    let target = t.path().join("new document.txt");
+    b.create_file(&g(&target)).await?;
+    assert_eq!(std::fs::metadata(&target).ok().map(|m| m.len()), Some(0));
+    std::fs::write(&target, b"existing content").unwrap_or_else(|e| panic!("{e}"));
+    assert!(matches!(b.create_file(&g(&target)).await, Err(VfsError::AlreadyExists(_))));
+    assert_eq!(std::fs::read(&target).ok().as_deref(), Some(b"existing content".as_slice()));
+    Ok(())
+}
