@@ -28,6 +28,7 @@ mod desktop;
 mod drives;
 mod hash;
 mod init;
+mod rename;
 mod rows;
 mod session;
 mod thumbnails;
@@ -579,22 +580,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let session_file = config_dir.join("gungnir-fm/session.json");
     let saved_session = crate::session::load(&session_file).ok();
 
+    let left = left_arg.unwrap_or_else(|| {
+        saved_session
+            .as_ref()
+            .and_then(|s| s.primary_pane_tabs.get_paths().first().cloned())
+            .map(|p| crate::session::resolve_path_with_fallback(&p, &home))
+            .unwrap_or_else(|| home.clone())
+    });
+    let right = right_arg.unwrap_or_else(|| {
+        saved_session
+            .as_ref()
+            .and_then(|s| s.secondary_pane_tabs.as_ref())
+            .and_then(|s| s.get_paths().first().cloned())
+            .map(|p| crate::session::resolve_path_with_fallback(&p, &home))
+            .unwrap_or(right_default)
+    });
+    let initial_session =
+        crate::session::startup_state(saved_session.clone(), &left, &right, !args.is_empty(), args.len() > 1);
     let cfg = Config {
-        left: left_arg.unwrap_or_else(|| {
-            saved_session
-                .as_ref()
-                .and_then(|s| s.primary_pane_tabs.get_paths().first().cloned())
-                .map(|p| crate::session::resolve_path_with_fallback(&p, &home))
-                .unwrap_or_else(|| home.clone())
-        }),
-        right: right_arg.unwrap_or_else(|| {
-            saved_session
-                .as_ref()
-                .and_then(|s| s.secondary_pane_tabs.as_ref())
-                .and_then(|sec| sec.get_paths().first().cloned())
-                .map(|p| crate::session::resolve_path_with_fallback(&p, &home))
-                .unwrap_or(right_default)
-        }),
+        left,
+        right,
         left_select,
         right_select,
         home,
@@ -603,7 +608,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         bookmarks_file: Some(config_dir.join("gungnir-fm/bookmarks")),
         actions_dir: Some(actions_dir),
         session_file: Some(session_file),
-        initial_session: if args.is_empty() { saved_session.clone() } else { None },
+        initial_session: Some(initial_session),
+        explicit_locations: !args.is_empty(),
         desktop_dirs: None,
         trace: std::env::var_os("GUNGNIR_FM_TRACE").is_some(),
     };

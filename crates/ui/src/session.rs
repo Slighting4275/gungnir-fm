@@ -108,6 +108,37 @@ pub struct SessionState {
     pub view_mode: i32,
 }
 
+/// Explicit startup paths replace navigation state while retaining view preferences.
+pub fn startup_state(
+    saved: Option<SessionState>,
+    left: &VfsUri,
+    right: &VfsUri,
+    explicit_paths: bool,
+    second_path: bool,
+) -> SessionState {
+    let mut state = saved.unwrap_or_else(|| SessionState {
+        window: WindowState::default(),
+        split_view: false,
+        active_pane: 0,
+        primary_pane_tabs: PaneTabsState::new(vec![left.to_uri_string()], 0),
+        secondary_pane_tabs: None,
+        show_hidden: false,
+        sidebar_visible: true,
+        zoom_level: 1.0,
+        dark_mode: true,
+        view_mode: default_view_mode(),
+    });
+    if explicit_paths {
+        state.primary_pane_tabs = PaneTabsState::new(vec![left.to_uri_string()], 0);
+        state.secondary_pane_tabs = Some(PaneTabsState::new(vec![right.to_uri_string()], 0));
+        state.active_pane = 0;
+    }
+    if second_path {
+        state.split_view = true;
+    }
+    state
+}
+
 fn default_true() -> bool {
     true
 }
@@ -356,6 +387,42 @@ mod tests {
 
     fn sample() -> SessionState {
         serde_json::from_str(r#"{"primary_pane_tabs":["/tmp"]}"#).unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    #[test]
+    fn explicit_locations_keep_preferences_and_replace_restored_tabs() {
+        let mut old = sample();
+        old.dark_mode = false;
+        old.view_mode = 2;
+        old.zoom_level = 1.5;
+        old.show_hidden = true;
+        old.sidebar_visible = false;
+        old.active_pane = 1;
+        old.window = WindowState { width: 1000, height: 700, maximized: true };
+        let left = VfsUri::parse("/tmp/new-left").unwrap_or_else(|e| panic!("{e}"));
+        let right = VfsUri::parse("/tmp/new-right").unwrap_or_else(|e| panic!("{e}"));
+        let new = startup_state(Some(old.clone()), &left, &right, true, true);
+        assert_eq!(new.primary_pane_tabs.get_paths(), [left.to_uri_string()]);
+        assert_eq!(new.secondary_pane_tabs.as_ref().map(PaneTabsState::get_paths), Some(vec![right.to_uri_string()]));
+        assert!(new.split_view);
+        assert_eq!(new.active_pane, 0);
+        assert_eq!(new.window, old.window);
+        assert!(!new.dark_mode);
+        assert_eq!(new.view_mode, 2);
+        assert_eq!(new.zoom_level, 1.5);
+        assert!(new.show_hidden);
+        assert!(!new.sidebar_visible);
+        assert_eq!(startup_state(Some(old.clone()), &left, &right, false, false), old);
+    }
+
+    #[test]
+    fn two_initial_paths_show_the_right_pane_without_a_previous_session() {
+        let left = VfsUri::parse("/tmp/left").unwrap_or_else(|e| panic!("{e}"));
+        let right = VfsUri::parse("/tmp/right").unwrap_or_else(|e| panic!("{e}"));
+        let new = startup_state(None, &left, &right, true, true);
+        assert!(new.split_view);
+        assert_eq!(new.primary_pane_tabs.get_paths(), [left.to_uri_string()]);
+        assert_eq!(new.secondary_pane_tabs.map(|s| s.get_paths()), Some(vec![right.to_uri_string()]));
     }
 
     #[test]

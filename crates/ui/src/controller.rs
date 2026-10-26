@@ -224,6 +224,11 @@ pub enum Event {
         dir: VfsUri,
         result: VfsResult<VfsUri>,
     },
+    RenameFinished {
+        action: RenameAction,
+        from: VfsUri,
+        result: Result<(VfsUri, Option<crate::rename::Identity>), String>,
+    },
     CustomAppSelected(String),
     Tick,
 }
@@ -250,6 +255,8 @@ pub struct Config {
     pub actions_dir: Option<PathBuf>,
     pub session_file: Option<PathBuf>,
     pub initial_session: Option<crate::session::SessionState>,
+    /// Explicit arguments should report an inaccessible path rather than restore Home.
+    pub explicit_locations: bool,
     /// Explicit desktop settings for embedded/test instances; None uses XDG.
     pub desktop_dirs: Option<crate::desktop::Dirs>,
     pub trace: bool,
@@ -643,6 +650,21 @@ fn archive_stem(name: &str) -> String {
     Path::new(name).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| name.to_string())
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum RenameAction {
+    Forward,
+    Undo,
+    Redo,
+}
+
+#[derive(Debug)]
+struct RenameEdit {
+    pane: usize,
+    tab: u64,
+    index: usize,
+    uri: VfsUri,
+}
+
 pub struct Controller {
     registry: VfsRegistry,
     ui: Arc<dyn UiSink>,
@@ -662,7 +684,9 @@ pub struct Controller {
     transfers: Vec<(u64, Transfer)>,
     transfers_dirty: bool,
     dialog: Option<PendingDialog>,
-    renaming: Option<(usize, usize, VfsUri)>,
+    renaming: Option<RenameEdit>,
+    rename_history: crate::rename::History,
+    rename_busy: bool,
     message: Option<(String, bool, Instant)>,
     places: Vec<PlaceItem>,
     bookmarks: Vec<VfsUri>,
@@ -722,7 +746,7 @@ impl Controller {
     #[must_use]
     pub fn new(registry: VfsRegistry, ui: Arc<dyn UiSink>, tx: MsgTx, cfg: Config) -> Self {
         let mut next_tab = 1;
-        let (panes, active_pane, dual, show_hidden, sidebar, zoom_level, dark_mode) =
+        let (mut panes, active_pane, dual, show_hidden, sidebar, zoom_level, dark_mode) =
             if let Some(ref s) = cfg.initial_session {
                 let p0_paths = s.primary_pane_tabs.get_paths();
                 let p0_tabs: Vec<Tab> = if p0_paths.is_empty() {
@@ -735,7 +759,11 @@ impl Controller {
                         .map(|p| {
                             let id = next_tab;
                             next_tab += 1;
-                            let uri = crate::session::resolve_path_with_fallback(&p, &cfg.home);
+                            let uri = if cfg.explicit_locations {
+                                VfsUri::parse(&p).unwrap_or_else(|_| cfg.home.clone())
+                            } else {
+                                crate::session::resolve_path_with_fallback(&p, &cfg.home)
+                            };
                             Tab::new(id, uri)
                         })
                         .collect()
@@ -754,7 +782,11 @@ impl Controller {
                             .map(|p| {
                                 let id = next_tab;
                                 next_tab += 1;
-                                let uri = crate::session::resolve_path_with_fallback(&p, &cfg.home);
+                                let uri = if cfg.explicit_locations {
+                                    VfsUri::parse(&p).unwrap_or_else(|_| cfg.home.clone())
+                                } else {
+                                    crate::session::resolve_path_with_fallback(&p, &cfg.home)
+                                };
                                 Tab::new(id, uri)
                             })
                             .collect()
@@ -782,20 +814,20 @@ impl Controller {
                     s.dark_mode,
                 )
             } else {
-                let mut t0 = Tab::new(1, cfg.left.clone());
-                if let Some(ref sel) = cfg.left_select {
-                    t0.pending_select = Some(sel.clone());
-                    t0.selected = [sel.clone()].into();
-                }
-                let mut t1 = Tab::new(2, cfg.right.clone());
-                if let Some(ref sel) = cfg.right_select {
-                    t1.pending_select = Some(sel.clone());
-                    t1.selected = [sel.clone()].into();
-                }
+                let t0 = Tab::new(1, cfg.left.clone());
+                let t1 = Tab::new(2, cfg.right.clone());
                 let panes = [Pane { tabs: vec![t0], active: 0 }, Pane { tabs: vec![t1], active: 0 }];
                 next_tab = 3;
                 (panes, 0, false, false, true, 1.0, true)
             };
+
+        // File arguments still select their basename when preferences are restored.
+        for (pane, selection) in panes.iter_mut().zip([&cfg.left_select, &cfg.right_select]) {
+            if let Some(name) = selection {
+                pane.tab_mut().pending_select = Some(name.clone());
+                pane.tab_mut().selected = [name.clone()].into();
+            }
+        }
 
         let actions = crate::actions::ActionRegistry::load_or_default(cfg.actions_dir.as_deref());
 
@@ -821,6 +853,8 @@ impl Controller {
             transfers_dirty: false,
             dialog: None,
             renaming: None,
+            rename_history: crate::rename::History::default(),
+            rename_busy: false,
             message: None,
             places: Vec::new(),
             bookmarks: Vec::new(),
@@ -1329,6 +1363,9 @@ impl Controller {
     /// Load `location` into the active tab of `pane`. `silent` keeps the current rows
     /// on screen until the new listing is complete (reloads after changes).
     fn load(&mut self, pane: usize, location: VfsUri, silent: bool) {
+        if !silent && self.renaming.as_ref().is_some_and(|edit| edit.pane == pane) {
+            self.cancel_rename();
+        }
         let provider = match self.registry.resolve(&location) {
             Ok(p) => p,
             Err(e) => {
@@ -1488,6 +1525,11 @@ impl Controller {
             }
         }
         if let Some(c) = collected {
+            // Visible indices belong to the old snapshot. Remember the name
+            // before replacing its entries with a new enumeration order.
+            if t.pending_select.is_none() {
+                t.pending_select = t.entry_at(t.cursor).map(|entry| entry.name.clone());
+            }
             let names: HashSet<&str> = c.iter().map(|e| e.name.as_str()).collect();
             t.selected.retain(|n| names.contains(n.as_str()));
             t.entries = Arc::new(c);
@@ -1566,7 +1608,14 @@ impl Controller {
             t.cursor = pos;
         }
         t.cursor = t.cursor.min(t.visible.len().saturating_sub(1));
+        let stale_editor = self.renaming.as_ref().is_some_and(|edit| {
+            edit.pane == pane && edit.tab == tab && t.entry_at(edit.index).is_none_or(|entry| entry.uri != edit.uri)
+        });
+        if stale_editor {
+            self.cancel_rename();
+        }
         if active {
+            let t = &self.panes[pane].tabs[ti];
             for row in &mut rows {
                 row.selected = t.selected.contains(row.name.as_str());
             }
@@ -1583,7 +1632,7 @@ impl Controller {
             {
                 t.pending_rename = None;
                 let uri = t.entries[t.visible[index] as usize].uri.clone();
-                self.renaming = Some((pane, index, uri));
+                self.renaming = Some(RenameEdit { pane, tab, index, uri });
                 self.ui.send(Update::Rename { pane: pane as i32, index: index as i32 });
             }
         }
@@ -1671,9 +1720,7 @@ impl Controller {
             t.back.push(prev);
             t.forward.clear();
         }
-        if let Some((_, _, _)) = self.renaming.take() {
-            self.ui.send(Update::Rename { pane: -1, index: -1 });
-        }
+        self.cancel_rename();
         // Expand the tree along the new path.
         for (_, u) in location.crumbs() {
             self.tree_expanded.insert(u);
@@ -1805,6 +1852,7 @@ impl Controller {
 
     fn focus_pane(&mut self, pane: usize) {
         if self.active_pane != pane {
+            self.cancel_rename();
             self.active_pane = pane;
             self.push_flags();
             self.push_status();
@@ -2179,6 +2227,62 @@ impl Controller {
         }
     }
 
+    fn cancel_rename(&mut self) {
+        if self.renaming.take().is_some() {
+            self.ui.send(Update::Rename { pane: -1, index: -1 });
+        }
+    }
+
+    fn push_rename_history(&self) {
+        self.ui.send(Update::RenameHistory {
+            can_undo: !self.rename_busy && self.rename_history.undo().is_some(),
+            can_redo: !self.rename_busy && self.rename_history.redo().is_some(),
+        });
+    }
+
+    fn start_rename(
+        &mut self,
+        from: VfsUri,
+        name: String,
+        action: RenameAction,
+        expected: Option<crate::rename::Identity>,
+    ) {
+        if self.rename_busy {
+            self.say("Wait for the current rename to finish", true);
+            return;
+        }
+        let provider = match self.registry.resolve(&from) {
+            Ok(provider) => provider,
+            Err(e) => {
+                self.say(e.to_string(), true);
+                return;
+            }
+        };
+        self.rename_busy = true;
+        self.push_rename_history();
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            let result = crate::rename::apply(provider, from.clone(), name, expected).await.map_err(|e| e.to_string());
+            let _ = tx.send(Msg::Ev(Event::RenameFinished { action, from, result })).await;
+        });
+    }
+
+    fn history_rename(&mut self, undo: bool) {
+        if self.renaming.is_some() {
+            self.say("Finish editing the name first", true);
+            return;
+        }
+        let record = if undo { self.rename_history.undo() } else { self.rename_history.redo() }.cloned();
+        let Some(record) = record else { return };
+        let (from, destination, action) = if undo {
+            (record.after, record.before, RenameAction::Undo)
+        } else {
+            (record.before, record.after, RenameAction::Redo)
+        };
+        let Some(name) = destination.file_name() else { return };
+        self.start_rename(from, name.to_string(), action, Some(record.identity));
+    }
+
     fn run_command(&mut self, name: &str) {
         if self.dialog.is_some() && !matches!(name, "quit") {
             return; // menu shortcuts while a dialog is open
@@ -2203,6 +2307,8 @@ impl Controller {
             return;
         }
         match name {
+            "undo-rename" => self.history_rename(true),
+            "redo-rename" => self.history_rename(false),
             "open" => self.open_selection(p),
             "new-window" | "open-in-new-window" => {
                 let location = if name == "open-in-new-window" {
@@ -2311,7 +2417,7 @@ impl Controller {
                         .unwrap_or(t.cursor);
 
                     if let Some(e) = t.entry_at(target_idx) {
-                        self.renaming = Some((p, target_idx, e.uri.clone()));
+                        self.renaming = Some(RenameEdit { pane: p, tab: t.id, index: target_idx, uri: e.uri.clone() });
                         self.ui.send(Update::Rename {
                             pane: i32::try_from(p).unwrap_or(0),
                             index: i32::try_from(target_idx).unwrap_or(0),
@@ -2922,6 +3028,7 @@ impl Controller {
                 self.trigger_save_session();
             }
             "toggle-dual" => {
+                self.cancel_rename();
                 self.dual = !self.dual;
                 if !self.dual {
                     self.active_pane = 0;
@@ -3338,6 +3445,7 @@ impl Controller {
     }
 
     fn new_tab(&mut self, pane: usize, at: Option<VfsUri>) {
+        self.cancel_rename();
         let loc = at.unwrap_or_else(|| self.panes[pane].tab().location.clone());
         let id = self.next_tab;
         self.next_tab += 1;
@@ -3353,6 +3461,9 @@ impl Controller {
     fn select_tab(&mut self, pane: usize, idx: usize) {
         if idx >= self.panes[pane].tabs.len() {
             return;
+        }
+        if self.panes[pane].active != idx {
+            self.cancel_rename();
         }
         self.panes[pane].active = idx;
         let id = self.panes[pane].tab().id;
@@ -3374,6 +3485,7 @@ impl Controller {
     }
 
     fn close_tab(&mut self, pane: usize, idx: usize) {
+        self.cancel_rename();
         if idx >= self.panes[pane].tabs.len() {
             return;
         }
@@ -3628,17 +3740,19 @@ impl Controller {
             }
             Command::RenameCommit { pane, index, name } => {
                 self.ui.send(Update::Rename { pane: -1, index: -1 });
-                let Some((rp, ri, uri)) = self.renaming.take() else { return };
-                if rp != pane || ri != index || uri.file_name() == Some(name.as_str()) || name.trim().is_empty() {
+                let Some(edit) = self.renaming.take() else { return };
+                if edit.pane != pane
+                    || edit.index != index
+                    || self.panes[pane].tab().id != edit.tab
+                    || self.panes[pane].tab().entry_at(index).is_none_or(|entry| entry.uri != edit.uri)
+                {
+                    self.say("Folder contents changed; start rename again", true);
                     return;
                 }
-                let Ok(provider) = self.registry.resolve(&uri) else { return };
-                let dir = uri.parent().unwrap_or_else(|| uri.clone());
-                let new = name.clone();
-                self.spawn_op(vec![dir.clone()], Some((dir, name)), async move {
-                    let to = provider.rename(&uri, &new).await?;
-                    Ok(format!("Renamed to {}", to.file_name().unwrap_or_default()))
-                });
+                if edit.uri.file_name() == Some(name.as_str()) || name.trim().is_empty() {
+                    return;
+                }
+                self.start_rename(edit.uri, name, RenameAction::Forward, None);
             }
             Command::RenameCancel => {
                 self.renaming = None;
@@ -4666,6 +4780,36 @@ impl Controller {
             Event::Tree(rows) => {
                 self.tree_rows = rows.iter().map(|r| r.uri.to_string()).collect();
                 self.ui.send(Update::Tree(rows));
+            }
+            Event::RenameFinished { action, from, result } => {
+                self.rename_busy = false;
+                match result {
+                    Err(e) => self.say(format!("Rename failed: {e}"), true),
+                    Ok((to, identity)) => {
+                        match action {
+                            RenameAction::Forward => self.rename_history.record(from, to.clone(), identity),
+                            RenameAction::Undo => self.rename_history.finish_undo(),
+                            RenameAction::Redo => self.rename_history.finish_redo(),
+                        }
+                        let verb = match action {
+                            RenameAction::Forward => "Renamed to",
+                            RenameAction::Undo => "Undid rename to",
+                            RenameAction::Redo => "Redid rename to",
+                        };
+                        self.say(format!("{verb} {}", to.file_name().unwrap_or_default()), false);
+                        if let Some(dir) = to.parent() {
+                            let name = to.file_name().unwrap_or_default().to_string();
+                            for pane in &mut self.panes {
+                                if pane.tab().location == dir {
+                                    pane.tab_mut().pending_select = Some(name.clone());
+                                    pane.tab_mut().selected = [name.clone()].into();
+                                }
+                            }
+                            self.reload_matching(&[dir]);
+                        }
+                    }
+                }
+                self.push_rename_history();
             }
             Event::Created { pane, tab, dir, result } => match result {
                 Err(e) => self.say(e.to_string(), true),

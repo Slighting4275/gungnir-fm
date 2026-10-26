@@ -49,6 +49,8 @@ export component AppWindow inherits Window {
     in-out property <bool> update-available: false;
     in-out property <string> update-version: "";
     in-out property <bool> updating: false;
+    in property <bool> can-undo-rename: false;
+    in property <bool> can-redo-rename: false;
     in-out property <[CustomActionItem]> left-custom-actions: [];
     in-out property <[CustomActionItem]> right-custom-actions: [];
     in-out property <bool> dark-mode <=> Theme.dark-mode;
@@ -285,6 +287,9 @@ export component AppWindow inherits Window {
         }
         Menu {
             title: "Edit";
+            MenuItem { title: "Undo Rename (Ctrl+Z)"; enabled: root.can-undo-rename && root.renaming-pane < 0 && root.dialog-kind == DialogKind.none; activated => { root.command("undo-rename"); } }
+            MenuItem { title: "Redo Rename (Ctrl+Shift+Z)"; enabled: root.can-redo-rename && root.renaming-pane < 0 && root.dialog-kind == DialogKind.none; activated => { root.command("redo-rename"); } }
+            MenuSeparator { }
             MenuItem { title: "Cut (Ctrl+X)"; activated => { root.command("cut"); } }
             MenuItem { title: "Copy (Ctrl+C)"; activated => { root.command("copy"); } }
             MenuItem { title: "Paste (Ctrl+V)"; activated => { root.command("paste"); } }
@@ -370,6 +375,10 @@ export component AppWindow inherits Window {
                 return reject;
             }
             let p = root.active-pane;
+            if root.renaming-pane < 0 && e.modifiers.control && (e.text == "z" || e.text == "Z") {
+                root.command(e.modifiers.shift ? "redo-rename" : "undo-rename");
+                return accept;
+            }
             if e.text == Key.Tab && !e.modifiers.control {
                 if root.dual-pane { root.activate-pane(1 - p); }
                 return accept;

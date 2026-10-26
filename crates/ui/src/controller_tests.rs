@@ -89,6 +89,7 @@ fn start_configured(
         actions_dir: None,
         session_file: None,
         initial_session: None,
+        explicit_locations: false,
         desktop_dirs: Some(desktop_dirs),
         trace: false,
     };
@@ -1589,6 +1590,343 @@ fn inline_creation_in_right_pane_preserves_existing_symlink_and_clears_filter() 
     assert!(right.join("Untitled Document").is_symlink());
     assert_eq!(std::fs::read(right.join("Untitled Document 2")).unwrap(), b"");
     assert!(!left.join("Untitled Document 2").exists());
+    drop(h);
+    std::fs::remove_dir_all(d).ok();
+}
+
+#[test]
+fn switching_tabs_cancels_rename_before_a_stale_editor_can_commit() {
+    let d = temp_dir("rename-tab-switch");
+    let a = d.join("a");
+    let b = d.join("b");
+    std::fs::create_dir(&a).unwrap();
+    std::fs::create_dir(&b).unwrap();
+    std::fs::write(a.join("original.txt"), b"a").unwrap();
+    std::fs::write(b.join("other.txt"), b"b").unwrap();
+    let h = start(a.to_str().unwrap(), b.to_str().unwrap(), MockConfig::default());
+    h.until(Duration::from_secs(3), |u| full_rows(u, 0, 1));
+    h.send(Command::TabNew(0));
+    h.send(Command::Navigate { pane: 0, location: b.to_str().unwrap().to_string() });
+    h.until(
+        Duration::from_secs(3),
+        |u| matches!(u, Update::Rows { pane: 0, rows } if rows.len()==1 && rows[0].name=="other.txt"),
+    );
+    h.send(Command::TabSelect(0, 0));
+    h.until(
+        Duration::from_secs(3),
+        |u| matches!(u, Update::Rows { pane: 0, rows } if rows.len()==1 && rows[0].name=="original.txt"),
+    );
+    h.send(Command::Run("rename".into()));
+    h.until(Duration::from_secs(3), |u| matches!(u, Update::Rename { pane: 0, index: 0 }));
+    h.send(Command::TabSelect(0, 1));
+    h.until(
+        Duration::from_secs(3),
+        |u| matches!(u, Update::Rows { pane: 0, rows } if rows.len()==1 && rows[0].name=="other.txt"),
+    );
+    h.send(Command::RenameCommit { pane: 0, index: 0, name: "unexpected.txt".into() });
+    h.drain_for(Duration::from_millis(200));
+    assert!(a.join("original.txt").exists(), "the previous tab's file must survive a stale rename callback");
+    assert!(b.join("other.txt").exists());
+    assert!(!a.join("unexpected.txt").exists());
+    drop(h);
+    std::fs::remove_dir_all(d).ok();
+}
+
+fn commit_cursor_rename(h: &Harness, name: &str) {
+    h.send(Command::Run("rename".into()));
+    let updates =
+        h.until(Duration::from_secs(3), |u| matches!(u, Update::Rename { pane, index } if *pane >= 0 && *index >= 0));
+    let (pane, index) = updates
+        .iter()
+        .find_map(|u| match u {
+            Update::Rename { pane, index } if *pane >= 0 && *index >= 0 => Some((*pane as usize, *index as usize)),
+            _ => None,
+        })
+        .unwrap();
+    h.send(Command::RenameCommit { pane, index, name: name.into() });
+}
+
+fn wait_rename_status(h: &Harness, text: &str) {
+    h.until(Duration::from_secs(3), |u| matches!(u, Update::Status(s) if s.message.contains(text)));
+    h.until(Duration::from_secs(3), |u| matches!(u, Update::RenameHistory { .. }));
+}
+
+#[test]
+fn local_rename_undo_redo_preserves_subsequent_content_edits() {
+    let d = temp_dir("rename-undo-redo");
+    std::fs::write(d.join("first.txt"), b"original").unwrap();
+    let h = start(d.to_str().unwrap(), d.to_str().unwrap(), MockConfig::default());
+    h.until(Duration::from_secs(3), |u| full_rows(u, 0, 1));
+    commit_cursor_rename(&h, "second.txt");
+    wait_rename_status(&h, "Renamed to second.txt");
+    std::fs::write(d.join("second.txt"), b"edited after rename").unwrap();
+    h.send(Command::Run("undo-rename".into()));
+    wait_rename_status(&h, "Undid rename to first.txt");
+    assert_eq!(std::fs::read(d.join("first.txt")).unwrap(), b"edited after rename");
+    assert!(!d.join("second.txt").exists());
+    h.send(Command::Run("redo-rename".into()));
+    wait_rename_status(&h, "Redid rename to second.txt");
+    assert_eq!(std::fs::read(d.join("second.txt")).unwrap(), b"edited after rename");
+    drop(h);
+    std::fs::remove_dir_all(d).ok();
+}
+
+#[test]
+fn rename_undo_collision_keeps_both_files_and_allows_retry() {
+    let d = temp_dir("rename-undo-collision");
+    std::fs::write(d.join("first.txt"), b"original").unwrap();
+    let h = start(d.to_str().unwrap(), d.to_str().unwrap(), MockConfig::default());
+    h.until(Duration::from_secs(3), |u| full_rows(u, 0, 1));
+    commit_cursor_rename(&h, "second.txt");
+    wait_rename_status(&h, "Renamed to second.txt");
+    std::fs::write(d.join("first.txt"), b"other file").unwrap();
+    h.send(Command::Run("undo-rename".into()));
+    wait_rename_status(&h, "Rename failed:");
+    assert_eq!(std::fs::read(d.join("first.txt")).unwrap(), b"other file");
+    assert_eq!(std::fs::read(d.join("second.txt")).unwrap(), b"original");
+    std::fs::remove_file(d.join("first.txt")).unwrap();
+    h.send(Command::Run("undo-rename".into()));
+    wait_rename_status(&h, "Undid rename to first.txt");
+    assert_eq!(std::fs::read(d.join("first.txt")).unwrap(), b"original");
+    drop(h);
+    std::fs::remove_dir_all(d).ok();
+}
+
+#[test]
+fn rename_undo_refuses_a_replacement_at_the_recorded_path() {
+    let d = temp_dir("rename-undo-replacement");
+    std::fs::write(d.join("first.txt"), b"original").unwrap();
+    let h = start(d.to_str().unwrap(), d.to_str().unwrap(), MockConfig::default());
+    h.until(Duration::from_secs(3), |u| full_rows(u, 0, 1));
+    commit_cursor_rename(&h, "second.txt");
+    wait_rename_status(&h, "Renamed to second.txt");
+    std::fs::rename(d.join("second.txt"), d.join("moved-elsewhere.txt")).unwrap();
+    std::fs::write(d.join("second.txt"), b"replacement").unwrap();
+    h.send(Command::Run("undo-rename".into()));
+    wait_rename_status(&h, "The item was replaced");
+    assert_eq!(std::fs::read(d.join("second.txt")).unwrap(), b"replacement");
+    assert_eq!(std::fs::read(d.join("moved-elsewhere.txt")).unwrap(), b"original");
+    assert!(!d.join("first.txt").exists());
+    drop(h);
+    std::fs::remove_dir_all(d).ok();
+}
+
+#[test]
+fn another_successful_rename_discards_redo() {
+    let d = temp_dir("rename-new-history");
+    std::fs::write(d.join("first.txt"), b"keep").unwrap();
+    let h = start(d.to_str().unwrap(), d.to_str().unwrap(), MockConfig::default());
+    h.until(Duration::from_secs(3), |u| full_rows(u, 0, 1));
+    commit_cursor_rename(&h, "second.txt");
+    wait_rename_status(&h, "Renamed to second.txt");
+    h.send(Command::Run("undo-rename".into()));
+    wait_rename_status(&h, "Undid rename to first.txt");
+    h.until(
+        Duration::from_secs(3),
+        |u| matches!(u, Update::Rows { pane: 0, rows } if rows.len()==1 && rows[0].name=="first.txt"),
+    );
+    commit_cursor_rename(&h, "third.txt");
+    h.until(Duration::from_secs(3), |u| matches!(u, Update::RenameHistory { can_undo: true, can_redo: false }));
+    h.send(Command::Run("redo-rename".into()));
+    h.drain_for(Duration::from_millis(100));
+    assert_eq!(std::fs::read(d.join("third.txt")).unwrap(), b"keep");
+    assert!(!d.join("second.txt").exists());
+    drop(h);
+    std::fs::remove_dir_all(d).ok();
+}
+
+#[test]
+fn symlink_rename_undo_redo_acts_on_the_link_itself() {
+    let d = temp_dir("rename-symlink-history");
+    let target = d.join("target.txt");
+    std::fs::write(&target, b"keep target").unwrap();
+    std::os::unix::fs::symlink(&target, d.join("link")).unwrap();
+    let h = start(d.to_str().unwrap(), d.to_str().unwrap(), MockConfig::default());
+    h.until(Duration::from_secs(3), |u| full_rows(u, 0, 2));
+    commit_cursor_rename(&h, "renamed-link");
+    wait_rename_status(&h, "Renamed to renamed-link");
+    h.send(Command::Run("undo-rename".into()));
+    wait_rename_status(&h, "Undid rename to link");
+    assert_eq!(std::fs::read_link(d.join("link")).unwrap(), target);
+    h.send(Command::Run("redo-rename".into()));
+    wait_rename_status(&h, "Redid rename to renamed-link");
+    assert_eq!(std::fs::read_link(d.join("renamed-link")).unwrap(), target);
+    assert_eq!(std::fs::read(&target).unwrap(), b"keep target");
+    drop(h);
+    std::fs::remove_dir_all(d).ok();
+}
+
+#[test]
+fn directory_rename_undo_keeps_children() {
+    let d = temp_dir("rename-directory-history");
+    std::fs::create_dir(d.join("folder")).unwrap();
+    std::fs::write(d.join("folder/child"), b"keep").unwrap();
+    let h = start(d.to_str().unwrap(), d.to_str().unwrap(), MockConfig::default());
+    h.until(Duration::from_secs(3), |u| full_rows(u, 0, 1));
+    commit_cursor_rename(&h, "changed");
+    wait_rename_status(&h, "Renamed to changed");
+    h.send(Command::Run("undo-rename".into()));
+    wait_rename_status(&h, "Undid rename to folder");
+    assert_eq!(std::fs::read(d.join("folder/child")).unwrap(), b"keep");
+    drop(h);
+    std::fs::remove_dir_all(d).ok();
+}
+
+#[test]
+fn sorting_cancels_rename_instead_of_retargeting_another_row() {
+    let d = temp_dir("rename-sort-editor");
+    std::fs::write(d.join("a"), b"a").unwrap();
+    std::fs::write(d.join("z"), b"z").unwrap();
+    let h = start(d.to_str().unwrap(), d.to_str().unwrap(), MockConfig::default());
+    h.until(Duration::from_secs(3), |u| full_rows(u, 0, 2));
+    h.send(Command::Run("rename".into()));
+    h.until(Duration::from_secs(3), |u| matches!(u, Update::Rename { pane: 0, index: 0 }));
+    h.send(Command::SortBy { pane: 0, column: 0 });
+    h.until(Duration::from_secs(3), |u| matches!(u, Update::Rename { pane: -1, index: -1 }));
+    h.send(Command::RenameCommit { pane: 0, index: 0, name: "unexpected".into() });
+    h.drain_for(Duration::from_millis(100));
+    assert_eq!(std::fs::read(d.join("a")).unwrap(), b"a");
+    assert_eq!(std::fs::read(d.join("z")).unwrap(), b"z");
+    assert!(!d.join("unexpected").exists());
+    drop(h);
+    std::fs::remove_dir_all(d).ok();
+}
+
+#[test]
+fn startup_preferences_do_not_erase_the_file_argument_selection() {
+    let d = temp_dir("startup-selected-file");
+    std::fs::write(d.join("aaa.txt"), b"other").unwrap();
+    std::fs::write(d.join("chosen.txt"), b"chosen").unwrap();
+    let location = VfsUri::from_local_path(&d).unwrap();
+    let h = start_configured(d.to_str().unwrap(), d.to_str().unwrap(), MockConfig::default(), true, |cfg| {
+        cfg.left_select = Some("chosen.txt".into());
+        cfg.initial_session = Some(crate::session::startup_state(None, &location, &location, true, false));
+    });
+    let updates = h.until(Duration::from_secs(3), |u| full_rows(u, 0, 2));
+    let rows = updates
+        .iter()
+        .find_map(|u| match u {
+            Update::Rows { pane: 0, rows } if rows.len() == 2 => Some(rows),
+            _ => None,
+        })
+        .unwrap();
+    assert!(rows.iter().any(|row| row.name == "chosen.txt" && row.selected));
+    assert!(rows.iter().any(|row| row.name == "aaa.txt" && !row.selected));
+    drop(h);
+    std::fs::remove_dir_all(d).ok();
+}
+
+#[test]
+fn a_reordered_directory_snapshot_keeps_the_cursor_on_the_same_name() {
+    use core_vfs::VfsProvider;
+    let d = temp_dir("cursor-reordered-snapshot");
+    std::fs::write(d.join("a"), b"a").unwrap();
+    std::fs::write(d.join("b"), b"b").unwrap();
+    let h = start(d.to_str().unwrap(), d.to_str().unwrap(), MockConfig::default());
+    h.until(Duration::from_secs(3), |u| full_rows(u, 0, 2));
+    h.drain_for(Duration::from_millis(100));
+    h.send(Command::RowClicked { pane: 0, index: 1, ctrl: false, shift: false });
+    h.until(
+        Duration::from_secs(3),
+        |u| matches!(u, Update::Pane { pane: 0, view } if view.cursor==1 && view.selected_count==1),
+    );
+    let backend = LocalPosixBackend::new();
+    let entries = h._rt.block_on(async {
+        vec![
+            backend.stat(&VfsUri::from_local_path(&d.join("b")).unwrap()).await.unwrap(),
+            backend.stat(&VfsUri::from_local_path(&d.join("a")).unwrap()).await.unwrap(),
+        ]
+    });
+    // A valid silent refresh can enumerate the same files in a different raw order.
+    h.tx.try_send(Msg::Ev(crate::controller::Event::ListDone {
+        pane: 0,
+        tab: 1,
+        generation: 1,
+        result: Ok(core_vfs::ListSummary { entries: 2, skipped: 0 }),
+        collected: Some(entries),
+        started: Instant::now(),
+    }))
+    .unwrap();
+    h.until(
+        Duration::from_secs(3),
+        |u| matches!(u, Update::Rows { pane: 0, rows } if rows.len()==2 && rows[1].name=="b"),
+    );
+    let updates = h.until(Duration::from_secs(3), |u| matches!(u, Update::Pane { pane: 0, .. }));
+    let view = updates
+        .iter()
+        .find_map(|u| match u {
+            Update::Pane { pane: 0, view } => Some(view),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(view.cursor, 1, "raw directory order must not move the cursor from b to a");
+    assert_eq!(view.selected_count, 1);
+    drop(h);
+    std::fs::remove_dir_all(d).ok();
+}
+
+#[test]
+fn failed_rename_preserves_selection_and_does_not_create_undo_history() {
+    let d = temp_dir("rename-failed-selection");
+    std::fs::write(d.join("a"), b"a").unwrap();
+    std::fs::write(d.join("b"), b"b").unwrap();
+    let h = start(d.to_str().unwrap(), d.to_str().unwrap(), MockConfig::default());
+    h.until(Duration::from_secs(3), |u| full_rows(u, 0, 2));
+    h.send(Command::RowClicked { pane: 0, index: 0, ctrl: false, shift: false });
+    h.until(Duration::from_secs(3), |u| matches!(u, Update::Pane { pane: 0, view } if view.selected_count==1));
+    commit_cursor_rename(&h, "b");
+    h.until(Duration::from_secs(3), |u| matches!(u, Update::Status(s) if s.message.contains("Rename failed:")));
+    h.until(Duration::from_secs(3), |u| matches!(u, Update::RenameHistory { can_undo: false, can_redo: false }));
+    h.send(Command::Nav { pane: 0, action: "refresh".into() });
+    let updates = h.until(Duration::from_secs(3), |u| full_rows(u, 0, 2));
+    let rows = updates
+        .iter()
+        .find_map(|u| match u {
+            Update::Rows { pane: 0, rows } if rows.len() == 2 => Some(rows),
+            _ => None,
+        })
+        .unwrap();
+    assert!(rows[0].selected);
+    assert!(!rows[1].selected);
+    assert_eq!(std::fs::read(d.join("a")).unwrap(), b"a");
+    assert_eq!(std::fs::read(d.join("b")).unwrap(), b"b");
+    drop(h);
+    std::fs::remove_dir_all(d).ok();
+}
+
+#[test]
+fn redo_rename_refuses_a_replacement_after_undo() {
+    let d = temp_dir("rename-redo-replacement");
+    std::fs::write(d.join("before"), b"original").unwrap();
+    let h = start(d.to_str().unwrap(), d.to_str().unwrap(), MockConfig::default());
+    h.until(Duration::from_secs(3), |u| full_rows(u, 0, 1));
+    commit_cursor_rename(&h, "after");
+    wait_rename_status(&h, "Renamed to after");
+    h.send(Command::Run("undo-rename".into()));
+    wait_rename_status(&h, "Undid rename to before");
+    std::fs::rename(d.join("before"), d.join("kept")).unwrap();
+    std::fs::write(d.join("before"), b"replacement").unwrap();
+    h.send(Command::Run("redo-rename".into()));
+    wait_rename_status(&h, "The item was replaced");
+    assert_eq!(std::fs::read(d.join("before")).unwrap(), b"replacement");
+    assert_eq!(std::fs::read(d.join("kept")).unwrap(), b"original");
+    assert!(!d.join("after").exists());
+    drop(h);
+    std::fs::remove_dir_all(d).ok();
+}
+
+#[test]
+fn inaccessible_explicit_location_is_reported_without_redirecting_home() {
+    let d = temp_dir("explicit-missing-path");
+    let missing = d.join("missing");
+    let requested = VfsUri::from_local_path(&missing).unwrap();
+    let right = VfsUri::from_local_path(&d).unwrap();
+    let h = start_configured(missing.to_str().unwrap(), d.to_str().unwrap(), MockConfig::default(), true, |cfg| {
+        cfg.initial_session = Some(crate::session::startup_state(None, &requested, &right, true, false));
+        cfg.explicit_locations = true;
+    });
+    h.until(Duration::from_secs(3), |u| matches!(u, Update::Pane { pane: 0, view } if view.location==missing.display().to_string() && !view.error.is_empty()));
+    assert!(!missing.exists());
     drop(h);
     std::fs::remove_dir_all(d).ok();
 }

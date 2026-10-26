@@ -48,6 +48,35 @@ actual executable file. Pattern matching was checked against an independent
 reference implementation with libFuzzer and AFL++; fuzzing exposed and verified
 the correction for names beginning with a literal `*`.
 
+## Individual rename history and selection recovery
+
+The Edit menu provides **Undo Rename** (`Ctrl+Z`) and **Redo Rename**
+(`Ctrl+Shift+Z`) for individual local file, folder, and symlink renames. The
+current window session keeps the most recent 100 supported renames. A new
+successful rename clears redo; failed operations keep their history for retry.
+Filesystem device/inode and birth-time metadata identify the original item;
+history is unavailable where stable birth-time metadata is not provided. The
+checks do not follow symlinks or keep deleted files open. Existing destination
+names are preserved, and replacement items are rejected. Editing the same file's
+contents does not prevent undoing its rename.
+
+Rename editors remember their tab as well as their target URI. Switching tabs,
+panes, or locations cancels editing. A changed row after sorting or refreshing
+cannot silently redirect a stale editor. Failed renames preserve the original
+selection. Silent directory refreshes remember the cursor's filename before
+replacing the listing, preserving it when raw enumeration order changes.
+
+Opening a path from the command line or a new window retains saved theme, view,
+zoom, hidden-file, and sidebar preferences while using the requested locations.
+Two path arguments show both panes, and file arguments retain their selection
+when startup preferences are restored. Inaccessible explicit paths report their
+error instead of being silently redirected to Home; saved inaccessible paths
+still use recovery fallback.
+
+History covers individual renames, with no copy/move/delete, batch rename, or
+remote-operation undo. Concurrent external filesystem mutations can still race
+the identity check and rename syscall; history is not a filesystem transaction.
+
 ## Session recovery and context menus
 
 Session updates coalesce without dropping the newest snapshot when navigation
@@ -82,8 +111,8 @@ it does not recover a previous association that the older test may have removed.
 
 ## Validation
 
-The current workspace has 152 passing tests, including 10 new regressions in the
-creation and session-recovery pass after the previous 142-test baseline. Strict Clippy and formatting checks pass. Native GUI tests in an
+The current workspace has 167 passing tests, including 15 new regressions in the
+rename and startup-preference pass after the previous 152-test baseline. Strict Clippy and formatting checks pass. Native GUI tests in an
 isolated Xvfb display verify New Document, pattern selection, clipboard export and
 import, copy/paste, tab/window shortcuts, resizing, and clean exit.
 
@@ -93,10 +122,16 @@ operations, and Valgrind on Properties regressions. This pass additionally runs
 AddressSanitizer and ThreadSanitizer on session regressions, and AddressSanitizer
 on the blocked live-listing cancellation regression. Both fuzzers ran
 bounded campaigns against the pattern matcher with an independent oracle.
-Detailed logs, the continuing audit's complete tool matrix, and limitations are
-kept in the ignored `.bug-check/` directory.
+The rename/startup continuation also runs 15 focused AddressSanitizer and
+ThreadSanitizer checks against production helpers. Valgrind exercises 12 rename
+controller tests with zero errors and no definite leaks; 48 bytes of possibly
+lost runtime allocation remain reported. Xvfb checks exercise keyboard undo/redo,
+collision/retry handling, text-editor shortcut isolation, mouse tab switching,
+and explicit-path startup preferences. Detailed logs, the continuing audit's
+complete tool matrix, and limitations are kept in the ignored `.bug-check/`
+directory.
 
-Operation-history undo/redo and complete desktop extension compatibility remain
-unfinished. Live remote servers and Wayland clipboard integration were not
+Undo/redo for operations other than individual local renames, document templates,
+and complete desktop extension compatibility remain unfinished. Live remote servers and Wayland clipboard integration were not
 available for end-to-end validation in this pass. Gungnir VFS's existing protocol
 was sufficient; these changes are in Gungnir FM and its adapter.

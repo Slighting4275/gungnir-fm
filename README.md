@@ -374,6 +374,12 @@ actions are also in the **File** menu. `Ctrl+Shift+N` or `F7`
 creates a folder. Existing files and symlinks are preserved; unsupported backends
 report an error. Right-clicking a file opens its item actions instead.
 
+- **Undo Rename** (`Ctrl+Z`) and **Redo Rename** (`Ctrl+Shift+Z`) are in the Edit
+  menu. They cover individual local file, folder, and symlink renames, preserving
+  occupied destination names and refusing replaced items. History keeps up to
+  100 renames in the current window session and requires filesystem birth-time
+  metadata. Copy, move, delete, batch rename, and remote operations are not
+  included. Text fields retain their own editing shortcuts.
 - **Select Items Matching** (`Ctrl+S`): match visible names with `*` and `?`.
 - **Invert Selection**, **Duplicate**, **Paste Into Folder**, and **Open in Other Pane**.
 - **New Window** (`Ctrl+N`) and multi-item **Open**; selected folders open in tabs.
@@ -386,6 +392,11 @@ report an error. Right-clicking a file opens its item actions instead.
 The creation menu follows [Nemo's menu organization](https://github.com/linuxmint/nemo/blob/master/src/nemo-view.c).
 Default names get a numeric suffix when already taken, and cancelling the rename
 keeps the created item. Inline naming works in list, compact, and grid views.
+Switching tabs, panes, or locations cancels an unfinished rename. Sorting or
+refreshing cancels the editor if its row no longer identifies the same item;
+failed renames preserve the selection. Directory refreshes keep the cursor on the
+same filename when the backend enumerates entries in a different order.
+
 User document templates and complete Nemo feature parity are not yet implemented.
 See [workflow details and validation](docs/NEMO-WORKFLOWS.md).
 
@@ -587,7 +598,7 @@ Gungnir FM includes an enterprise-grade, multi-format lossless compression subsy
 - **Automatic State Saving**: Debounced auto-save (500 ms) to `~/.config/gungnir-fm/session.json`; rapid updates retain the newest snapshot. Closing the window waits for a final save, and save errors are reported to stderr.
 - **Atomic Writes**: Exclusively creates private temporary files, syncs their contents, and atomically replaces the session file. Failed writes clean up their temporary file; a failed save can be retried.
 - **Persisted State**: Window size and maximized state, dark/light theme mode, active pane, split view toggle, open tabs per pane, list/compact/grid view, preview zoom level, hidden file visibility (`Ctrl+H`), and sidebar state (`F9`).
-- **Safe Recovery**: Automatically restores open tabs and paths on restart, safely falling back to the user's home directory if any saved path is unmounted or inaccessible.
+- **Safe Recovery**: Automatically restores open tabs and paths on restart, safely falling back to the user's home directory if any saved path is unmounted or inaccessible. Opening explicit paths keeps the saved theme, view mode, zoom, hidden-file and sidebar preferences. Supplying both left and right paths shows both panes; a file argument selects that file in its parent folder. An inaccessible explicit path reports an error for that path.
 
 ### 🔌 Removable Drives & Desktop Integration
 - **Removable Media**: D-Bus and `udisks2` integration displaying removable storage drives, partitions, and mount states in the sidebar.
@@ -638,6 +649,7 @@ Gungnir FM includes an enterprise-grade, multi-format lossless compression subsy
 | `Ctrl+Shift+N` / `F7` | Create new folder |
 | `Ctrl+N` | New window |
 | `Ctrl+S` | Select items matching a name pattern |
+| `Ctrl+Z` / `Ctrl+Shift+Z` | Undo / Redo individual local rename |
 | `Ctrl+C` / `Ctrl+X` / `Ctrl+V` | Copy / Cut / Paste selection |
 | `Delete` | Move selection to Trash |
 | `Shift+Delete` | Permanently delete selection |

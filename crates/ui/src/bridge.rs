@@ -153,6 +153,10 @@ pub enum Update {
         pane: i32,
         index: i32,
     },
+    RenameHistory {
+        can_undo: bool,
+        can_redo: bool,
+    },
     CustomActions {
         pane: usize,
         actions: Vec<crate::CustomActionItem>,
@@ -376,6 +380,10 @@ pub fn apply(ui: &AppWindow, u: Update) {
             ui.set_terminal_open(open);
             ui.set_terminal_cwd(cwd.into());
             ui.set_terminal_output(output.into());
+        }
+        Update::RenameHistory { can_undo, can_redo } => {
+            ui.set_can_undo_rename(can_undo);
+            ui.set_can_redo_rename(can_redo);
         }
         Update::Rename { pane, index } => {
             ui.set_renaming_pane(pane);
