@@ -229,6 +229,7 @@ pub enum Event {
         from: VfsUri,
         result: Result<(VfsUri, Option<crate::rename::Identity>), String>,
     },
+    Templates(Vec<crate::templates::Template>),
     CustomAppSelected(String),
     Tick,
 }
@@ -253,6 +254,7 @@ pub struct Config {
     pub gungnir_label: String,
     pub bookmarks_file: Option<PathBuf>,
     pub actions_dir: Option<PathBuf>,
+    pub templates_dir: Option<PathBuf>,
     pub session_file: Option<PathBuf>,
     pub initial_session: Option<crate::session::SessionState>,
     /// Explicit arguments should report an inaccessible path rather than restore Home.
@@ -687,6 +689,9 @@ pub struct Controller {
     renaming: Option<RenameEdit>,
     rename_history: crate::rename::History,
     rename_busy: bool,
+    templates: Vec<crate::templates::Template>,
+    templates_loading: bool,
+    templates_refreshed: Instant,
     message: Option<(String, bool, Instant)>,
     places: Vec<PlaceItem>,
     bookmarks: Vec<VfsUri>,
@@ -855,6 +860,9 @@ impl Controller {
             renaming: None,
             rename_history: crate::rename::History::default(),
             rename_busy: false,
+            templates: Vec::new(),
+            templates_loading: false,
+            templates_refreshed: Instant::now(),
             message: None,
             places: Vec::new(),
             bookmarks: Vec::new(),
@@ -908,6 +916,7 @@ impl Controller {
     }
 
     fn start(&mut self) {
+        self.refresh_templates();
         self.clipboard_service = Some(crate::clipboard::spawn(self.tx.clone()));
         let desktop_dirs = self.desktop_dirs();
         let tx = self.tx.clone();
@@ -2227,6 +2236,59 @@ impl Controller {
         }
     }
 
+    fn refresh_templates(&mut self) {
+        if self.templates_loading {
+            return;
+        }
+        self.templates_refreshed = Instant::now();
+        let Some(root) = self.cfg.templates_dir.clone() else { return };
+        self.templates_loading = true;
+        let tx = self.tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let items = crate::templates::scan(&root);
+            let _ = tx.blocking_send(Msg::Ev(Event::Templates(items)));
+        });
+    }
+
+    fn create_template(&mut self, id: &str) {
+        let Some(template) = self.templates.iter().find(|item| item.source.to_uri_string() == id).cloned() else {
+            self.say("Template is no longer available; refresh Templates", true);
+            return;
+        };
+        let pane = self.active_pane;
+        let dir = self.panes[pane].tab().location.clone();
+        if dir.scheme() == Scheme::Trash {
+            self.say("Restore items before editing the Trash", true);
+            return;
+        }
+        let provider = match self.registry.resolve(&dir) {
+            Ok(provider) => provider,
+            Err(e) => {
+                self.say(e.to_string(), true);
+                return;
+            }
+        };
+        let tab = self.panes[pane].tab().id;
+        let tx = self.tx.clone();
+        self.say(format!("Creating document from {}", template.name), false);
+        tokio::spawn(async move {
+            let result = async {
+                for number in 1..=10_000 {
+                    let name = crate::templates::numbered_name(&template.name, number);
+                    let target = dir.join(&name)?;
+                    match provider.create_from_template(&template.source, &target).await {
+                        Ok(()) => return Ok(target),
+                        Err(VfsError::AlreadyExists(_)) => continue,
+                        Err(e) => return Err(e),
+                    }
+                }
+                Err(VfsError::AlreadyExists("Too many documents with this template name".into()))
+            }
+            .await;
+            let _ = tx.send(Msg::Ev(Event::Created { pane, tab, dir, result })).await;
+        });
+    }
+
     fn cancel_rename(&mut self) {
         if self.renaming.take().is_some() {
             self.ui.send(Update::Rename { pane: -1, index: -1 });
@@ -2306,7 +2368,12 @@ impl Controller {
             self.say("Restore items before editing or transferring them from the Trash", true);
             return;
         }
+        if let Some(id) = name.strip_prefix("create-template:") {
+            self.create_template(id);
+            return;
+        }
         match name {
+            "refresh-templates" => self.refresh_templates(),
             "undo-rename" => self.history_rename(true),
             "redo-rename" => self.history_rename(false),
             "open" => self.open_selection(p),
@@ -4811,6 +4878,20 @@ impl Controller {
                 }
                 self.push_rename_history();
             }
+            Event::Templates(items) => {
+                self.templates_loading = false;
+                if self.templates != items {
+                    let menu = items
+                        .iter()
+                        .map(|item| crate::TemplateItem {
+                            id: item.source.to_uri_string().into(),
+                            title: item.title.clone().into(),
+                        })
+                        .collect();
+                    self.templates = items;
+                    self.ui.send(Update::Templates(menu));
+                }
+            }
             Event::Created { pane, tab, dir, result } => match result {
                 Err(e) => self.say(e.to_string(), true),
                 Ok(uri) => {
@@ -5052,6 +5133,9 @@ impl Controller {
                 self.ui.send(Update::CustomCommand(path));
             }
             Event::Tick => {
+                if self.cfg.templates_dir.is_some() && self.templates_refreshed.elapsed() >= Duration::from_secs(5) {
+                    self.refresh_templates();
+                }
                 if self.transfers_dirty {
                     self.push_transfers(None);
                 }

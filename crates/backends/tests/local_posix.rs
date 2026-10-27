@@ -372,3 +372,73 @@ async fn empty_file_creation_never_overwrites_existing_entries() -> VfsResult<()
     assert!(matches!(b.create_file(&t.uri("link")).await, Err(VfsError::AlreadyExists(_))));
     Ok(())
 }
+
+#[tokio::test]
+async fn template_copy_preserves_binary_bytes_and_publishes_only_the_document() -> VfsResult<()> {
+    let t = TempDir::new("template-bytes");
+    let bytes: Vec<u8> = (0..1_100_000).map(|i| (i % 251) as u8).collect();
+    std::fs::write(t.path().join("template.odt"), &bytes).unwrap_or_else(|e| panic!("{e}"));
+    std::fs::create_dir(t.path().join("out")).unwrap_or_else(|e| panic!("{e}"));
+    LocalPosixBackend::new().create_from_template(&t.uri("template.odt"), &t.uri("out/Letter.odt")).await?;
+    assert_eq!(std::fs::read(t.path().join("out/Letter.odt")).unwrap_or_default(), bytes);
+    assert_eq!(std::fs::read(t.path().join("template.odt")).unwrap_or_default(), bytes);
+    assert_eq!(std::fs::read_dir(t.path().join("out")).unwrap_or_else(|e| panic!("{e}")).count(), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn template_copy_refuses_existing_files_and_symlinks() -> VfsResult<()> {
+    let t = TempDir::new("template-no-clobber");
+    std::fs::write(t.path().join("template"), b"template").unwrap_or_else(|e| panic!("{e}"));
+    std::fs::write(t.path().join("existing"), b"keep").unwrap_or_else(|e| panic!("{e}"));
+    std::os::unix::fs::symlink("existing", t.path().join("link")).unwrap_or_else(|e| panic!("{e}"));
+    let backend = LocalPosixBackend::new();
+    for name in ["existing", "link", "template"] {
+        assert!(matches!(
+            backend.create_from_template(&t.uri("template"), &t.uri(name)).await,
+            Err(VfsError::AlreadyExists(_))
+        ));
+    }
+    assert_eq!(std::fs::read(t.path().join("existing")).unwrap_or_default(), b"keep");
+    assert!(t.path().join("link").is_symlink());
+    Ok(())
+}
+
+#[tokio::test]
+async fn template_copy_rejects_symlinks_directories_and_fifos_without_waiting() -> VfsResult<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let t = TempDir::new("template-special");
+    std::fs::write(t.path().join("target"), b"keep").unwrap_or_else(|e| panic!("{e}"));
+    std::os::unix::fs::symlink("target", t.path().join("link")).unwrap_or_else(|e| panic!("{e}"));
+    std::fs::create_dir(t.path().join("folder")).unwrap_or_else(|e| panic!("{e}"));
+    let fifo = std::ffi::CString::new(t.path().join("fifo").as_os_str().as_bytes()).unwrap_or_else(|e| panic!("{e}"));
+    // SAFETY: fifo is a valid NUL-terminated path in this private test directory.
+    assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+    for name in ["link", "folder", "fifo"] {
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            LocalPosixBackend::new().create_from_template(&t.uri(name), &t.uri("created")),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("{e}"));
+        assert!(result.is_err());
+        assert!(!t.path().join("created").exists());
+    }
+    assert_eq!(std::fs::read_dir(t.path()).unwrap_or_else(|e| panic!("{e}")).count(), 4);
+    Ok(())
+}
+
+#[tokio::test]
+async fn private_template_documents_keep_private_permissions_without_executable_bits() -> VfsResult<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let t = TempDir::new("template-permissions");
+    let source = t.path().join("private-template");
+    std::fs::write(&source, b"private fixture").unwrap_or_else(|e| panic!("{e}"));
+    std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o4700)).unwrap_or_else(|e| panic!("{e}"));
+    LocalPosixBackend::new().create_from_template(&t.uri("private-template"), &t.uri("document")).await?;
+    let mode =
+        std::fs::metadata(t.path().join("document")).unwrap_or_else(|e| panic!("{e}")).permissions().mode() & 0o7777;
+    assert_eq!(mode, 0o600, "a private template must not become readable by other users or executable");
+    assert_eq!(std::fs::read(t.path().join("document")).unwrap_or_default(), b"private fixture");
+    Ok(())
+}

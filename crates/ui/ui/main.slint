@@ -6,7 +6,7 @@
 
 import { LineEdit, Button, ScrollView, Palette } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { FileRow, PaneInfo, TabInfo, Crumb, PlaceItem, MountItem, TreeRow, TransferRow, StatusInfo, KeyValue, DeviceItem, CustomActionItem, OpenWithAppItem } from "types.slint";
+import { FileRow, PaneInfo, TabInfo, Crumb, PlaceItem, MountItem, TreeRow, TransferRow, StatusInfo, KeyValue, DeviceItem, CustomActionItem, TemplateItem, OpenWithAppItem } from "types.slint";
 import { Glyph, ToolButton, ZoomControl, ThemeToggle } from "widgets.slint";
 import { PathBar } from "pathbar.slint";
 import { Sidebar } from "sidebar.slint";
@@ -14,7 +14,7 @@ import { Pane } from "pane.slint";
 import { StatusBar, TransferDrawer } from "statusbar.slint";
 import { DialogOverlay, DialogKind } from "dialogs.slint";
 
-export { Theme, FileRow, PaneInfo, TabInfo, Crumb, PlaceItem, MountItem, TreeRow, TransferRow, StatusInfo, KeyValue, DeviceItem, DialogKind, CustomActionItem, OpenWithAppItem }
+export { Theme, FileRow, PaneInfo, TabInfo, Crumb, PlaceItem, MountItem, TreeRow, TransferRow, StatusInfo, KeyValue, DeviceItem, DialogKind, CustomActionItem, TemplateItem, OpenWithAppItem }
 
 component Separator inherits Rectangle {
     width: 1px;
@@ -51,6 +51,7 @@ export component AppWindow inherits Window {
     in-out property <bool> updating: false;
     in property <bool> can-undo-rename: false;
     in property <bool> can-redo-rename: false;
+    in property <[TemplateItem]> document-templates: [];
     in-out property <[CustomActionItem]> left-custom-actions: [];
     in-out property <[CustomActionItem]> right-custom-actions: [];
     in-out property <bool> dark-mode <=> Theme.dark-mode;
@@ -279,6 +280,10 @@ export component AppWindow inherits Window {
             Menu {
                 title: "Create New Document";
                 MenuItem { title: "Empty Document"; activated => { root.command("new-file-inline"); } }
+                if root.document-templates.length > 0: MenuSeparator { }
+                for item in root.document-templates: MenuItem { title: item.title; activated => { root.command("create-template:" + item.id); } }
+                MenuSeparator { }
+                MenuItem { title: "Refresh Templates"; activated => { root.command("refresh-templates"); } }
             }
             MenuItem { title: "Check File Hash…"; activated => { root.command("check-hash"); } }
             MenuItem { title: "Properties"; shortcut: @keys(Alt + Return); activated => { root.command("properties"); } }
@@ -608,6 +613,7 @@ export component AppWindow inherits Window {
                         zoom-level: root.zoom-level;
                         zoom-changed(z) => { root.zoom-level = z; root.zoom-changed(z); }
                         custom-actions: root.left-custom-actions;
+                        document-templates: root.document-templates;
                         custom-action(id) => { root.custom-action(0, id); }
                         renaming-index: root.renaming-pane == 0 ? root.renaming-index : -1;
                         focus-pane => { root.activate-pane(0); }
@@ -644,6 +650,7 @@ export component AppWindow inherits Window {
                         zoom-level: root.zoom-level;
                         zoom-changed(z) => { root.zoom-level = z; root.zoom-changed(z); }
                         custom-actions: root.right-custom-actions;
+                        document-templates: root.document-templates;
                         custom-action(id) => { root.custom-action(1, id); }
                         renaming-index: root.renaming-pane == 1 ? root.renaming-index : -1;
                         focus-pane => { root.activate-pane(1); }

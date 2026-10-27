@@ -80,6 +80,12 @@ pub trait VfsProvider: Send + Sync + 'static {
         Err(VfsError::Unsupported(format!("{} cannot create an empty file", self.kind().badge())))
     }
 
+    /// Copy a regular-file template to a new document without replacing an entry.
+    async fn create_from_template(&self, source: &VfsUri, destination: &VfsUri) -> VfsResult<()> {
+        let _ = (source, destination);
+        Err(VfsError::Unsupported(format!("{} cannot create documents from templates", self.kind().badge())))
+    }
+
     /// Rename within the same directory; returns the new URI.
     async fn rename(&self, uri: &VfsUri, new_name: &str) -> VfsResult<VfsUri>;
 

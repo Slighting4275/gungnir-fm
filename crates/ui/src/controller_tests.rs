@@ -87,6 +87,7 @@ fn start_configured(
         gungnir_label: "TEST".into(),
         bookmarks_file: None,
         actions_dir: None,
+        templates_dir: None,
         session_file: None,
         initial_session: None,
         explicit_locations: false,
@@ -1927,6 +1928,159 @@ fn inaccessible_explicit_location_is_reported_without_redirecting_home() {
     });
     h.until(Duration::from_secs(3), |u| matches!(u, Update::Pane { pane: 0, view } if view.location==missing.display().to_string() && !view.error.is_empty()));
     assert!(!missing.exists());
+    drop(h);
+    std::fs::remove_dir_all(d).ok();
+}
+
+fn start_templates(root: &std::path::Path, destination: &str, include_local: bool) -> Harness {
+    start_configured(destination, destination, MockConfig::default(), include_local, |cfg| {
+        cfg.templates_dir = Some(root.to_path_buf());
+    })
+}
+
+fn wait_templates(h: &Harness, count: usize) -> Vec<crate::TemplateItem> {
+    let updates = h.until(Duration::from_secs(3), |u| matches!(u,Update::Templates(items) if items.len()==count));
+    updates
+        .into_iter()
+        .find_map(|u| match u {
+            Update::Templates(items) if items.len() == count => Some(items),
+            _ => None,
+        })
+        .unwrap()
+}
+
+#[test]
+fn document_template_copy_numbers_names_keeps_bytes_and_supports_inline_naming() {
+    let d = temp_dir("templates-controller");
+    let source = d.join("Templates");
+    let dest = d.join("destination");
+    std::fs::create_dir(&source).unwrap();
+    std::fs::create_dir(&dest).unwrap();
+    let bytes = b"document\0\xff\nbytes";
+    std::fs::write(source.join("Letter.odt"), bytes).unwrap();
+    std::fs::write(dest.join("Letter.odt"), b"keep existing").unwrap();
+    let h = start_templates(&source, dest.to_str().unwrap(), true);
+    let items = wait_templates(&h, 1);
+    h.send(Command::Run(format!("create-template:{}", items[0].id)));
+    let updates = h.until(Duration::from_secs(3), |u| matches!(u,Update::Rename {pane:0,index} if *index>=0));
+    let index = updates
+        .iter()
+        .find_map(|u| match u {
+            Update::Rename { pane: 0, index } if *index >= 0 => Some(*index as usize),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(std::fs::read(dest.join("Letter 2.odt")).unwrap(), bytes);
+    assert_eq!(std::fs::read(dest.join("Letter.odt")).unwrap(), b"keep existing");
+    assert_eq!(std::fs::read(source.join("Letter.odt")).unwrap(), bytes);
+    h.send(Command::RenameCommit { pane: 0, index, name: "My Letter.odt".into() });
+    wait_rename_status(&h, "Renamed to My Letter.odt");
+    assert_eq!(std::fs::read(dest.join("My Letter.odt")).unwrap(), bytes);
+    drop(h);
+    std::fs::remove_dir_all(d).ok();
+}
+
+#[test]
+fn document_template_menu_ids_remain_valid_after_an_earlier_item_is_added() {
+    let d = temp_dir("templates-stable-ids");
+    let source = d.join("Templates");
+    let dest = d.join("dest");
+    std::fs::create_dir(&source).unwrap();
+    std::fs::create_dir(&dest).unwrap();
+    std::fs::write(source.join("Letter.txt"), b"letter").unwrap();
+    let h = start_templates(&source, dest.to_str().unwrap(), true);
+    let old = wait_templates(&h, 1)[0].id.to_string();
+    std::fs::write(source.join("Earlier.txt"), b"earlier").unwrap();
+    h.send(Command::Run("refresh-templates".into()));
+    let items = wait_templates(&h, 2);
+    assert_eq!(items[0].title, "Earlier.txt");
+    h.send(Command::Run(format!("create-template:{old}")));
+    h.until(Duration::from_secs(3), |u| matches!(u,Update::Rename {pane:0,index} if *index>=0));
+    assert_eq!(std::fs::read(dest.join("Letter.txt")).unwrap(), b"letter");
+    assert!(!dest.join("Earlier.txt").exists());
+    drop(h);
+    std::fs::remove_dir_all(d).ok();
+}
+
+#[test]
+fn template_creation_remembers_its_original_directory_while_navigation_changes() {
+    let d = temp_dir("templates-navigation");
+    let source = d.join("Templates");
+    let a = d.join("a");
+    let b = d.join("b");
+    for dir in [&source, &a, &b] {
+        std::fs::create_dir(dir).unwrap();
+    }
+    std::fs::write(source.join("Document.txt"), b"template").unwrap();
+    let h = start_templates(&source, a.to_str().unwrap(), true);
+    let id = wait_templates(&h, 1)[0].id.to_string();
+    h.send(Command::Run(format!("create-template:{id}")));
+    h.send(Command::Navigate { pane: 0, location: b.to_str().unwrap().into() });
+    h.until(Duration::from_secs(3), |u| matches!(u,Update::Status(s) if s.message=="Created Document.txt"));
+    assert_eq!(std::fs::read(a.join("Document.txt")).unwrap(), b"template");
+    assert!(!b.join("Document.txt").exists());
+    drop(h);
+    std::fs::remove_dir_all(d).ok();
+}
+
+#[test]
+fn replacing_a_cached_template_with_a_symlink_cannot_copy_its_target() {
+    let d = temp_dir("templates-replaced");
+    let source = d.join("Templates");
+    let dest = d.join("dest");
+    std::fs::create_dir(&source).unwrap();
+    std::fs::create_dir(&dest).unwrap();
+    std::fs::write(source.join("Document.txt"), b"template").unwrap();
+    std::fs::write(d.join("private-fixture.txt"), b"fixture stays private").unwrap();
+    let h = start_templates(&source, dest.to_str().unwrap(), true);
+    let id = wait_templates(&h, 1)[0].id.to_string();
+    std::fs::remove_file(source.join("Document.txt")).unwrap();
+    std::os::unix::fs::symlink(d.join("private-fixture.txt"), source.join("Document.txt")).unwrap();
+    h.send(Command::Run(format!("create-template:{id}")));
+    h.until(Duration::from_secs(3), |u| matches!(u,Update::Status(s) if s.message.contains("open template")));
+    assert!(!dest.join("Document.txt").exists());
+    assert_eq!(std::fs::read_dir(&dest).unwrap().count(), 0);
+    assert_eq!(std::fs::read(d.join("private-fixture.txt")).unwrap(), b"fixture stays private");
+    drop(h);
+    std::fs::remove_dir_all(d).ok();
+}
+
+#[test]
+fn creating_from_a_template_in_trash_is_refused() {
+    let d = temp_dir("templates-trash");
+    std::fs::write(d.join("Document.txt"), b"template").unwrap();
+    // No local provider: even initial listing cannot read the real desktop Trash.
+    let h = start_templates(&d, "trash:///", false);
+    let id = wait_templates(&h, 1)[0].id.to_string();
+    h.send(Command::Run(format!("create-template:{id}")));
+    h.until(
+        Duration::from_secs(3),
+        |u| matches!(u,Update::Status(s) if s.message.contains("Restore items before editing")),
+    );
+    assert_eq!(std::fs::read_dir(&d).unwrap().count(), 1);
+    drop(h);
+    std::fs::remove_dir_all(d).ok();
+}
+
+#[test]
+fn refreshing_removed_templates_clears_the_menu_and_refuses_stale_commands() {
+    let d = temp_dir("templates-removed");
+    let source = d.join("Templates");
+    let dest = d.join("dest");
+    std::fs::create_dir(&source).unwrap();
+    std::fs::create_dir(&dest).unwrap();
+    std::fs::write(source.join("Old.txt"), b"old").unwrap();
+    let h = start_templates(&source, dest.to_str().unwrap(), true);
+    let id = wait_templates(&h, 1)[0].id.to_string();
+    std::fs::remove_file(source.join("Old.txt")).unwrap();
+    h.send(Command::Run("refresh-templates".into()));
+    wait_templates(&h, 0);
+    h.send(Command::Run(format!("create-template:{id}")));
+    h.until(
+        Duration::from_secs(3),
+        |u| matches!(u,Update::Status(s) if s.message.contains("Template is no longer available")),
+    );
+    assert_eq!(std::fs::read_dir(&dest).unwrap().count(), 0);
     drop(h);
     std::fs::remove_dir_all(d).ok();
 }

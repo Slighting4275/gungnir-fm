@@ -588,6 +588,12 @@ impl VfsProvider for GungnirVfsBackend {
         Ok(e)
     }
 
+    async fn create_from_template(&self, source: &VfsUri, destination: &VfsUri) -> VfsResult<()> {
+        let path = local_path(destination)?;
+        self.gate(&path)?;
+        self.local.create_from_template(source, &file_uri(&path)?).await
+    }
+
     async fn create_file(&self, uri: &VfsUri) -> VfsResult<()> {
         let path = local_path(uri)?;
         self.gate(&path)?;

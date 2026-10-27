@@ -153,6 +153,7 @@ pub enum Update {
         pane: i32,
         index: i32,
     },
+    Templates(Vec<crate::TemplateItem>),
     RenameHistory {
         can_undo: bool,
         can_redo: bool,
@@ -381,6 +382,7 @@ pub fn apply(ui: &AppWindow, u: Update) {
             ui.set_terminal_cwd(cwd.into());
             ui.set_terminal_output(output.into());
         }
+        Update::Templates(items) => ui.set_document_templates(model(items)),
         Update::RenameHistory { can_undo, can_redo } => {
             ui.set_can_undo_rename(can_undo);
             ui.set_can_redo_rename(can_redo);

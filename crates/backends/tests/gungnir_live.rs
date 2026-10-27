@@ -325,3 +325,15 @@ async fn cancelling_live_listing_with_full_receiver_stops_forwarder() -> VfsResu
     rx.close();
     Ok(())
 }
+
+#[tokio::test]
+async fn template_copy_to_gungnir_preserves_contents_and_namespace() -> VfsResult<()> {
+    let t = TempDir::new("template-gungnir");
+    std::fs::write(t.path().join("template"), b"document bytes").unwrap_or_else(|e| panic!("{e}"));
+    let backend = GungnirVfsBackend::new(t.path().join("missing.sock"));
+    let target = g(&t.path().join("created.txt"));
+    backend.create_from_template(&t.uri("template"), &target).await?;
+    assert_eq!(std::fs::read(t.path().join("created.txt")).unwrap_or_default(), b"document bytes");
+    assert_eq!(backend.stat(&target).await?.uri, target);
+    Ok(())
+}

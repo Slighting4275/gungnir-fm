@@ -374,6 +374,15 @@ actions are also in the **File** menu. `Ctrl+Shift+N` or `F7`
 creates a folder. Existing files and symlinks are preserved; unsupported backends
 report an error. Right-clicking a file opens its item actions instead.
 
+Put documents in your configured **Templates** folder (usually `~/Templates`)
+to list them under **Create New Document** in both menus. Selecting a template
+copies its contents and starts inline naming. Copies preserve the extension and
+use numbered names when needed. Local and live Gungnir destinations support
+this action. Template discovery refreshes about every five seconds, or through
+**Refresh Templates**. Files inside template subfolders use relative path labels.
+Hidden files and symlinks are excluded; templates are never executed. Private
+template permissions stay private, and executable/special bits are cleared.
+
 - **Undo Rename** (`Ctrl+Z`) and **Redo Rename** (`Ctrl+Shift+Z`) are in the Edit
   menu. They cover individual local file, folder, and symlink renames, preserving
   occupied destination names and refusing replaced items. History keeps up to
@@ -397,7 +406,8 @@ refreshing cancels the editor if its row no longer identifies the same item;
 failed renames preserve the selection. Directory refreshes keep the cursor on the
 same filename when the backend enumerates entries in a different order.
 
-User document templates and complete Nemo feature parity are not yet implemented.
+Complete Nemo feature parity remains in progress. Template groups currently use
+relative path labels rather than nested submenus.
 See [workflow details and validation](docs/NEMO-WORKFLOWS.md).
 
 ### 🖼️ Visual Image & Video Previews
@@ -560,6 +570,7 @@ Gungnir FM includes an enterprise-grade, multi-format lossless compression subsy
 - **C23 Standard Compliance**: Any C code, headers, or compilation tools used across the workspace strictly adhere to ISO/IEC 9899:2024 (C23) via `-std=c23`.
 
 ### 🛠️ Advanced Operations & Utilities
+- **Copy Source Checks**: Opening a checked regular file uses nonblocking, no-follow flags and validates its identity. Replacing it with a symlink, FIFO, or another file is rejected before destination data is written.
 - **Transfer Collision & Conflict Resolution**: Side-by-side comparison card displaying source vs destination file metadata, timestamps, sizes, thumbnail preview, and badge indicators. Offers `Replace`, `Replace if Newer`, `Auto-Rename` (generating non-colliding copy names), and `Skip`, plus an "Apply to all remaining conflicts" batch checkbox.
 - **Embedded Interactive Terminal Drawer (`F4`)**: In-window collapsible terminal panel above the status bar with bidirectional directory sync: navigating in a pane updates the terminal `cwd`; executing `cd` in the terminal navigates the active pane. Features command execution, log output, and clear actions.
 - **Deep Recursive Search & Content Grep (`Ctrl+Shift+F`)**: Recursive asynchronous subtree walk supporting filename search (glob/substring) and multi-line UTF-8 text content grep. Matches are presented in an interactive list; clicking a result immediately navigates to its parent directory and highlights the file.
@@ -580,9 +591,10 @@ Gungnir FM includes an enterprise-grade, multi-format lossless compression subsy
 - **Checksum File Verification**: Automatically parses and verifies `.sha256`, `.md5`, `.sha512`, `.sha1`, and `SHA256SUMS` files against referenced targets in the folder.
 
 ### 🌐 Built-in Remote Filesystems (SFTP / SSH & SMB / CIFS)
-- **Native Remote VFS**: Built-in `RemoteVfsBackend` handling `sftp://`, `ssh://`, `smb://`, and `cifs://` schemes.
+- **GIO/GVfs Integration**: `RemoteVfsBackend` handles `sftp://`, `ssh://`, `smb://`, and `cifs://` through installed GIO/GVfs clients and server backends.
 - **"Connect to Server…" Dialog**: Accessible from the File menu or command palette, enabling direct connections to remote network shares.
-- **Full VFS Parity**: Remote directory streaming, stat inspection, file operations, remote breadcrumb parsing, and status badges.
+- **Remote Operations**: Directory browsing, stat inspection, file operations, remote breadcrumbs, and status badges depend on the installed GIO/GVfs backends. Empty-document and template creation are currently unsupported remotely.
+- **Deletion Results & Cancellation**: A failed client exit or spawn is reported as an error. Batch deletion stops at the first failure; cancellation kills and reaps the active client before returning. Work already completed is retained.
 
 ### ⚡ Custom Actions Engine (Nemo Actions Equivalent)
 - **Declarative TOML Actions**: Loads user-defined actions from `~/.config/gungnir-fm/actions/*.toml` (with built-in fallbacks).

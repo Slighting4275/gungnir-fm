@@ -27,6 +27,40 @@ fn gio_cmd() -> Command {
     cmd
 }
 
+async fn remove_with_program(program: &std::ffi::OsStr, uris: &[VfsUri], cancel: CancellationToken) -> VfsResult<()> {
+    if cancel.is_cancelled() {
+        return Err(VfsError::Cancelled);
+    }
+    for uri in uris {
+        if cancel.is_cancelled() {
+            return Err(VfsError::Cancelled);
+        }
+        let mut child = tokio::process::Command::new(program)
+            .env_remove("GIO_USE_VFS")
+            .env("LC_ALL", "C")
+            .args(["remove", "--", &uri.to_uri_string()])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|e| VfsError::Transport(e.to_string()))?;
+        let status = tokio::select! {
+            biased;
+            () = cancel.cancelled() => {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                return Err(VfsError::Cancelled);
+            }
+            status = child.wait() => status.map_err(|e| VfsError::Transport(e.to_string()))?,
+        };
+        if !status.success() {
+            return Err(VfsError::Transport(format!("gio remove failed for {}: {status}", uri.display())));
+        }
+    }
+    Ok(())
+}
+
 /// Enable hermetic test mode for unit tests without network access.
 pub fn set_remote_test_mode(enabled: bool) {
     TEST_MODE.store(enabled, Ordering::Relaxed);
@@ -287,19 +321,14 @@ impl VfsProvider for RemoteVfsBackend {
         .map_err(|e| VfsError::Transport(e.to_string()))?
     }
 
-    async fn delete(&self, uris: &[VfsUri], _cancel: CancellationToken) -> VfsResult<()> {
+    async fn delete(&self, uris: &[VfsUri], cancel: CancellationToken) -> VfsResult<()> {
+        if cancel.is_cancelled() {
+            return Err(VfsError::Cancelled);
+        }
         if TEST_MODE.load(Ordering::Relaxed) {
             return Ok(());
         }
-        let uri_strings: Vec<String> = uris.iter().map(VfsUri::to_uri_string).collect();
-        tokio::task::spawn_blocking(move || {
-            for s in &uri_strings {
-                let _ = gio_cmd().args(["remove", "--", s]).status();
-            }
-            Ok(())
-        })
-        .await
-        .map_err(|e| VfsError::Transport(e.to_string()))?
+        remove_with_program(std::ffi::OsStr::new("gio"), uris, cancel).await
     }
 
     async fn transfer(&self, req: TransferRequest, ctl: TransferControl) -> VfsResult<()> {
@@ -504,5 +533,104 @@ mod tests {
         assert!(stat_res.is_ok());
 
         set_remote_test_mode(false);
+    }
+}
+
+#[cfg(test)]
+mod removal_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::PathBuf;
+    struct Fixture(PathBuf);
+    impl Fixture {
+        fn new(body: &str) -> Self {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../.bug-check/remote-command-tests")
+                .join(format!("{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+            std::fs::create_dir_all(&path).unwrap_or_else(|e| panic!("{e}"));
+            let program = path.join("gio-test");
+            std::fs::write(&program, format!("#!/bin/sh\n{body}\n")).unwrap_or_else(|e| panic!("{e}"));
+            std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700))
+                .unwrap_or_else(|e| panic!("{e}"));
+            Self(program)
+        }
+    }
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            if let Some(path) = self.0.parent() {
+                let _ = std::fs::remove_dir_all(path);
+            }
+        }
+    }
+    fn remote_uri() -> VfsUri {
+        VfsUri::parse("sftp://example.invalid/file").unwrap_or_else(|e| panic!("{e}"))
+    }
+    #[tokio::test]
+    async fn failed_remote_remove_is_an_error() {
+        let fixture = Fixture::new("exit 7");
+        assert!(remove_with_program(fixture.0.as_os_str(), &[remote_uri()], CancellationToken::new()).await.is_err());
+    }
+    #[tokio::test]
+    async fn missing_remote_remove_program_is_an_error() {
+        let fixture = Fixture::new("exit 0");
+        assert!(
+            remove_with_program(
+                fixture.0.with_file_name("missing").as_os_str(),
+                &[remote_uri()],
+                CancellationToken::new()
+            )
+            .await
+            .is_err()
+        );
+    }
+    #[tokio::test]
+    async fn cancelled_remote_remove_does_not_start_a_process() {
+        let fixture = Fixture::new("printf 'started' > \"$0.started\"\nexit 0");
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let result = remove_with_program(fixture.0.as_os_str(), &[remote_uri()], cancel).await;
+        assert_eq!(result, Err(VfsError::Cancelled));
+        assert!(!fixture.0.with_file_name("gio-test.started").exists());
+    }
+    #[tokio::test]
+    async fn remote_remove_stops_at_first_failed_item() {
+        let fixture = Fixture::new("printf '%s\\n' \"$3\" >> \"$0.calls\"\ncase \"$3\" in *two) exit 9;; esac\nexit 0");
+        let uris: Vec<_> = ["one", "two", "three"]
+            .into_iter()
+            .map(|name| VfsUri::parse(&format!("sftp://example.invalid/{name}")).unwrap_or_else(|e| panic!("{e}")))
+            .collect();
+        assert!(remove_with_program(fixture.0.as_os_str(), &uris, CancellationToken::new()).await.is_err());
+        let calls =
+            std::fs::read_to_string(fixture.0.with_file_name("gio-test.calls")).unwrap_or_else(|e| panic!("{e}"));
+        assert!(calls.contains("/one"));
+        assert!(calls.contains("/two"));
+        assert!(!calls.contains("/three"));
+    }
+    #[tokio::test]
+    async fn cancelling_active_remote_remove_kills_and_reaps_the_client() {
+        use std::time::Duration;
+        let fixture = Fixture::new("printf '%s' \"$$\" > \"$0.pid\"\nexec sleep 30");
+        let cancel = CancellationToken::new();
+        let token = cancel.clone();
+        let program = fixture.0.clone();
+        let task = tokio::spawn(async move { remove_with_program(program.as_os_str(), &[remote_uri()], token).await });
+        let pid_path = fixture.0.with_file_name("gio-test.pid");
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !pid_path.exists() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|e| panic!("{e}"));
+        let pid = std::fs::read_to_string(&pid_path).unwrap_or_else(|e| panic!("{e}"));
+        cancel.cancel();
+        let result = tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .unwrap_or_else(|e| panic!("{e}"))
+            .unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(result, Err(VfsError::Cancelled));
+        #[cfg(target_os = "linux")]
+        assert!(!std::path::Path::new("/proc").join(pid.trim()).exists(), "child must be reaped");
     }
 }

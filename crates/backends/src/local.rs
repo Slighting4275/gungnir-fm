@@ -239,6 +239,23 @@ pub(crate) fn unique_name(dir: &Path, name: &str, exists: impl Fn(&Path) -> bool
     name.to_owned()
 }
 
+fn open_copy_source(source: &Path, expected: &fs::Metadata) -> VfsResult<fs::File> {
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(source)
+        .map_err(io_err("open copy source", source))?;
+    let current = file.metadata().map_err(io_err("stat copy source", source))?;
+    let same_birth = match (expected.created(), current.created()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => true,
+    };
+    if !current.is_file() || current.dev() != expected.dev() || current.ino() != expected.ino() || !same_birth {
+        return Err(VfsError::Unsupported("Source changed while preparing copy".into()));
+    }
+    Ok(file)
+}
+
 struct Copier<'a> {
     ctl: &'a TransferControl,
     progress: TransferProgress,
@@ -307,7 +324,7 @@ impl Copier<'_> {
     }
 
     fn copy_file(&mut self, src: &Path, dst: &Path, md: &fs::Metadata) -> VfsResult<()> {
-        let mut input = fs::File::open(src).map_err(io_err("open", src))?;
+        let mut input = open_copy_source(src, md)?;
         let mut out = fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -377,6 +394,45 @@ fn create_transfer_stage(dir: &Path, id: u64) -> VfsResult<PathBuf> {
         }
     }
     Err(VfsError::AlreadyExists("transfer staging directory".into()))
+}
+
+fn create_template_copy(source: &Path, destination: &Path) -> VfsResult<()> {
+    match fs::symlink_metadata(destination) {
+        Ok(_) => return Err(VfsError::AlreadyExists(destination.display().to_string())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(io_err("lstat", destination)(e)),
+    }
+    let mut input = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(source)
+        .map_err(io_err("open template", source))?;
+    let metadata = input.metadata().map_err(io_err("stat template", source))?;
+    if !metadata.is_file() {
+        return Err(VfsError::Unsupported("Templates must be regular files".into()));
+    }
+    // Preserve private read/write permissions; a new document remains owner-editable
+    // and never inherits executable or special mode bits from the template.
+    let mode = (metadata.mode() & 0o666) | 0o600;
+    let parent = destination.parent().ok_or(VfsError::BadRequest)?;
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let stage = create_transfer_stage(parent, NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))?;
+    let temporary = stage.join("document");
+    let result = (|| {
+        let mut output = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(mode)
+            .open(&temporary)
+            .map_err(io_err("create document", &temporary))?;
+        std::io::copy(&mut input, &mut output).map_err(io_err("copy template", source))?;
+        output.sync_data().map_err(io_err("sync document", &temporary))?;
+        drop(output);
+        rename_noreplace(&temporary, destination).map_err(io_err("publish document", destination))
+    })();
+    let _ = fs::remove_file(&temporary);
+    let _ = fs::remove_dir(&stage);
+    result
 }
 
 fn exchange_paths(a: &Path, b: &Path) -> std::io::Result<()> {
@@ -667,6 +723,15 @@ impl VfsProvider for LocalPosixBackend {
         .await
     }
 
+    async fn create_from_template(&self, source: &VfsUri, destination: &VfsUri) -> VfsResult<()> {
+        if source.scheme() != Scheme::File || destination.scheme() != Scheme::File {
+            return Err(VfsError::Unsupported("Templates require local files and a normal destination folder".into()));
+        }
+        let source = local(source)?;
+        let destination = local(destination)?;
+        blocking(move || create_template_copy(&source, &destination)).await
+    }
+
     async fn create_file(&self, uri: &VfsUri) -> VfsResult<()> {
         if uri.scheme() != Scheme::File {
             return Err(VfsError::Unsupported("Restore items before editing the Trash".into()));
@@ -946,5 +1011,63 @@ mod trash_tests {
         assert!(backend.rename(&VfsUri::trash("item").unwrap(), "changed").await.is_err());
         assert!(backend.create_dir(&VfsUri::trash("orphan").unwrap()).await.is_err());
         assert!(!backend.can_transfer(&VfsUri::parse("/item").unwrap(), &VfsUri::trash("/").unwrap()));
+    }
+}
+
+#[cfg(test)]
+mod copy_source_tests {
+    use super::*;
+    struct Fixture(PathBuf);
+    impl Fixture {
+        fn new(name: &str) -> Self {
+            let path = std::env::temp_dir().join(format!("gungnir-copy-source-{name}-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&path);
+            fs::create_dir_all(&path).unwrap_or_else(|e| panic!("{e}"));
+            Self(path)
+        }
+        fn source(&self) -> PathBuf {
+            self.0.join("source")
+        }
+    }
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+    #[test]
+    fn source_replaced_by_symlink_is_rejected_before_copying() {
+        let t = Fixture::new("symlink");
+        fs::write(t.source(), b"original").unwrap_or_else(|e| panic!("{e}"));
+        let md = fs::symlink_metadata(t.source()).unwrap_or_else(|e| panic!("{e}"));
+        fs::rename(t.source(), t.0.join("original")).unwrap_or_else(|e| panic!("{e}"));
+        fs::write(t.0.join("other"), b"private fixture").unwrap_or_else(|e| panic!("{e}"));
+        std::os::unix::fs::symlink("other", t.source()).unwrap_or_else(|e| panic!("{e}"));
+        assert!(open_copy_source(&t.source(), &md).is_err());
+    }
+    #[test]
+    fn source_replaced_by_another_regular_file_is_rejected_before_copying() {
+        let t = Fixture::new("regular");
+        fs::write(t.source(), b"original").unwrap_or_else(|e| panic!("{e}"));
+        let md = fs::symlink_metadata(t.source()).unwrap_or_else(|e| panic!("{e}"));
+        fs::rename(t.source(), t.0.join("original")).unwrap_or_else(|e| panic!("{e}"));
+        fs::write(t.source(), b"replacement").unwrap_or_else(|e| panic!("{e}"));
+        assert!(open_copy_source(&t.source(), &md).is_err());
+    }
+    #[test]
+    fn source_replaced_by_fifo_does_not_block_the_copy_worker() {
+        let t = Fixture::new("fifo");
+        fs::write(t.source(), b"original").unwrap_or_else(|e| panic!("{e}"));
+        let md = fs::symlink_metadata(t.source()).unwrap_or_else(|e| panic!("{e}"));
+        fs::rename(t.source(), t.0.join("original")).unwrap_or_else(|e| panic!("{e}"));
+        let path = cstring(&t.source()).unwrap_or_else(|e| panic!("{e}"));
+        // SAFETY: path is a valid NUL-terminated pathname in this test fixture.
+        assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+        let source = t.source();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            let _ = tx.send(open_copy_source(&source, &md).is_err());
+        });
+        assert!(rx.recv_timeout(Duration::from_secs(2)).unwrap_or_else(|_| panic!("source open blocked on FIFO")));
+        thread.join().unwrap_or_else(|_| panic!("source worker panicked"));
     }
 }

@@ -4,7 +4,7 @@
 
 import { ListView, LineEdit } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { FileRow, PaneInfo, TabInfo, CustomActionItem } from "types.slint";
+import { FileRow, PaneInfo, TabInfo, CustomActionItem, TemplateItem } from "types.slint";
 import { FileIcon, Glyph, Dot } from "widgets.slint";
 
 component Tab inherits Rectangle {
@@ -132,6 +132,7 @@ export component Pane inherits Rectangle {
     in property <int> view-mode: 1;
     in property <int> renaming-index: -1;
     in property <[CustomActionItem]> custom-actions: [];
+    in property <[TemplateItem]> document-templates: [];
     in property <PaneInfo> info: {
         tabs: [
             { title: "project_demo", location: "/home/user/Documents/project_demo", loading: false },
@@ -185,6 +186,7 @@ export component Pane inherits Rectangle {
     property <int> menu-effective-sel-count;
     property <bool> menu-has-clipboard;
     property <[CustomActionItem]> menu-custom-actions;
+    property <[TemplateItem]> menu-document-templates;
     function capture-context(index: int) {
         root.context-index = index;
         root.menu-is-trash = root.is-trash;
@@ -195,6 +197,7 @@ export component Pane inherits Rectangle {
         root.menu-effective-sel-count = root.effective-sel-count;
         root.menu-has-clipboard = root.info.has-clipboard;
         root.menu-custom-actions = root.custom-actions;
+        root.menu-document-templates = root.document-templates;
     }
 
     callback row-clicked(index: int, ctrl: bool, shift: bool);
@@ -360,6 +363,13 @@ export component Pane inherits Rectangle {
                             title: "Empty Document";
                             activated => { root.command("new-file-inline"); }
                         }
+                        if root.menu-document-templates.length > 0: MenuSeparator { }
+                        for item in root.menu-document-templates: MenuItem {
+                            title: item.title;
+                            activated => { root.command("create-template:" + item.id); }
+                        }
+                        MenuSeparator { }
+                        MenuItem { title: "Refresh Templates"; activated => { root.command("refresh-templates"); } }
                     }
                     if root.menu-has-clipboard: MenuItem {
                         title: "Paste";

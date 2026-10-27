@@ -31,6 +31,7 @@ mod init;
 mod rename;
 mod rows;
 mod session;
+mod templates;
 mod thumbnails;
 pub mod updater;
 
@@ -607,6 +608,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         gungnir_label,
         bookmarks_file: Some(config_dir.join("gungnir-fm/bookmarks")),
         actions_dir: Some(actions_dir),
+        templates_dir: dirs::template_dir().filter(|path| path != std::path::Path::new(&home_path)),
         session_file: Some(session_file),
         initial_session: Some(initial_session),
         explicit_locations: !args.is_empty(),

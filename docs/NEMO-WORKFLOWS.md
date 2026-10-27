@@ -23,6 +23,51 @@ complete Nemo compatibility.
   paths containing spaces. Custom launchers get distinct desktop-file IDs, so
   adding another command does not replace a previous one with the same name.
 
+## Document templates
+
+The File and folder-background **Create New Document** menus list regular files
+from the configured XDG Templates directory. Selecting one copies its bytes to
+a new document, preserves its extension, and starts inline naming. Existing
+files, directories and symlinks are preserved; conflicting names get a numeric
+suffix before the extension. The operation remembers the original pane, tab and
+directory, so later navigation cannot redirect creation.
+
+Discovery runs on a worker, refreshes about every five seconds, and can be
+requested through **Refresh Templates**. Subfolders use relative labels such as
+`Office/Letter.odt`; nested menu groups are not implemented. Discovery excludes
+hidden files, symlinks and special files and is bounded to 128 templates, 10,000
+examined entries and eight directory levels. A disabled/unconfigured Templates
+directory leaves Empty Document available. Tests use explicit private template
+roots and do not scan the real user Templates directory.
+
+Stable URI-based template IDs and context-menu snapshots preserve the selected
+template when the index changes while a popup is open. Removed IDs are refused.
+Cached templates replaced by symlinks cannot copy their targets. Sources must
+still be regular files when opened; templates are never executed.
+
+Local and FM's live Gungnir adapter implement staged, exclusive publication.
+Only a complete synced file is renamed into place, with no replacement of an
+existing destination. Temporary staging is cleaned after failures. New documents retain template
+read/write permission restrictions, subject to the process umask, keep owner
+read/write bits before that mask, and drop executable/special bits. Template
+copying has no separate progress or cancellation control yet. Remote creation from templates is unsupported; the
+standalone VFS daemon protocol is unchanged.
+
+## Remote deletion and regular-file copy corrections
+
+Remote deletion now reports failed GIO exits and spawn errors, stops the batch
+at its first failure, and checks cancellation before spawning. Cancelling an
+active request kills and waits for its client process. This does not roll back
+items already removed or guarantee that a remote daemon reverses completed work.
+Hermetic executable client fixtures verify statuses, batch stopping, cancellation
+and reaping; live remote-server behavior was not exercised.
+
+Ordinary file copying opens a checked regular-file source with no-follow and
+nonblocking flags, then verifies regular type, device/inode and available birth
+time on its open descriptor. A replacement symlink or regular file is refused,
+and a replacement FIFO cannot block the worker. These checks precede creation
+of the copied destination data. Intended symlink copies still copy the link itself.
+
 ## Further defect corrections
 
 Properties details, hashes, thumbnail generation, and application discovery run
@@ -111,8 +156,8 @@ it does not recover a previous association that the older test may have removed.
 
 ## Validation
 
-The current workspace has 167 passing tests, including 15 new regressions in the
-rename and startup-preference pass after the previous 152-test baseline. Strict Clippy and formatting checks pass. Native GUI tests in an
+The current workspace has 190 passing tests, including 23 new regressions in the
+template and copy/deletion pass after the previous 167-test baseline. Strict Clippy and formatting checks pass. Native GUI tests in an
 isolated Xvfb display verify New Document, pattern selection, clipboard export and
 import, copy/paste, tab/window shortcuts, resizing, and clean exit.
 
@@ -131,7 +176,23 @@ and explicit-path startup preferences. Detailed logs, the continuing audit's
 complete tool matrix, and limitations are kept in the ignored `.bug-check/`
 directory.
 
-Undo/redo for operations other than individual local renames, document templates,
-and complete desktop extension compatibility remain unfinished. Live remote servers and Wayland clipboard integration were not
+The template/deletion continuation runs all 65 backend tests under ASan,
+including regular-file replacement and private-template permissions regressions.
+TSan passes all 65 tests with the test harness serialized, and 52 non-archive
+tests with its normal concurrent harness; individual threaded workloads remain
+threaded. A concurrent archive run exposed a libc timezone-cache warning that
+also reproduces in a standalone C `mktime` program. Disassembly confirms libc's
+private lock is invisible to TSan. The warning and evidence are retained as a
+system-library false positive; no production lock or suppression was added. Valgrind exercises
+ten focused template/index controller tests with no errors or definite leaks;
+48 bytes possibly lost remain reported. libFuzzer ran 2,860,965 inputs and AFL++
+220,800 executions against template naming and URI round trips, using a separate
+`std::path::Path` naming oracle. Native Xvfb mouse checks verify binary-template
+contents, collision numbering, inline naming, both panes, File/background menus,
+subfolder labels, and an index refresh while the popup remains open.
+
+Undo/redo for operations other than individual local renames, nested template
+menus, remote template creation and complete desktop extension compatibility
+remain unfinished. Live remote servers and Wayland clipboard integration were not
 available for end-to-end validation in this pass. Gungnir VFS's existing protocol
 was sufficient; these changes are in Gungnir FM and its adapter.
