@@ -1,0 +1,9 @@
+{
+  "version": "0.1.5",
+  "fm_commit": "801bf356cdb2626d934dfa0efa20abbdeb7d2c81",
+  "fm_dirty": false,
+  "vfs_commit": "477f68529a187353acd52b496ae1b7a4a09d175c",
+  "builder": "rust:1.99-slim-bookworm@sha256:86234e857a413004348b471d11a4ebe1aa92d2eae2b6b143cac68fd1ac3c48be",
+  "zig": "0.18.0-dev.624+b7f2c6d8f",
+  "runtime": "AppImage/type2-runtime 20251108"
+}
