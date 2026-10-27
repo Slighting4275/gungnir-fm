@@ -1,82 +1,22 @@
 name: gungnir-fm
 base: core24
-version: '0.1.4'
-summary: Fast dual-pane Linux file manager with Gungnir VFS
+version: '0.1.5'
+summary: Dual-pane file manager with Gungnir VFS
 description: |
-  Gungnir FM is a high-performance dual-pane Linux file manager engineered in
-  Rust and Slint. It is a native companion to Gungnir VFS, providing unified
-  access to local filesystems, virtual filesystems, and remote endpoints.
-  Features a 100% bit-perfect lossless compression engine, hardware-accelerated
-  rendering across Wayland and X11, and built-in package self-updater.
-
+  Nemo-style file management with document templates, folder creation,
+  undo and redo, and a bundled Gungnir VFS daemon and private runtime.
 grade: stable
 confinement: classic
-
+platforms:
+  amd64:
 apps:
   gungnir-fm:
-    command: bin/gungnir-fm-wrapper.sh
-    desktop: usr/share/applications/org.gungnir.GungnirFM.desktop
+    command: bin/gungnir-fm-wrapper
+    desktop: share/applications/org.gungnir.GungnirFM.desktop
     environment:
-      GUNGNIR_FM_BACKEND: live
-      GIO_USE_VFS: gungnir
-      GIO_EXTRA_MODULES: $SNAP/lib/gio/modules
       GUNGNIR_PACKAGE_FORMAT: snap
-      LD_LIBRARY_PATH: $SNAP/lib:$SNAP/usr/lib:$SNAP/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH:-}
-    plugs:
-      - home
-      - removable-media
-      - network
-      - network-bind
-      - wayland
-      - x11
-      - desktop
-      - desktop-legacy
-      - mount-observe
-      - system-observe
-
 parts:
-  gungnir-vfs:
-    plugin: nil
-    source: https://gitlab.com/exalted6165/gungnir-vfs.git
-    source-branch: main
-    build-packages:
-      - rustc
-      - cargo
-      - clang
-      - pkg-config
-      - libglib2.0-dev
-      - libsqlite3-dev
-    override-build: |
-      # 1. Build gungnird daemon
-      cargo build --release --locked --bin gungnird
-      install -Dm755 .build/target/release/gungnird $SNAPCRAFT_PART_INSTALL/bin/gungnird
-      # 2. Build libgiogungnir.so GIO module
-      ./zb
-      install -Dm755 .build/zig-out/lib/libgiogungnir.so $SNAPCRAFT_PART_INSTALL/lib/gio/modules/libgiogungnir.so
-      gio-querymodules $SNAPCRAFT_PART_INSTALL/lib/gio/modules
-      # 3. Licenses
-      install -Dm644 LICENSES/GPL-3.0-or-later.txt $SNAPCRAFT_PART_INSTALL/usr/share/licenses/gungnir-vfs/GPL-3.0-or-later.txt
-
-  gungnir-fm:
-    plugin: rust
-    source: .
-    build-packages:
-      - pkg-config
-      - libarchive-dev
-      - libzstd-dev
-      - libzip-dev
-    override-build: |
-      craftctl default
-      # Install desktop file, metainfo XML, and scalable icon
-      install -Dm644 packaging/flatpak/org.gungnir.GungnirFM.desktop $SNAPCRAFT_PART_INSTALL/usr/share/applications/org.gungnir.GungnirFM.desktop
-      install -Dm644 packaging/flatpak/org.gungnir.GungnirFM.metainfo.xml $SNAPCRAFT_PART_INSTALL/usr/share/metainfo/org.gungnir.GungnirFM.metainfo.xml
-      install -Dm644 crates/ui/assets/gungnir-fm.svg $SNAPCRAFT_PART_INSTALL/usr/share/icons/hicolor/scalable/apps/org.gungnir.GungnirFM.svg
-      # Licenses
-      install -Dm644 LICENSES/GPL-3.0-or-later.txt $SNAPCRAFT_PART_INSTALL/usr/share/licenses/gungnir-fm/GPL-3.0-or-later.txt
-      install -Dm644 LICENSES/AGPL-3.0-or-later.txt $SNAPCRAFT_PART_INSTALL/usr/share/licenses/gungnir-fm/AGPL-3.0-or-later.txt
-
-  wrapper:
+  # Run packaging/release/build.py prepare first; compile locally once for all formats.
+  payload:
     plugin: dump
-    source: snap/local
-    organize:
-      gungnir-fm-wrapper.sh: bin/gungnir-fm-wrapper.sh
+    source: .build/release/payload

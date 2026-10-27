@@ -403,12 +403,13 @@ pub async fn perform_update(format: PackageFormat, target_version: &str) -> Resu
                 }
             }
 
-            // Fallback or generic AppImage update notice
-            Ok(format!("AppImage updated to {}", target_version))
+            // Repository downloads have no configured delta-update feed.
+            Err(format!(
+                "Install AppImage {target_version} from https://gitlab.com/exalted6165/gungnir-fm/-/tree/main/packages"
+            ))
         }
         PackageFormat::Native => {
-            // Native installation update notification / check
-            Ok(format!("Gungnir FM updated to {}", target_version))
+            Err(format!("Install Gungnir FM {target_version} from source or your package manager"))
         }
     }
 }

@@ -34,7 +34,7 @@ TARGET_DIR      ?= target
 RELEASE_BIN      = $(TARGET_DIR)/release/gungnir-fm
 DEBUG_BIN        = $(TARGET_DIR)/debug/gungnir-fm
 
-.PHONY: all build release debug check test lint clippy fmt fmt-check doc \
+.PHONY: packages snap all build release debug check test lint clippy fmt fmt-check doc \
         install install-user uninstall uninstall-user clean distclean \
         appimage flatpak gungnird help
 
@@ -169,9 +169,15 @@ distclean: clean
 	$(RMDIR) .build $(TARGET_DIR)
 
 # Package targets
-appimage: release
+appimage:
 	@echo "==> Building standalone AppImage..."
 	./packaging/appimage/build-appimage.sh
+
+snap:
+	./snap/build-snap.sh
+
+packages:
+	python3 packaging/release/build.py all
 
 flatpak:
 	@echo "==> Validating and packaging Flatpak..."
@@ -202,7 +208,9 @@ help:
 	@echo ""
 	@echo "Packaging & Extras:"
 	@echo "  appimage       Package standalone portable AppImage"
-	@echo "  flatpak        Validate Flatpak manifest and AppStream metadata"
+	@echo "  snap           Build unsigned classic Snap"
+	@echo "  packages       Build all three Linux packages"
+	@echo "  flatpak        Build Flatpak single-file bundle"
 	@echo "  gungnird       Build companion gungnird VFS daemon"
 	@echo "  clean          Remove Cargo build artifacts"
 	@echo "  distclean      Remove all build directories and packaging artifacts"

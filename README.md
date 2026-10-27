@@ -135,7 +135,7 @@ make install DESTDIR=/path/to/staging PREFIX=/usr
 | `make install-user` | Install for current user under `~/.local` (no root required) |
 | `make uninstall-user` | Remove user installation from `~/.local` |
 | `make appimage` | Package standalone portable AppImage |
-| `make flatpak` | Validate Flatpak manifest and AppStream metadata |
+| `make flatpak` / `make snap` / `make packages` | Build Flatpak, Snap, or all three Linux packages |
 | `make gungnird` | Build companion `gungnird` VFS daemon |
 | `make clean` | Remove Cargo build outputs and packaging temporary files |
 | `make distclean` | Deep clean removing `target/` and `.build/` directories |
@@ -161,42 +161,66 @@ To uninstall:
 
 ---
 
-### 📦 Universal Linux Packages via Terminal
+### 📦 Linux packages from this GitLab repository
 
-#### **Standalone AppImage (Zero-Install Single Binary)**
-Download the self-contained portable AppImage containing both Gungnir FM and the Gungnir VFS daemon:
+The x86_64 AppImage, Snap and Flatpak downloads are stored in [`packages/`](packages/)
+using Git LFS. Version 0.1.5 includes the current file-operation fixes, Nemo-style
+right-click **Create New Folder** and **Create New Document**, and XDG templates.
+Each package contains Gungnir FM, `gungnird`, the Gungnir GIO module, and private
+runtime libraries. The Qt backend remains available for desktop drag-and-drop.
+
+Download the desired file and `SHA256SUMS` from that directory. Verify the download
+against its matching checksum before installing. A full Git clone needs Git LFS:
+
 ```sh
-# 1. Download the latest AppImage
-curl -fsSLO https://gitlab.com/exalted6165/gungnir-fm/-/releases/permalink/latest/downloads/Gungnir_FM-x86_64.AppImage
-
-# 2. Make it executable
-chmod +x Gungnir_FM-x86_64.AppImage
-
-# 3. Run Gungnir FM
-./Gungnir_FM-x86_64.AppImage
-
-# Optional: Build the AppImage yourself from source
-./packaging/appimage/build-appimage.sh
+git lfs install
+git lfs pull
+cd packages
+sha256sum --check SHA256SUMS
 ```
 
-#### **Flatpak Package**
-```sh
-# Build and install locally for the current user
-flatpak-builder --user --install --force-clean build packaging/flatpak/org.gungnir.GungnirFM.yml
+#### AppImage
 
-# Run via Flatpak
+```sh
+chmod +x Gungnir_FM-x86_64.AppImage
+./Gungnir_FM-x86_64.AppImage
+```
+
+If FUSE is unavailable or your temporary directory prohibits execution, use an
+executable cache directory:
+
+```sh
+mkdir -p "$HOME/.cache/gungnir/appimage"
+TMPDIR="$HOME/.cache/gungnir/appimage" ./Gungnir_FM-x86_64.AppImage --appimage-extract-and-run
+```
+
+#### Snap
+
+Install the repository download as a local, unsigned classic Snap:
+
+```sh
+sudo snap install --dangerous --classic ./gungnir-fm_0.1.5_amd64.snap
+gungnir-fm
+```
+
+The system needs snapd and its `core24` base. Classic confinement permits file
+management across the host filesystem.
+
+#### Flatpak
+
+```sh
+flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+flatpak install --user ./org.gungnir.GungnirFM.flatpak
 flatpak run org.gungnir.GungnirFM
 ```
 
-#### **Snap Package**
-```sh
-# Install from Snap Store with classic confinement for full mount management
-sudo snap install gungnir-fm --classic
+The bundle uses `org.freedesktop.Platform/x86_64/26.08`; Flatpak can obtain that
+runtime from the configured remote. Host filesystem access supports file management;
+mount operations and remote shares still depend on available host services and
+permissions. Remote GIO browsing requires a working session GVfs service.
 
-# Or build locally using snapcraft
-snapcraft
-sudo snap install --classic --dangerous gungnir-fm_*.snap
-```
+Updates are repository downloads: install the newer file from `packages/` when a
+new version is committed. These packages are distributed through this repository.
 
 ---
 
@@ -306,45 +330,54 @@ ENVIRONMENT VARIABLES:
 
 ---
 
-### 📦 Packaging & Distribution Specifications
+### 📦 Building the Linux packages locally
 
-Gungnir FM provides first-class, standalone packaging configurations across Linux package ecosystems with **full Gungnir VFS integration** (`gungnird` daemon and `libgiogungnir.so` GIO extension module bundled into every package):
+All three existing packaging entry points now build real artifacts and fail if a
+required tool or build step fails. They share `packaging/release/build.py`, which
+compiles locally in a Debian 12 container with a pinned Rust image and a
+checksum-verified Zig nightly. The AppImage uses a checksum-verified official
+Type 2 runtime. Bundled libraries run through a private ELF loader, leaving host
+utilities' library search path intact. Copyright notices and runtime package
+versions are included in every payload.
 
-1. **Flatpak Package (`org.gungnir.GungnirFM`)**:
-   - Manifest: `packaging/flatpak/org.gungnir.GungnirFM.yml`
-   - Bundles `gungnird` and `libgiogungnir.so` in `/app/lib/gio/modules`.
-   - Runtime wrapper starts the background daemon and wires `GIO_USE_VFS=gungnir` and `GUNGNIR_FM_BACKEND=live`.
-   - Validate and build:
-     ```sh
-     packaging/flatpak/build-flatpak.sh
-     ```
+Requirements: x86_64 Linux, Python 3.12+, Docker, curl, `desktop-file-validate`,
+AppStream CLI, Flatpak, the Freedesktop 26.08 runtime, and a clean sibling
+`gungnir-vfs` checkout (or `GUNGNIR_VFS_DIR`). Populate the local Cargo cache first:
 
-2. **Snap Package (`snapcraft.yaml`)**:
-   - Manifest: `snap/snapcraft.yaml`
-   - Base `core24`, classic confinement for full filesystem and mount management.
-   - Bundles `gungnird` and `libgiogungnir.so`.
-   - Validate and build:
-     ```sh
-     snap/build-snap.sh
-     ```
+```sh
+cargo fetch --locked
+cargo fetch --locked --manifest-path ../gungnir-vfs/Cargo.toml
+flatpak install --user flathub org.freedesktop.Platform//26.08
+make packages
+```
 
-3. **AppImage Package (`Gungnir_FM-x86_64.AppImage`)**:
-   - Self-contained, portable single-file executable using standard Type 2 AppImage runtime.
-   - Bundles `gungnird` and `libgiogungnir.so`, configures GIO dynamic VFS, and launches Gungnir FM with live backend.
-   - Validate and build:
-     ```sh
-     packaging/appimage/build-appimage.sh
-     ```
+The local build container has networking disabled while compiling. Downloads and
+container dependency installation happen before compilation. Outputs go into
+`packages/`; intermediate files stay under `.build/release-0.1.5/`.
+`BUILD-INFO.json` records the FM source commit, whether tracked changes existed,
+the VFS commit and toolchain pins. `SHA256SUMS` covers the downloadable files.
+
+Individual builds remain available:
+
+```sh
+./packaging/appimage/build-appimage.sh
+./snap/build-snap.sh
+./packaging/flatpak/build-flatpak.sh
+```
+
+`make appimage`, `make snap` and `make flatpak` invoke those same entry points.
+The existing Snapcraft and Flatpak manifests stage the shared payload generated
+by `python3 packaging/release/build.py prepare`.
 
 ---
 
-### 🔄 Integrated Automated Package Updater
+### 🔄 Package updates
 
-Gungnir FM features an integrated package updater with a non-intrusive toolbar indicator:
-- **Intelligent Update Detection**: Automatically checks for package updates via Freedesktop Update Portal (`org.freedesktop.portal.Updates`) in Flatpak, `snapd` in Snap, and release channels in AppImage/Native mode.
-- **Top Toolbar "Update Available" Button**: The button appears dynamically in the top toolbar **strictly when a new package version is available**. If no update is available, the button is completely hidden.
-- **One-Click Auto-Update**: Clicking "Update Available" triggers the package updater in the background without freezing the UI.
-- **Automatic Disappearance**: Once the update is applied, the button and status message disappear automatically until the next version release.
+The toolbar can query supported package-manager and release integrations. The
+repository's standalone downloads require installing a newer package manually;
+they do not have a configured store or delta-update feed. AppImage and native
+fallbacks now report that manual installation is required instead of claiming
+an update succeeded without changing any files.
 
 ---
 

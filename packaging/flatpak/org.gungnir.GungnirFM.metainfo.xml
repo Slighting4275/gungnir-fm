@@ -38,6 +38,16 @@
   </provides>
 
   <releases>
+    <release version="0.1.5" date="2026-10-26">
+      <description>
+        <p>Nemo-style document templates and folder creation, safer file operations, and refreshed Linux release downloads.</p>
+        <ul>
+          <li>Right-click Create New Document uses XDG templates and includes Empty Document</li>
+          <li>Improved rename undo and redo, copy destination checks, and cancellable remote deletion</li>
+          <li>AppImage, Snap and Flatpak include the VFS daemon and a consistent private runtime</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.4" date="2026-10-25">
       <description>
         <p>Dynamic dark/light mode switching, reference-calibrated light theme, and native desktop drag-and-drop to terminal emulators.</p>

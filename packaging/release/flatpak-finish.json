@@ -1,0 +1,16 @@
+[
+  "--filesystem=host",
+  "--filesystem=xdg-run/gungnir:create",
+  "--filesystem=xdg-run/gvfsd",
+  "--filesystem=xdg-run/gvfs",
+  "--socket=wayland",
+  "--socket=fallback-x11",
+  "--share=ipc",
+  "--share=network",
+  "--talk-name=org.gtk.vfs.*",
+  "--talk-name=org.freedesktop.portal.Desktop",
+  "--talk-name=org.freedesktop.Notifications",
+  "--talk-name=org.freedesktop.FileManager1",
+  "--system-talk-name=org.freedesktop.UDisks2",
+  "--env=GUNGNIR_PACKAGE_FORMAT=flatpak"
+]

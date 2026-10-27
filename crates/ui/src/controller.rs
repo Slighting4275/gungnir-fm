@@ -2391,7 +2391,9 @@ impl Controller {
                 };
                 let tx = self.tx.clone();
                 tokio::task::spawn_blocking(move || {
-                    let result = std::env::current_exe()
+                    let result = std::env::var_os("GUNGNIR_FM_LAUNCHER")
+                        .map(std::path::PathBuf::from)
+                        .map_or_else(std::env::current_exe, Ok)
                         .and_then(|exe| {
                             std::process::Command::new(exe)
                                 .arg(location.to_uri_string())
