@@ -2084,3 +2084,31 @@ fn refreshing_removed_templates_clears_the_menu_and_refuses_stale_commands() {
     drop(h);
     std::fs::remove_dir_all(d).ok();
 }
+
+#[test]
+fn creation_from_a_selected_folder_context_uses_the_displayed_directory() {
+    let d = temp_dir("create-from-context");
+    let left = d.join("left");
+    let right = d.join("right");
+    std::fs::create_dir_all(right.join("existing-folder")).unwrap();
+    std::fs::create_dir(&left).unwrap();
+    std::fs::write(right.join("original.txt"), b"keep original").unwrap();
+    let h = start(left.to_str().unwrap(), right.to_str().unwrap(), MockConfig::default());
+    h.until(Duration::from_secs(3), |u| full_rows(u, 1, 2));
+    // A right-click activates this pane and selects its folder row.
+    h.send(Command::RowContext { pane: 1, index: 0 });
+    h.send(Command::Run("new-folder-inline".into()));
+    h.until(Duration::from_secs(3), |u| matches!(u, Update::Rename { pane: 1, index } if *index >= 0));
+    assert!(right.join("Untitled Folder").is_dir());
+    assert!(!right.join("existing-folder/Untitled Folder").exists());
+    assert!(!left.join("Untitled Folder").exists());
+    h.send(Command::RenameCancel);
+    h.send(Command::Run("new-file-inline".into()));
+    h.until(Duration::from_secs(3), |u| matches!(u, Update::Rename { pane: 1, index } if *index >= 0));
+    assert_eq!(std::fs::read(right.join("Untitled Document")).unwrap(), b"");
+    assert_eq!(std::fs::read(right.join("original.txt")).unwrap(), b"keep original");
+    assert!(!left.join("Untitled Document").exists());
+    assert!(!right.join("existing-folder/Untitled Document").exists());
+    drop(h);
+    std::fs::remove_dir_all(d).ok();
+}

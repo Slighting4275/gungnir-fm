@@ -164,8 +164,14 @@ To uninstall:
 ### 📦 Linux packages from this GitLab repository
 
 The x86_64 AppImage, Snap and Flatpak downloads are stored in [`packages/`](packages/)
-using Git LFS. Version 0.1.5 includes the current file-operation fixes, Nemo-style
+using Git LFS. Version 0.1.6 includes the current file-operation fixes, Nemo-style
 right-click **Create New Folder** and **Create New Document**, and XDG templates.
+Right-click either empty space **or a file/folder row** and choose **Create New
+Folder** or **Create New Document → Empty Document** (or an XDG template).
+Creation uses the folder currently displayed in that pane. A **New Folder** button
+is also visible in the toolbar; `Ctrl+Shift+N` creates a folder and selects its name
+for typing. Creation is unavailable in Trash.
+
 Each package contains Gungnir FM, `gungnird`, the Gungnir GIO module, and private
 runtime libraries. The Qt backend remains available for desktop drag-and-drop.
 
@@ -199,7 +205,7 @@ TMPDIR="$HOME/.cache/gungnir/appimage" ./Gungnir_FM-x86_64.AppImage --appimage-e
 Install the repository download as a local, unsigned classic Snap:
 
 ```sh
-sudo snap install --dangerous --classic ./gungnir-fm_0.1.5_amd64.snap
+sudo snap install --dangerous --classic ./gungnir-fm_0.1.6_amd64.snap
 gungnir-fm
 ```
 
@@ -353,7 +359,7 @@ make packages
 
 The local build container has networking disabled while compiling. Downloads and
 container dependency installation happen before compilation. Outputs go into
-`packages/`; intermediate files stay under `.build/release-0.1.5/`.
+`packages/`; intermediate files stay under `.build/release-0.1.6/`.
 `BUILD-INFO.json` records the FM source commit, whether tracked changes existed,
 the VFS commit and toolchain pins. `SHA256SUMS` covers the downloadable files.
 

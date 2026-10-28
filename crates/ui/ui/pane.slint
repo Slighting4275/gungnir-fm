@@ -422,6 +422,27 @@ export component Pane inherits Rectangle {
             }
             cm := ContextMenuArea {
                 Menu {
+                    // Creation acts on the displayed folder, including when a row
+                    // fills the pane and no empty background is easy to reach.
+                    if !root.menu-is-trash: MenuItem {
+                        title: "Create New Folder";
+                        activated => { root.command("new-folder-inline"); }
+                    }
+                    if !root.menu-is-trash: Menu {
+                        title: "Create New Document";
+                        MenuItem {
+                            title: "Empty Document";
+                            activated => { root.command("new-file-inline"); }
+                        }
+                        if root.menu-document-templates.length > 0: MenuSeparator { }
+                        for item in root.menu-document-templates: MenuItem {
+                            title: item.title;
+                            activated => { root.command("create-template:" + item.id); }
+                        }
+                        MenuSeparator { }
+                        MenuItem { title: "Refresh Templates"; activated => { root.command("refresh-templates"); } }
+                    }
+                    if !root.menu-is-trash: MenuSeparator { }
                     // -----------------------------------------------------------------
                     // ITEM CONTEXT: PRIMARY ACTIONS
                     // -----------------------------------------------------------------

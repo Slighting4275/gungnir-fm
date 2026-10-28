@@ -481,6 +481,14 @@ export component AppWindow inherits Window {
                     ToolButton { y: (parent.height - self.height) / 2; glyph: "up"; clicked => { root.nav(root.active-pane, "up"); } }
                     ToolButton { y: (parent.height - self.height) / 2; glyph: "refresh"; clicked => { root.nav(root.active-pane, "refresh"); } }
                     ToolButton { y: (parent.height - self.height) / 2; glyph: "home"; clicked => { root.nav(root.active-pane, "home"); } }
+                    ToolButton {
+                        y: (parent.height - self.height) / 2;
+                        glyph: "folder";
+                        label: "New Folder";
+                        tooltip: "Create a new folder (Ctrl+Shift+N)";
+                        enabled: !root.active-info.is-trash;
+                        clicked => { root.command("new-folder-inline"); }
+                    }
                     Rectangle { width: 6px; }
                     path-bar := PathBar {
                         y: (parent.height - self.height) / 2;
@@ -493,7 +501,7 @@ export component AppWindow inherits Window {
                     }
                     Rectangle { width: 6px; }
                     Rectangle {
-                        width: 210px;
+                        width: 120px;
                         filter-edit := LineEdit {
                             y: (parent.height - 30px) / 2;
                             height: 30px;

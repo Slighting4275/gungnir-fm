@@ -71,7 +71,7 @@ def prepare():
     provenance = {
         'version': VERSION,
         'fm_commit': subprocess.check_output(['git', '-C', str(ROOT), 'rev-parse', 'HEAD'], text=True).strip(),
-        'fm_dirty': bool(subprocess.check_output(['git', '-C', str(ROOT), 'status', '--porcelain', '--untracked-files=no'])),
+        'fm_dirty': bool(subprocess.check_output(['git', '-C', str(ROOT), 'status', '--porcelain', '--untracked-files=no', '--', '.', ':(exclude)packages/**'])),
         'vfs_commit': subprocess.check_output(['git', '-C', str(vfs), 'rev-parse', 'HEAD'], text=True).strip(),
         'builder': 'rust:1.99-slim-bookworm@sha256:86234e857a413004348b471d11a4ebe1aa92d2eae2b6b143cac68fd1ac3c48be',
         'zig': ZIG_VERSION,

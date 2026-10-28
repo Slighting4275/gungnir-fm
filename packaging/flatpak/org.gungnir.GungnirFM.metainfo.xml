@@ -38,6 +38,11 @@
   </provides>
 
   <releases>
+    <release version="0.1.6" date="2026-10-27">
+      <description>
+        <p>Create New Folder and Create New Document are available when right-clicking file rows as well as empty space. A New Folder toolbar button makes creation accessible in full directories.</p>
+      </description>
+    </release>
     <release version="0.1.5" date="2026-10-26">
       <description>
         <p>Nemo-style document templates and folder creation, safer file operations, and refreshed Linux release downloads.</p>

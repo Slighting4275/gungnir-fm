@@ -1,6 +1,6 @@
 name: gungnir-fm
 base: core24
-version: '0.1.5'
+version: '0.1.6'
 summary: Dual-pane file manager with Gungnir VFS
 description: |
   Nemo-style file management with document templates, folder creation,
