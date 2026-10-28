@@ -1,6 +1,6 @@
 {
-  "version": "0.1.5",
-  "fm_commit": "801bf356cdb2626d934dfa0efa20abbdeb7d2c81",
+  "version": "0.1.6",
+  "fm_commit": "6210192efc9b55d89e3fa6a6ea75b2893faa0c75",
   "fm_dirty": false,
   "vfs_commit": "477f68529a187353acd52b496ae1b7a4a09d175c",
   "builder": "rust:1.99-slim-bookworm@sha256:86234e857a413004348b471d11a4ebe1aa92d2eae2b6b143cac68fd1ac3c48be",
