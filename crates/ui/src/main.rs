@@ -496,7 +496,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (gungnir_root, gungnir_label, right_default) = match live {
         Some(b) => {
             let label = "GUNGNIR VFS · LIVE".to_owned();
-            registry.register(Arc::new(b));
+            // Ahead of the local backend: the daemon serves `trash:` for every volume, and
+            // falls back to the same local code when it is not there.
+            registry.register_front(Arc::new(b));
             let root = VfsUri::gungnir("", "/")?;
             (root, label, VfsUri::gungnir("", home.path())?)
         }

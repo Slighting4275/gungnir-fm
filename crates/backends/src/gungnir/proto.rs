@@ -79,6 +79,20 @@ pub const EV_INCOMPLETE: u8 = 4;
 
 // ---- ops.rs ---------------------------------------------------------------------------
 
+pub const MSG_VFS_LIST: u32 = 40;
+pub const MSG_VFS_DELETE: u32 = 41;
+pub const MSG_VFS_RESTORE: u32 = 42;
+pub const MSG_TRASH_EMPTY: u32 = 43;
+/// The daemon is alive and working on the request with this seq.
+pub const MSG_VFS_BEAT: u32 = 44;
+pub const MSG_VFS_STAT: u32 = 45;
+pub const MSG_VFS_CHILDREN: u32 = 46;
+pub const MSG_VFS_STAMP: u32 = 47;
+pub const SCHEME_TRASH: u8 = 0;
+pub const VFS_KIND_FILE: u8 = 1;
+pub const VFS_KIND_DIR: u8 = 2;
+pub const VFS_KIND_SYMLINK: u8 = 3;
+
 pub const MSG_OP_START: u32 = 25;
 pub const MSG_OP_CANCEL: u32 = 26;
 pub const MSG_OP_PROGRESS: u32 = 34;
@@ -757,6 +771,49 @@ pub fn put_key(out: &mut Vec<u8>, key: &str) -> VfsResult<()> {
 pub mod req {
     use super::*;
 
+    fn blob16(out: &mut Vec<u8>, b: &[u8]) -> VfsResult<()> {
+        let n = u16::try_from(b.len()).map_err(|_| VfsError::BadRequest)?;
+        out.extend_from_slice(&n.to_le_bytes());
+        out.extend_from_slice(b);
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn vfs_list(cursor: u32) -> Vec<u8> {
+        let mut out = vec![SCHEME_TRASH];
+        out.extend_from_slice(&cursor.to_le_bytes());
+        out
+    }
+
+    /// # Errors
+    /// Name too long.
+    pub fn vfs_children(cursor: u32, name: &[u8]) -> VfsResult<Vec<u8>> {
+        let mut out = cursor.to_le_bytes().to_vec();
+        blob16(&mut out, name)?;
+        Ok(out)
+    }
+
+    /// For stat and delete: `scheme u8 | name len16`.
+    ///
+    /// # Errors
+    /// Name too long.
+    pub fn vfs_item(name: &[u8]) -> VfsResult<Vec<u8>> {
+        let mut out = vec![SCHEME_TRASH];
+        blob16(&mut out, name)?;
+        Ok(out)
+    }
+
+    /// Restore to the item's own original path.
+    ///
+    /// # Errors
+    /// Name too long.
+    pub fn vfs_restore(name: &[u8]) -> VfsResult<Vec<u8>> {
+        let mut out = Vec::new();
+        blob16(&mut out, name)?;
+        blob16(&mut out, b"")?;
+        Ok(out)
+    }
+
     /// # Errors
     /// Invalid path.
     pub fn path(p: &Path) -> VfsResult<Vec<u8>> {
@@ -823,11 +880,64 @@ pub mod req {
 pub fn reply_body(payload: &[u8], what: &str) -> VfsResult<Vec<u8>> {
     let mut r = Reader(payload);
     let st = r.u32()?;
-    match VfsError::from_gungnir_status(st, 0, what) {
+    let errno = if st == OS_ERROR_STATUS { r.u32().map_or(0, |e| e as i32) } else { 0 };
+    match VfsError::from_gungnir_status(st, errno, what) {
         None => Ok(r.0.to_vec()),
         Some(e) => Err(e),
     }
 }
+
+/// One trash item from gungnird (`vfssvc.rs`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VfsRow {
+    /// The URI name: `h-<entry>`, or `<hex of the trash directory>-<entry>`, then any path
+    /// inside a trashed folder.
+    pub name: Vec<u8>,
+    pub orig: Vec<u8>,
+    pub target: Vec<u8>,
+    pub kind: u8,
+    pub size: u64,
+    pub mtime: i64,
+}
+
+/// A page of items: `next u32 (0: the end) | count u16 | partial u8 | rows`.
+///
+/// # Errors
+/// Malformed body.
+pub fn parse_page(body: &[u8]) -> VfsResult<(u32, bool, Vec<VfsRow>)> {
+    let mut r = Reader(body);
+    let next = r.u32()?;
+    let count = r.u16()?;
+    let partial = r.u8()? != 0;
+    let mut rows = Vec::with_capacity(usize::from(count));
+    for _ in 0..count {
+        let name = r.blob16()?.to_vec();
+        let orig = r.blob16()?.to_vec();
+        let target = r.blob16()?.to_vec();
+        let _deleted = r.blob16()?;
+        let _link = r.blob16()?;
+        let kind = r.u8()?;
+        let size = r.u64()?;
+        let mtime = r.i64()?;
+        rows.push(VfsRow { name, orig, target, kind, size, mtime });
+    }
+    Ok((next, partial, rows))
+}
+
+/// Whether the first part of a `trash:` path names an item on another volume: the hex of
+/// an absolute trash directory, then `-`. Home items are their plain entry names.
+#[must_use]
+pub fn is_volume_item(part: &str) -> bool {
+    part.split_once('-').is_some_and(|(hex, _)| {
+        hex.len() >= 4
+            && hex.len().is_multiple_of(2)
+            && hex.starts_with("2f")
+            && hex.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    })
+}
+
+/// Its body starts with the errno.
+const OS_ERROR_STATUS: u32 = 15;
 
 /// List reply body: `more u8 | count u16 | count x key`.
 ///

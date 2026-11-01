@@ -1297,6 +1297,10 @@ pub fn size(bytes: u64) -> String {
 /// `ls -l` style: `drwxr-xr-x`, with setuid/setgid/sticky.
 #[must_use]
 pub fn mode(kind: FileKind, mode: u32) -> String {
+    // Unknown (a trash item from the daemon): blank, not "no permissions at all".
+    if mode == 0 {
+        return String::new();
+    }
     let t = match kind {
         FileKind::Directory => 'd',
         FileKind::Symlink => 'l',
@@ -1349,6 +1353,7 @@ mod tests {
 
     #[test]
     fn modes() {
+        assert_eq!(mode(FileKind::File, 0), "");
         assert_eq!(mode(FileKind::Directory, 0o755), "drwxr-xr-x");
         assert_eq!(mode(FileKind::File, 0o4755), "-rwsr-xr-x");
         assert_eq!(mode(FileKind::Directory, 0o1777), "drwxrwxrwt");

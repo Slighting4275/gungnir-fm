@@ -151,6 +151,11 @@ impl VfsRegistry {
         self.providers.push(p);
     }
 
+    /// Register ahead of the others: asked first for what several can serve.
+    pub fn register_front(&mut self, p: Arc<dyn VfsProvider>) {
+        self.providers.insert(0, p);
+    }
+
     /// # Errors
     /// [`VfsError::NoBackend`] if nothing handles `uri`.
     pub fn resolve(&self, uri: &VfsUri) -> VfsResult<Arc<dyn VfsProvider>> {

@@ -52,6 +52,8 @@ pub struct GungnirVfsBackend {
     link: Mutex<Option<Arc<Link>>>,
     last_attempt: Mutex<Option<Instant>>,
     local: LocalPosixBackend,
+    /// A listing's pages read a snapshot kept per connection, and this one is shared.
+    trash_listing: tokio::sync::Mutex<()>,
 }
 
 /// `gungnir:///p` and `gungnir://localhost/p` -> `/p`; `file://` passes through.
@@ -102,7 +104,13 @@ impl GungnirVfsBackend {
     /// A backend for the daemon at `socket`; connects on first use.
     #[must_use]
     pub fn new(socket: PathBuf) -> Self {
-        Self { socket, link: Mutex::new(None), last_attempt: Mutex::new(None), local: LocalPosixBackend::new() }
+        Self {
+            socket,
+            trash_listing: tokio::sync::Mutex::new(()),
+            link: Mutex::new(None),
+            last_attempt: Mutex::new(None),
+            local: LocalPosixBackend::new(),
+        }
     }
 
     /// Connect now; fails if gungnird is not running (used to pick live vs. mock).
@@ -512,6 +520,175 @@ fn health_status(h: Health) -> MountStatus {
     }
 }
 
+/// The daemon's request bounds for a trash list or stat, and the silence allowed during a
+/// long delete or restore, which sends beats.
+const LIST_TIMEOUT: Duration = Duration::from_secs(5);
+const OP_SILENCE: Duration = Duration::from_secs(65);
+const STAMP_EVERY: Duration = Duration::from_secs(2);
+const BUSY_RETRIES: u32 = 100;
+const INNER_READ_ONLY: &str = "only a whole item can be changed; restore the folder first";
+
+/// A daemon that is not there, or older than the trash service: local trash code serves.
+fn falls_back(e: &VfsError) -> bool {
+    match e {
+        VfsError::DaemonUnavailable(_) => true,
+        VfsError::Unsupported(m) => m == "the running gungnird does not support this request",
+        _ => false,
+    }
+}
+
+/// The path of a `trash:` URI, without its leading slash.
+fn trash_rel(uri: &VfsUri) -> &str {
+    uri.path().trim_matches('/')
+}
+
+/// The daemon's name for a `trash:` URI. A home item's URI is its plain entry name, the
+/// same as the local trash code uses, so both always mean the same file.
+fn trash_name(uri: &VfsUri) -> String {
+    let rel = trash_rel(uri);
+    if proto::is_volume_item(rel.split('/').next().unwrap_or_default()) { rel.to_owned() } else { format!("h-{rel}") }
+}
+
+fn trash_entry(row: proto::VfsRow) -> VfsResult<FileEntry> {
+    let name = String::from_utf8(row.name).map_err(|_| VfsError::BadUtf8)?;
+    let rel = name.strip_prefix("h-").unwrap_or(&name);
+    let uri = VfsUri::trash(rel)?;
+    let last = |b: &[u8]| {
+        let s = String::from_utf8_lossy(b).into_owned();
+        s.rsplit('/').next().unwrap_or_default().to_owned()
+    };
+    // The original name; a degraded item has only its entry's.
+    let shown = if row.orig.is_empty() {
+        let tail = rel.rsplit('/').next().unwrap_or(rel);
+        tail.split_once('-').filter(|_| proto::is_volume_item(tail)).map_or(tail, |(_, e)| e).to_owned()
+    } else {
+        last(&row.orig)
+    };
+    let kind = match row.kind {
+        proto::VFS_KIND_FILE => core_vfs::FileKind::File,
+        proto::VFS_KIND_DIR => core_vfs::FileKind::Directory,
+        proto::VFS_KIND_SYMLINK => core_vfs::FileKind::Symlink,
+        _ => core_vfs::FileKind::Special,
+    };
+    let modified = u64::try_from(row.mtime).ok().map(|s| std::time::UNIX_EPOCH + Duration::from_secs(s));
+    Ok(FileEntry {
+        name: shown,
+        uri,
+        kind,
+        target_is_dir: false,
+        size: row.size,
+        modified,
+        mode: 0,
+        vfs: core_vfs::VfsMetadata::default(),
+    })
+}
+
+async fn send_trash_rows(
+    rows: Vec<proto::VfsRow>,
+    partial: bool,
+    opts: ListOptions,
+    sink: &EntrySink,
+    cancel: &CancellationToken,
+) -> VfsResult<ListSummary> {
+    let (mut sent, mut skipped) = (0u64, u64::from(partial));
+    let mut batch = Vec::with_capacity(opts.first_batch);
+    let mut limit = opts.first_batch.max(1);
+    for row in rows {
+        if cancel.is_cancelled() {
+            return Err(VfsError::Cancelled);
+        }
+        match trash_entry(row) {
+            Ok(e) => batch.push(e),
+            Err(_) => skipped += 1,
+        }
+        if batch.len() >= limit {
+            sent += batch.len() as u64;
+            sink.send(std::mem::take(&mut batch)).await.map_err(|_| VfsError::Cancelled)?;
+            limit = opts.batch.max(1);
+        }
+    }
+    if !batch.is_empty() {
+        sent += batch.len() as u64;
+        sink.send(batch).await.map_err(|_| VfsError::Cancelled)?;
+    }
+    Ok(ListSummary { entries: sent, skipped })
+}
+
+/// A change in the trash, from the daemon's stamp: it covers every volume's trash, and the
+/// local watcher only the home one.
+fn watch_trash(link: Arc<Link>, rt: &tokio::runtime::Handle) -> DirWatch {
+    struct Stop(tokio::task::JoinHandle<()>);
+    impl Drop for Stop {
+        fn drop(&mut self) {
+            self.0.abort();
+        }
+    }
+    let (tx, events) = tokio::sync::mpsc::channel(8);
+    let task = rt.spawn(async move {
+        let stamp =
+            |l: Arc<Link>| async move { l.call(proto::MSG_VFS_STAMP, vec![proto::SCHEME_TRASH], LIST_TIMEOUT).await };
+        let mut last = stamp(Arc::clone(&link)).await.ok();
+        loop {
+            tokio::time::sleep(STAMP_EVERY).await;
+            if !link.alive() {
+                return;
+            }
+            // Busy or slow says nothing about the trash.
+            let Ok(now) = stamp(Arc::clone(&link)).await else { continue };
+            if last.as_ref() != Some(&now) {
+                last = Some(now);
+                if tx.send(core_vfs::WatchEvent::Changed).await.is_err() {
+                    return;
+                }
+            }
+        }
+    });
+    DirWatch { events, guard: Box::new(Stop(task)) }
+}
+
+impl GungnirVfsBackend {
+    /// A trash request, tried again while every daemon request slot is taken.
+    async fn trash_call(&self, kind: u32, payload: Vec<u8>, timeout: Duration) -> VfsResult<Vec<u8>> {
+        let link = self.link().await?;
+        let mut tries = 0;
+        loop {
+            match link.call(kind, payload.clone(), timeout).await {
+                Err(VfsError::Busy) if tries < BUSY_RETRIES => {
+                    tries += 1;
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                r => return r,
+            }
+        }
+    }
+
+    /// Every row of the trash, or of a folder inside it, and whether that may not be all.
+    async fn trash_rows(&self, dir: &VfsUri) -> VfsResult<(Vec<proto::VfsRow>, bool)> {
+        let _one_at_a_time = self.trash_listing.lock().await;
+        let inner = !trash_rel(dir).is_empty();
+        let name = trash_name(dir);
+        let (mut rows, mut partial, mut cursor) = (Vec::new(), false, 0u32);
+        loop {
+            let (kind, payload) = if inner {
+                (proto::MSG_VFS_CHILDREN, proto::req::vfs_children(cursor, name.as_bytes())?)
+            } else {
+                (proto::MSG_VFS_LIST, proto::req::vfs_list(cursor))
+            };
+            let body = self.trash_call(kind, payload, LIST_TIMEOUT).await?;
+            let (next, part, mut page) = proto::parse_page(&body)?;
+            partial |= part;
+            rows.append(&mut page);
+            if next == 0 {
+                return Ok((rows, partial));
+            }
+            if next <= cursor {
+                return Err(VfsError::Transport("bad trash page".into()));
+            }
+            cursor = next;
+        }
+    }
+}
+
 #[async_trait]
 impl VfsProvider for GungnirVfsBackend {
     fn kind(&self) -> BackendKind {
@@ -530,7 +707,7 @@ impl VfsProvider for GungnirVfsBackend {
     }
 
     fn handles(&self, uri: &VfsUri) -> bool {
-        is_local_gungnir(uri)
+        is_local_gungnir(uri) || uri.scheme() == Scheme::Trash
     }
 
     fn can_transfer(&self, src: &VfsUri, dest: &VfsUri) -> bool {
@@ -545,6 +722,13 @@ impl VfsProvider for GungnirVfsBackend {
         sink: EntrySink,
         cancel: CancellationToken,
     ) -> VfsResult<ListSummary> {
+        if dir.scheme() == Scheme::Trash {
+            return match self.trash_rows(dir).await {
+                Err(e) if falls_back(&e) => self.local.list_dir(dir, opts, sink, cancel).await,
+                Err(e) => Err(e),
+                Ok((rows, partial)) => send_trash_rows(rows, partial, opts, &sink, &cancel).await,
+            };
+        }
         let path = local_path(dir)?;
         self.gate(&path)?;
         let (tx, mut rx) = mpsc::channel::<Vec<FileEntry>>(4);
@@ -581,6 +765,22 @@ impl VfsProvider for GungnirVfsBackend {
     }
 
     async fn stat(&self, uri: &VfsUri) -> VfsResult<FileEntry> {
+        if uri.scheme() == Scheme::Trash && !trash_rel(uri).is_empty() {
+            let asked = async {
+                let body = self
+                    .trash_call(proto::MSG_VFS_STAT, proto::req::vfs_item(trash_name(uri).as_bytes())?, LIST_TIMEOUT)
+                    .await?;
+                let (_, _, rows) = proto::parse_page(&body)?;
+                rows.into_iter().next().ok_or(VfsError::BadRequest).and_then(trash_entry)
+            };
+            return match asked.await {
+                Err(e) if falls_back(&e) => self.local.stat(uri).await,
+                r => r,
+            };
+        }
+        if uri.scheme() == Scheme::Trash {
+            return self.local.stat(uri).await;
+        }
         let path = local_path(uri)?;
         self.gate(&path)?;
         let mut e = self.local.stat(&file_uri(&path)?).await?;
@@ -619,6 +819,22 @@ impl VfsProvider for GungnirVfsBackend {
 
     async fn delete(&self, uris: &[VfsUri], cancel: CancellationToken) -> VfsResult<()> {
         for u in uris {
+            if u.scheme() == Scheme::Trash {
+                if cancel.is_cancelled() {
+                    return Err(VfsError::Cancelled);
+                }
+                if trash_rel(u).contains('/') {
+                    return Err(VfsError::Unsupported(INNER_READ_ONLY.into()));
+                }
+                let payload = proto::req::vfs_item(trash_name(u).as_bytes())?;
+                match self.trash_call(proto::MSG_VFS_DELETE, payload, OP_SILENCE).await {
+                    Err(e) if falls_back(&e) => self.local.delete(std::slice::from_ref(u), cancel.clone()).await?,
+                    r => {
+                        r?;
+                    }
+                }
+                continue;
+            }
             let p = local_path(u)?;
             let md = {
                 self.gate(&p)?;
@@ -646,11 +862,29 @@ impl VfsProvider for GungnirVfsBackend {
     }
 
     async fn restore(&self, uris: &[VfsUri]) -> VfsResult<()> {
-        self.local.restore(uris).await
+        for u in uris {
+            if u.scheme() != Scheme::Trash {
+                return Err(VfsError::BadRequest);
+            }
+            if trash_rel(u).contains('/') {
+                return Err(VfsError::Unsupported(INNER_READ_ONLY.into()));
+            }
+            let payload = proto::req::vfs_restore(trash_name(u).as_bytes())?;
+            match self.trash_call(proto::MSG_VFS_RESTORE, payload, OP_SILENCE).await {
+                Err(e) if falls_back(&e) => self.local.restore(std::slice::from_ref(u)).await?,
+                r => {
+                    r?;
+                }
+            }
+        }
+        Ok(())
     }
 
     async fn empty_trash(&self) -> VfsResult<()> {
-        self.local.empty_trash().await
+        match self.trash_call(proto::MSG_TRASH_EMPTY, Vec::new(), OP_SILENCE).await {
+            Err(e) if falls_back(&e) => self.local.empty_trash().await,
+            r => r.map(drop),
+        }
     }
 
     async fn transfer(&self, req: TransferRequest, ctl: TransferControl) -> VfsResult<()> {
@@ -754,6 +988,13 @@ impl VfsProvider for GungnirVfsBackend {
     }
 
     fn watch(&self, dir: &VfsUri) -> VfsResult<Option<DirWatch>> {
+        if dir.scheme() == Scheme::Trash {
+            let live = self.link.lock().unwrap_or_else(PoisonError::into_inner).clone();
+            return match (live.filter(|l| l.alive()), tokio::runtime::Handle::try_current()) {
+                (Some(link), Ok(rt)) => Ok(Some(watch_trash(link, &rt))),
+                _ => self.local.watch(dir),
+            };
+        }
         let p = local_path(dir)?;
         self.gate(&p)?;
         self.local.watch(&file_uri(&p)?)

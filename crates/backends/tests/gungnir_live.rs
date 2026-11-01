@@ -337,3 +337,56 @@ async fn template_copy_to_gungnir_preserves_contents_and_namespace() -> VfsResul
     assert_eq!(backend.stat(&target).await?.uri, target);
     Ok(())
 }
+
+/// The trash through gungnird: list, stat, browse, change notice, delete, restore, empty.
+#[tokio::test(flavor = "multi_thread")]
+async fn trash_goes_through_the_daemon() -> VfsResult<()> {
+    let t = TempDir::new("live-trash");
+    let dir = t.0.clone();
+    let trash = dir.join("data/Trash");
+    let (files, info) = (trash.join("files"), trash.join("info"));
+    std::fs::create_dir_all(files.join("tree/sub")).unwrap_or_else(|e| panic!("{e}"));
+    std::fs::create_dir_all(&info).unwrap_or_else(|e| panic!("{e}"));
+    std::fs::write(files.join("tree/sub/leaf"), b"leaf").unwrap_or_else(|e| panic!("{e}"));
+    let item = |n: &str, orig: &Path| {
+        std::fs::write(files.join(n), b"data").unwrap_or_else(|e| panic!("{e}"));
+        std::fs::write(info.join(format!("{n}.trashinfo")), format!("[Trash Info]\nPath={}\n", orig.display()))
+            .unwrap_or_else(|e| panic!("{e}"));
+    };
+    let back = dir.join("back.txt");
+    item("back.txt", &back);
+    item("gone.txt", &dir.join("gone.txt"));
+    std::fs::write(info.join("tree.trashinfo"), format!("[Trash Info]\nPath={}\n", dir.join("real-name").display()))
+        .unwrap_or_else(|e| panic!("{e}"));
+    let Some(d) = Daemon::start(&dir) else { return Ok(()) };
+    let b = GungnirVfsBackend::connect(d.sock.clone()).await?;
+    assert!(b.handles(&VfsUri::trash("/")?));
+    let opts = ListOptions::default();
+    let names = |v: (Vec<usize>, Vec<core_vfs::FileEntry>)| {
+        let mut n: Vec<_> = v.1.into_iter().map(|e| e.name).collect();
+        n.sort();
+        n
+    };
+    let root = VfsUri::trash("/")?;
+    assert_eq!(names(list(&b, &root, opts).await?), ["back.txt", "gone.txt", "real-name"]);
+    let leaf = b.stat(&VfsUri::trash("/tree/sub/leaf")?).await?;
+    assert_eq!((leaf.name.as_str(), leaf.size), ("leaf", 4));
+    assert_eq!(names(list(&b, &VfsUri::trash("/tree/sub")?, opts).await?), ["leaf"]);
+    assert_eq!(
+        b.delete(&[VfsUri::trash("/tree/sub/leaf")?], CancellationToken::new()).await,
+        Err(VfsError::Unsupported("only a whole item can be changed; restore the folder first".into()))
+    );
+    let mut w = b.watch(&root)?.unwrap_or_else(|| panic!("no watch"));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    b.delete(&[VfsUri::trash("/gone.txt")?], CancellationToken::new()).await?;
+    assert!(!files.join("gone.txt").exists() && !info.join("gone.txt.trashinfo").exists());
+    let ev = tokio::time::timeout(Duration::from_secs(6), w.events.recv()).await;
+    assert!(matches!(ev, Ok(Some(core_vfs::WatchEvent::Changed))), "{ev:?}");
+    b.restore(&[VfsUri::trash("/back.txt")?]).await?;
+    assert_eq!(std::fs::read(&back).unwrap_or_else(|e| panic!("{e}")), b"data");
+    assert_eq!(names(list(&b, &root, opts).await?), ["real-name"]);
+    b.empty_trash().await?;
+    assert!(list(&b, &root, opts).await?.1.is_empty());
+    assert!(!files.join("tree").exists());
+    Ok(())
+}

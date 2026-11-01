@@ -84,6 +84,9 @@ enum Pending {
     },
 }
 
+/// Longest silence during a request that sends beats.
+const BEAT_SILENCE: Duration = Duration::from_secs(65);
+
 struct Shared {
     alive: AtomicBool,
     health: Mutex<HealthTable>,
@@ -304,6 +307,12 @@ impl Driver {
 
     fn dispatch(&mut self, m: Msg) {
         match m.kind {
+            // A long trash delete or restore is alive: the silence bound starts over.
+            proto::MSG_VFS_BEAT => {
+                if let Some(Pending::Call { deadline, .. }) = self.pending.get_mut(&m.seq) {
+                    *deadline = Instant::now() + BEAT_SILENCE;
+                }
+            }
             proto::MSG_MD_REPLY | proto::MSG_PONG => {
                 self.sent.remove(&m.seq);
                 let Some(p) = self.pending.remove(&m.seq) else { return }; // late reply

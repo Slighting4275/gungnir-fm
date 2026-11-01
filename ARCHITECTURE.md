@@ -164,7 +164,10 @@ local filesystem, and adds what the daemon really provides:
 | `metadata::*` | identify 16, get 17, set 18, unset 19, list 20, removed 21, moved 22, reply 32 | `md.rs` |
 | Mount health | query 23, subscribe 24, event 33 (snapshots: healthy/slow/hung/gone) | `health.rs` |
 | File ops | start 25, cancel 26, progress 34, done 35 (copy, move, delete, delete-tree, fsync) | `ops.rs` |
-| Status codes | 0..=13 metadata, 14 cancelled, 15 OS error + errno, 16 would-recurse | `md.rs`, `ops.rs` |
+| Trash | list 40, delete 41, restore 42, empty 43, beat 44, stat 45, children 46, stamp 47 | `vfssvc.rs`, `trash.rs` |
+| Status codes | 0..=13 metadata, 14 cancelled, 15 OS error + errno, 16 would-recurse, 17 mount inside, 18 items remain | `md.rs`, `ops.rs`, `vfssvc.rs` |
+
+The live backend is registered ahead of the local one, so `trash:` goes through gungnird: every volume's trash, original names, restore and empty with the daemon's guarantees, folders browsable, changes noticed by polling a stamp every 2 s. A home item's URI is its plain entry name; another volume's starts with the hex of its trash directory. Without the daemon, or with one older than the trash service, the local trash code serves the same URIs.
 
 In practice:
 

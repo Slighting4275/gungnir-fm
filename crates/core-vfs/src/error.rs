@@ -26,6 +26,8 @@ pub mod gungnir_status {
     pub const CANCELLED: u32 = 14;
     pub const OS_ERROR: u32 = 15;
     pub const WOULD_RECURSE: u32 = 16;
+    pub const MOUNT_INSIDE: u32 = 17;
+    pub const NOT_EMPTY: u32 = 18;
 }
 
 #[derive(Debug, Clone, Error, PartialEq, Eq)]
@@ -106,6 +108,8 @@ impl VfsError {
             s::CANCELLED => Self::Cancelled,
             s::OS_ERROR => Self::from_errno("gungnird", errno, what),
             s::WOULD_RECURSE => Self::WouldRecurse,
+            s::MOUNT_INSIDE => Self::Unsupported("it contains a mounted filesystem; unmount it and try again".into()),
+            s::NOT_EMPTY => Self::Unsupported("some items could not be removed from the trash".into()),
             other => Self::Transport(format!("unknown gungnird status {other}")),
         })
     }
