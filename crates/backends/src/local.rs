@@ -594,17 +594,24 @@ fn restore_one(trash: &Path, name: &str) -> VfsResult<PathBuf> {
 
 fn empty_trash_dir(trash: &Path) -> VfsResult<()> {
     let files_dir = trash.join("files");
-    if !files_dir.exists() {
-        return Ok(());
+    if files_dir.exists() {
+        for entry in fs::read_dir(&files_dir).map_err(io_err("opendir", &files_dir))? {
+            let entry = entry.map_err(io_err("readdir", &files_dir))?;
+            remove_any(&entry.path())?;
+            let info = trash.join("info").join(format!("{}.trashinfo", entry.file_name().to_string_lossy()));
+            match fs::remove_file(&info) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(io_err("unlink", &info)(e)),
+            }
+        }
     }
-    for entry in fs::read_dir(&files_dir).map_err(io_err("opendir", &files_dir))? {
-        let entry = entry.map_err(io_err("readdir", &files_dir))?;
-        remove_any(&entry.path())?;
-        let info = trash.join("info").join(format!("{}.trashinfo", entry.file_name().to_string_lossy()));
-        match fs::remove_file(&info) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(io_err("unlink", &info)(e)),
+    let info_dir = trash.join("info");
+    if info_dir.exists()
+        && let Ok(entries) = fs::read_dir(&info_dir)
+    {
+        for entry in entries.flatten() {
+            let _ = fs::remove_file(entry.path());
         }
     }
     Ok(())
@@ -996,6 +1003,24 @@ mod trash_tests {
         assert_eq!(fs::read(&source).unwrap(), b"new");
         assert_eq!(fs::read(trash.join("files/item")).unwrap(), b"old");
         assert!(trash.join("info/item.trashinfo").exists());
+    }
+
+    #[test]
+    fn empty_trash_cleans_files_info_and_orphaned_metadata() {
+        let t = Sandbox::new("empty");
+        let trash = t.0.join("Trash");
+        let files = trash.join("files");
+        let info = trash.join("info");
+        fs::create_dir_all(&files).unwrap();
+        fs::create_dir_all(&info).unwrap();
+        fs::write(files.join("a.txt"), b"contents").unwrap();
+        fs::write(info.join("a.txt.trashinfo"), b"[Trash Info]\nPath=/tmp/a.txt\n").unwrap();
+        fs::write(info.join("orphan.trashinfo"), b"[Trash Info]\nPath=/tmp/orphan.txt\n").unwrap();
+
+        empty_trash_dir(&trash).unwrap();
+        assert!(!files.join("a.txt").exists());
+        assert!(!info.join("a.txt.trashinfo").exists());
+        assert!(!info.join("orphan.trashinfo").exists());
     }
 
     #[tokio::test]

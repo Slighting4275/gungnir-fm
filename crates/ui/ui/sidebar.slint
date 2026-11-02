@@ -43,6 +43,7 @@ component SideItem inherits Rectangle {
     in property <string> trailing;
     in property <color> dot: transparent;
     callback clicked;
+    callback context-menu(length, length);
     height: 28px;
     border-radius: Theme.radius-small;
     background: active ? Theme.selection : touch.has-hover ? Theme.hover : transparent;
@@ -78,6 +79,11 @@ component SideItem inherits Rectangle {
     touch := TouchArea {
         mouse-cursor: pointer;
         clicked => { root.clicked(); }
+        pointer-event(e) => {
+            if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
+                root.context-menu(self.mouse-x, self.mouse-y);
+            }
+        }
     }
 }
 
@@ -171,7 +177,12 @@ export component Sidebar inherits Rectangle {
     callback device-eject(object: string);
     in-out property <int> mode: 0;
     in property <string> gungnir-label: "GUNGNIR VFS";
+    in-out property <string> target-uri;
+    in-out property <bool> target-is-trash;
     callback open(uri: string);
+    callback open-tab(uri: string);
+    callback open-window(uri: string);
+    callback empty-trash();
     callback toggle-tree(index: int);
     callback mode-changed(mode: int);
 
@@ -185,6 +196,7 @@ export component Sidebar inherits Rectangle {
         if icon == 7 { return "music"; }
         if icon == 8 { return "image"; }
         if icon == 9 { return "network"; }
+        if icon == 10 { return "trash-full"; }
         return "folder";
     }
 
@@ -193,6 +205,28 @@ export component Sidebar inherits Rectangle {
 
     in-out property <bool> places-open: true;
     in-out property <bool> gungnir-open: true;
+
+    place-cm := ContextMenuArea {
+        Menu {
+            MenuItem {
+                title: "Open";
+                activated => { root.open(root.target-uri); }
+            }
+            MenuItem {
+                title: "Open in New Tab";
+                activated => { root.open-tab(root.target-uri); }
+            }
+            MenuItem {
+                title: "Open in New Window";
+                activated => { root.open-window(root.target-uri); }
+            }
+            if root.target-is-trash: MenuSeparator { }
+            if root.target-is-trash: MenuItem {
+                title: "Empty Trash";
+                activated => { root.empty-trash(); }
+            }
+        }
+    }
 
     VerticalLayout {
         padding: 6px;
@@ -209,6 +243,14 @@ export component Sidebar inherits Rectangle {
                     glyph: root.place-glyph(p.icon);
                     active: p.active;
                     clicked => { root.open(p.uri); }
+                    context-menu(mx, my) => {
+                        root.target-uri = p.uri;
+                        root.target-is-trash = p.uri == "trash:///";
+                        place-cm.show({
+                            x: self.absolute-position.x - place-cm.absolute-position.x + mx,
+                            y: self.absolute-position.y - place-cm.absolute-position.y + my,
+                        });
+                    }
                 } }
                 if root.devices.length > 0: SectionHeader { text: "DEVICES"; open <=> root.devices-open; }
                 if root.devices-open && root.devices.length > 0: VerticalLayout { spacing: 1px; for d in root.devices: DeviceRow {

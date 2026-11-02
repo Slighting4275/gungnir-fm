@@ -1411,6 +1411,47 @@ fn empty_trash_requires_confirmation_and_can_be_cancelled() {
 }
 
 #[test]
+fn sidebar_open_tab_opens_new_tab_at_target() {
+    let tmp = temp_dir("sidebar-tab");
+    let sub = tmp.join("subfolder");
+    std::fs::create_dir(&sub).unwrap();
+    let h = start(tmp.to_str().unwrap(), "gungnir://odin/asgard", MockConfig::instant());
+    h.until(Duration::from_secs(5), |u| full_rows(u, 0, 1));
+    h.send(Command::SidebarOpenTab(sub.to_str().unwrap().to_string()));
+    let updates =
+        h.until(Duration::from_secs(5), |u| matches!(u, Update::Pane { pane: 0, view } if view.tabs.len() == 2));
+    let view = updates
+        .iter()
+        .find_map(|u| match u {
+            Update::Pane { pane: 0, view } if view.tabs.len() == 2 => Some(view),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(view.tabs.len(), 2);
+    assert!(view.tabs.iter().any(|t| t.location == sub.to_str().unwrap()));
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[test]
+fn trash_navigation_sets_is_trash_flag() {
+    let tmp = temp_dir("trash-nav");
+    let h = start(tmp.to_str().unwrap(), "gungnir://odin/asgard", MockConfig::instant());
+    h.until(Duration::from_secs(5), |u| full_rows(u, 0, 0));
+    h.send(Command::SidebarOpen("trash:///".into()));
+    let updates = h.until(Duration::from_secs(5), |u| matches!(u, Update::Pane { pane: 0, view } if view.is_trash));
+    let view = updates
+        .iter()
+        .find_map(|u| match u {
+            Update::Pane { pane: 0, view } if view.is_trash => Some(view),
+            _ => None,
+        })
+        .unwrap();
+    assert!(view.is_trash);
+    assert_eq!(view.location, "trash:///");
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[test]
 fn open_multiple_selected_folders_uses_new_tabs() {
     let tmp = temp_dir("open-folders");
     for name in ["alpha", "beta"] {

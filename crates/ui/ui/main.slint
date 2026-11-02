@@ -190,6 +190,8 @@ export component AppWindow inherits Window {
     callback command(name: string);
     callback view-mode-changed(mode: int);
     callback sidebar-open(uri: string);
+    callback sidebar-open-tab(uri: string);
+    callback sidebar-open-window(uri: string);
     callback tree-toggle(index: int);
     callback sidebar-mode-changed(mode: int);
     callback device-open(object: string);
@@ -286,6 +288,7 @@ export component AppWindow inherits Window {
                 MenuItem { title: "Refresh Templates"; activated => { root.command("refresh-templates"); } }
             }
             MenuItem { title: "Check File Hash…"; activated => { root.command("check-hash"); } }
+            MenuItem { title: "Empty Trash"; activated => { root.command("empty-trash"); } }
             MenuItem { title: "Properties"; shortcut: @keys(Alt + Return); activated => { root.command("properties"); } }
             MenuSeparator { }
             MenuItem { title: "Quit"; shortcut: @keys(Control + Q); activated => { root.command("quit"); } }
@@ -600,6 +603,9 @@ export component AppWindow inherits Window {
                     device-open(o) => { root.device-open(o); }
                     device-eject(o) => { root.device-eject(o); }
                     open(uri) => { root.sidebar-open(uri); }
+                    open-tab(uri) => { root.sidebar-open-tab(uri); }
+                    open-window(uri) => { root.sidebar-open-window(uri); }
+                    empty-trash => { root.command("empty-trash"); }
                     toggle-tree(i) => { root.tree-toggle(i); }
                     mode-changed(m) => { root.sidebar-mode = m; root.sidebar-mode-changed(m); }
                 }

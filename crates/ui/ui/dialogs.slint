@@ -894,7 +894,7 @@ export component DialogOverlay inherits Rectangle {
                         clicked => { root.cancel(); }
                     }
                     DialogButton {
-                        label: root.kind == DialogKind.new-folder || root.kind == DialogKind.new-file ? "Create" : root.kind == DialogKind.select-pattern ? "Select" : root.kind == DialogKind.connect-server ? "Connect" : root.kind == DialogKind.confirm-delete ? "Delete" : root.kind == DialogKind.confirm-open ? "Open" : "Close";
+                        label: root.kind == DialogKind.new-folder || root.kind == DialogKind.new-file ? "Create" : root.kind == DialogKind.select-pattern ? "Select" : root.kind == DialogKind.connect-server ? "Connect" : root.kind == DialogKind.confirm-delete ? (root.title == "Empty Trash permanently?" ? "Empty Trash" : "Delete") : root.kind == DialogKind.confirm-open ? "Open" : "Close";
                         primary: true;
                         danger: root.kind == DialogKind.confirm-delete;
                         clicked => {

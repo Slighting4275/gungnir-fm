@@ -81,6 +81,8 @@ pub enum Command {
     WindowChanged(crate::session::WindowState),
     Zoom(f32),
     SidebarOpen(String),
+    SidebarOpenTab(String),
+    SidebarOpenWindow(String),
     TreeToggle(usize),
     SidebarMode(i32),
     TransferAction {
@@ -1244,6 +1246,13 @@ impl Controller {
             });
         }
         for p in &mut places {
+            if p.uri.as_str() == "trash:///" {
+                let has_items = backends::local::home_trash()
+                    .ok()
+                    .and_then(|t| std::fs::read_dir(t.join("files")).ok())
+                    .is_some_and(|mut d| d.next().is_some());
+                p.icon = if has_items { 10 } else { 5 };
+            }
             p.active = p.uri.as_str() == loc;
         }
         self.ui.send(Update::Places(places));
@@ -2230,7 +2239,10 @@ impl Controller {
     fn reload_matching(&mut self, dirs: &[VfsUri]) {
         for p in 0..2 {
             let loc = self.panes[p].tab().location.clone();
-            if dirs.contains(&loc) {
+            if dirs.contains(&loc)
+                || (dirs.iter().any(|d| d.scheme() == core_vfs::Scheme::Trash)
+                    && loc.scheme() == core_vfs::Scheme::Trash)
+            {
                 self.load(p, loc, true);
             }
         }
@@ -3782,6 +3794,40 @@ impl Controller {
                     Err(e) => self.say(e.to_string(), true),
                 }
             }
+            Command::SidebarOpenTab(uri) => {
+                let p = self.active_pane;
+                match self.resolve_input(p, &uri) {
+                    Ok(u) => self.new_tab(p, Some(u)),
+                    Err(e) => self.say(e.to_string(), true),
+                }
+            }
+            Command::SidebarOpenWindow(uri) => {
+                let p = self.active_pane;
+                let location = match self.resolve_input(p, &uri) {
+                    Ok(u) => u,
+                    Err(e) => {
+                        self.say(e.to_string(), true);
+                        return;
+                    }
+                };
+                let tx = self.tx.clone();
+                tokio::task::spawn_blocking(move || {
+                    let result = std::env::var_os("GUNGNIR_FM_LAUNCHER")
+                        .map(std::path::PathBuf::from)
+                        .map_or_else(std::env::current_exe, Ok)
+                        .and_then(|exe| {
+                            std::process::Command::new(exe)
+                                .arg(location.to_uri_string())
+                                .stdin(std::process::Stdio::null())
+                                .stdout(std::process::Stdio::null())
+                                .stderr(std::process::Stdio::null())
+                                .spawn()
+                        })
+                        .map(|_| "Opened new window".to_owned())
+                        .map_err(|e| format!("Could not open window: {e}"));
+                    let _ = tx.blocking_send(Msg::Ev(Event::Op { result, reload: Vec::new(), select: None }));
+                });
+            }
             Command::TreeToggle(i) => {
                 let Some(uri) = self.tree_rows.get(i).and_then(|s| VfsUri::parse(s).ok()) else { return };
                 if !self.tree_expanded.remove(&uri) {
@@ -4926,6 +4972,7 @@ impl Controller {
                     }
                 }
                 self.reload_matching(&reload);
+                self.push_places();
             }
             Event::Info { title, kind, result } => match result {
                 Ok(rows) => self.info_dialog(kind, &title, "", rows),
