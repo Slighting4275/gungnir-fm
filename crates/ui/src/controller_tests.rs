@@ -361,7 +361,15 @@ fn tab_creation_cycling_and_closing() {
     h.send(Command::TabClose(1, 0));
     h.until(Duration::from_secs(5), |u| matches!(u, Update::Flags(f) if !f.dual_pane));
 
-    // 7. Close the last remaining tab in the main pane (pane 0) -> Nemo closes the window
+    // 7. Re-open split view -> pane 1 is initialized and pushed cleanly
+    h.send(Command::Run("toggle-dual".into()));
+    h.until(Duration::from_secs(5), |u| matches!(u, Update::Flags(f) if f.dual_pane));
+
+    // 8. Close the last tab in pane 0 while dual pane is active -> pane 1 becomes pane 0 and dual collapses
+    h.send(Command::TabClose(0, 0));
+    h.until(Duration::from_secs(5), |u| matches!(u, Update::Flags(f) if !f.dual_pane));
+
+    // 9. Close the last remaining tab in pane 0 -> Nemo closes the window
     h.send(Command::TabClose(0, 0));
     h.until(Duration::from_secs(5), |u| matches!(u, Update::Quit));
 

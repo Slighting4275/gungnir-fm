@@ -284,7 +284,13 @@ export component Sidebar inherits Rectangle {
                 if root.devices-open && root.devices.length > 0: VerticalLayout { spacing: 1px; for d in root.devices: DeviceRow {
                     item: d;
                     open => { root.device-open(d.object); }
-                    middle-clicked => { root.open-tab(d.uri); }
+                    middle-clicked => {
+                        if d.uri != "" {
+                            root.open-tab(d.uri);
+                        } else {
+                            root.device-open(d.object);
+                        }
+                    }
                     eject => { root.device-eject(d.object); }
                 } }
                 SectionHeader { text: "NETWORK"; open <=> root.network-open; }

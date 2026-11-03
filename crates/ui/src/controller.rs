@@ -3340,6 +3340,20 @@ impl Controller {
                 self.dual = !self.dual;
                 if !self.dual {
                     self.active_pane = 0;
+                } else {
+                    if self.panes[1].tabs.is_empty() {
+                        let home = self.cfg.home.clone();
+                        let id = self.next_tab;
+                        self.next_tab += 1;
+                        self.panes[1].tabs.push(Tab::new(id, home.clone()));
+                        self.panes[1].active = 0;
+                    }
+                    if self.panes[1].tab().load_gen == 0 {
+                        let loc = self.panes[1].tab().location.clone();
+                        self.load(1, loc, false);
+                    } else {
+                        self.push_pane(1);
+                    }
                 }
                 self.push_flags();
                 self.push_status();
@@ -3803,7 +3817,7 @@ impl Controller {
         }
         self.panes[pane].active = idx;
         let loc = self.panes[pane].tab().location.clone();
-        let needs_load = self.panes[pane].tab().entries.is_empty() && !self.panes[pane].tab().loading;
+        let needs_load = self.panes[pane].tab().load_gen == 0 && !self.panes[pane].tab().loading;
         if needs_load {
             self.load(pane, loc, false);
         } else {
@@ -3859,6 +3873,16 @@ impl Controller {
         }
         if self.panes[pane].tabs.len() == 1 {
             if pane == 1 {
+                let t = self.panes[1].tabs.remove(0);
+                t.cancel.cancel();
+                if let Some(w) = t.watch {
+                    w.abort();
+                }
+                let home = self.cfg.home.clone();
+                let id = self.next_tab;
+                self.next_tab += 1;
+                self.panes[1].tabs.push(Tab::new(id, home));
+                self.panes[1].active = 0;
                 self.dual = false;
                 self.active_pane = 0;
                 self.push_flags();
@@ -3866,7 +3890,17 @@ impl Controller {
                 self.push_status();
                 self.trigger_save_session();
             } else if self.dual {
+                let t = self.panes[0].tabs.remove(0);
+                t.cancel.cancel();
+                if let Some(w) = t.watch {
+                    w.abort();
+                }
                 self.panes.swap(0, 1);
+                let home = self.cfg.home.clone();
+                let id = self.next_tab;
+                self.next_tab += 1;
+                self.panes[1].tabs.push(Tab::new(id, home));
+                self.panes[1].active = 0;
                 self.dual = false;
                 self.active_pane = 0;
                 self.push_pane(0);
@@ -3875,6 +3909,11 @@ impl Controller {
                 self.push_status();
                 self.trigger_save_session();
             } else {
+                let t = self.panes[0].tabs.remove(0);
+                t.cancel.cancel();
+                if let Some(w) = t.watch {
+                    w.abort();
+                }
                 self.trigger_save_session();
                 self.ui.send(Update::Quit);
             }
