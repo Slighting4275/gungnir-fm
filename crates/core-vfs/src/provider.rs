@@ -114,6 +114,15 @@ pub trait VfsProvider: Send + Sync + 'static {
         Err(VfsError::Unsupported(format!("{} cannot clear recent files", self.kind().badge())))
     }
 
+    /// Create a symbolic link at `link_uri` pointing to `target`.
+    ///
+    /// # Errors
+    /// [`VfsError::Unsupported`] if the backend does not support symbolic links.
+    async fn create_symlink(&self, link_uri: &VfsUri, target: &str) -> VfsResult<()> {
+        let _ = (link_uri, target);
+        Err(VfsError::Unsupported(format!("{} cannot create symlinks", self.kind().badge())))
+    }
+
     /// Whether [`VfsProvider::transfer`] of `src` into `dest` can run here. The
     /// controller asks the destination's backend.
     fn can_transfer(&self, src: &VfsUri, dest: &VfsUri) -> bool {

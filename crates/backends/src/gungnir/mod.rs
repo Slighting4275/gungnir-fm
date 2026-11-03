@@ -869,6 +869,12 @@ impl VfsProvider for GungnirVfsBackend {
         self.local.create_dir(&file_uri(&path)?).await
     }
 
+    async fn create_symlink(&self, link_uri: &VfsUri, target: &str) -> VfsResult<()> {
+        let path = local_path(link_uri)?;
+        self.gate(&path)?;
+        self.local.create_symlink(&file_uri(&path)?, target).await
+    }
+
     async fn rename(&self, uri: &VfsUri, new_name: &str) -> VfsResult<VfsUri> {
         let path = local_path(uri)?;
         self.gate(&path)?;

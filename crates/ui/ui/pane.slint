@@ -151,6 +151,7 @@ export component Pane inherits Rectangle {
         cursor: 2,
         is-trash: false,
         is-recent: false,
+        is-read-only: false,
         selected-count: 2,
         has-clipboard: false,
     };
@@ -171,6 +172,7 @@ export component Pane inherits Rectangle {
     in-out property <int> context-index: -1;
     property <bool> is-trash: root.info.is-trash;
     property <bool> is-recent: root.info.is-recent;
+    property <bool> is-read-only: root.info.is-read-only;
     property <bool> has-target: root.context-index >= 0 && root.context-index < root.files.length;
     property <bool> target-is-dir: root.has-target ? root.files[root.context-index].is-dir : false;
     property <bool> target-is-archive: root.has-target ? root.files[root.context-index].icon == 5 : false;
@@ -182,6 +184,7 @@ export component Pane inherits Rectangle {
     // it is open invalidates those IDs, so child menus must use this snapshot.
     property <bool> menu-is-trash;
     property <bool> menu-is-recent;
+    property <bool> menu-is-read-only;
     property <bool> menu-has-target;
     property <bool> menu-target-is-dir;
     property <bool> menu-target-is-archive;
@@ -194,6 +197,7 @@ export component Pane inherits Rectangle {
         root.context-index = index;
         root.menu-is-trash = root.is-trash;
         root.menu-is-recent = root.is-recent;
+        root.menu-is-read-only = root.is-read-only;
         root.menu-has-target = root.has-target;
         root.menu-target-is-dir = root.target-is-dir;
         root.menu-target-is-archive = root.target-is-archive;
@@ -496,6 +500,36 @@ export component Pane inherits Rectangle {
             }
         }
 
+        // Nemo-style Read-Only Bar (cluebar for directories without write permissions)
+        if root.is-read-only && !root.is-trash && !root.is-recent: Rectangle {
+            height: 34px;
+            background: Theme.surface;
+            Rectangle {
+                y: parent.height - 1px;
+                height: 1px;
+                background: Theme.divider;
+            }
+            HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 12px;
+                spacing: 8px;
+                Glyph {
+                    y: (parent.height - self.height) / 2;
+                    name: "lock";
+                    tint: Theme.gold;
+                    width: 14px;
+                    height: 14px;
+                }
+                Text {
+                    y: (parent.height - self.height) / 2;
+                    text: "This folder is read-only.";
+                    font-size: 11.5px;
+                    font-weight: 600;
+                    color: Theme.text-dim;
+                }
+            }
+        }
+
         // Column header (detailed view).
         if root.view-mode == 1: Rectangle {
             height: 26px;
@@ -539,11 +573,11 @@ export component Pane inherits Rectangle {
                     // -----------------------------------------------------------------
                     // EMPTY BACKGROUND CONTEXT (non-trash folder background)
                     // -----------------------------------------------------------------
-                    MenuItem {
+                    if !root.menu-is-read-only: MenuItem {
                         title: "Create New Folder";
                         activated => { root.command("new-folder-inline"); }
                     }
-                    Menu {
+                    if !root.menu-is-read-only: Menu {
                         title: "Create New Document";
                         MenuItem {
                             title: "Empty Document";
@@ -557,9 +591,13 @@ export component Pane inherits Rectangle {
                         MenuSeparator { }
                         MenuItem { title: "Refresh Templates"; activated => { root.command("refresh-templates"); } }
                     }
-                    if root.menu-has-clipboard: MenuItem {
+                    if !root.menu-is-read-only && root.menu-has-clipboard: MenuItem {
                         title: "Paste";
                         activated => { root.command("paste"); }
+                    }
+                    MenuItem {
+                        title: "Bookmark This Location";
+                        activated => { root.command("bookmark"); }
                     }
                     MenuItem {
                         title: "Open Terminal Here";
@@ -640,11 +678,11 @@ export component Pane inherits Rectangle {
                 Menu {
                     // Creation acts on the displayed folder, including when a row
                     // fills the pane and no empty background is easy to reach.
-                    if !root.menu-is-trash: MenuItem {
+                    if !root.menu-is-trash && !root.menu-is-read-only: MenuItem {
                         title: "Create New Folder";
                         activated => { root.command("new-folder-inline"); }
                     }
-                    if !root.menu-is-trash: Menu {
+                    if !root.menu-is-trash && !root.menu-is-read-only: Menu {
                         title: "Create New Document";
                         MenuItem {
                             title: "Empty Document";
@@ -658,7 +696,7 @@ export component Pane inherits Rectangle {
                         MenuSeparator { }
                         MenuItem { title: "Refresh Templates"; activated => { root.command("refresh-templates"); } }
                     }
-                    if !root.menu-is-trash: MenuSeparator { }
+                    if !root.menu-is-trash && !root.menu-is-read-only: MenuSeparator { }
                     // -----------------------------------------------------------------
                     // ITEM CONTEXT: PRIMARY ACTIONS
                     // -----------------------------------------------------------------
@@ -681,6 +719,10 @@ export component Pane inherits Rectangle {
                     if !root.menu-is-trash && root.menu-has-target && !root.menu-is-multi-sel && root.menu-target-is-dir: MenuItem {
                         title: "Open Terminal Here";
                         activated => { root.command("open-terminal-here"); }
+                    }
+                    if !root.menu-is-trash && root.menu-has-target && !root.menu-is-multi-sel && root.menu-target-is-dir: MenuItem {
+                        title: "Bookmark This Folder";
+                        activated => { root.command("bookmark-target"); }
                     }
                     if !root.menu-is-trash && root.menu-has-target && !root.menu-is-multi-sel: MenuSeparator { }
 
@@ -715,6 +757,10 @@ export component Pane inherits Rectangle {
                     if !root.menu-is-trash && root.menu-has-target: MenuItem {
                         title: "Duplicate";
                         activated => { root.command("duplicate"); }
+                    }
+                    if !root.menu-is-trash && root.menu-has-target && !root.menu-is-read-only: MenuItem {
+                        title: "Create Link";
+                        activated => { root.command("make-link"); }
                     }
                     if !root.menu-is-trash && root.menu-has-target: MenuItem {
                         title: "Cut";

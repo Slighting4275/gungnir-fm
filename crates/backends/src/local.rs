@@ -935,6 +935,26 @@ impl VfsProvider for LocalPosixBackend {
         tokio::fs::create_dir(&path).await.map_err(io_err("mkdir", &path))
     }
 
+    async fn create_symlink(&self, link_uri: &VfsUri, target: &str) -> VfsResult<()> {
+        if link_uri.scheme() != Scheme::File {
+            return Err(VfsError::Unsupported("Cannot create symlinks in this location".into()));
+        }
+        let link_path = local(link_uri)?;
+        let target_str = target.to_owned();
+        blocking(move || {
+            #[cfg(unix)]
+            {
+                std::os::unix::fs::symlink(&target_str, &link_path)
+                    .map_err(|e| VfsError::from_io("symlink", &e, &link_path.display().to_string()))
+            }
+            #[cfg(not(unix))]
+            {
+                Err(VfsError::Unsupported("symlinks not supported on this platform".into()))
+            }
+        })
+        .await
+    }
+
     async fn rename(&self, uri: &VfsUri, new_name: &str) -> VfsResult<VfsUri> {
         if uri.scheme() != Scheme::File {
             return Err(VfsError::Unsupported("Restore items before renaming them".into()));

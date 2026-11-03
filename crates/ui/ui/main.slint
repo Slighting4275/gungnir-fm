@@ -70,7 +70,7 @@ export component AppWindow inherits Window {
         ],
         sort-column: 0, sort-ascending: true, loading: false, error: "", filter: "",
         can-back: true, can-forward: false, cursor: 2,
-        is-trash: false, is-recent: false, selected-count: 3, has-clipboard: false,
+        is-trash: false, is-recent: false, is-read-only: false, selected-count: 3, has-clipboard: false,
     };
     in-out property <PaneInfo> right: {
         tabs: [{ title: "asgard", location: "gungnir://odin/asgard", loading: false }],
@@ -79,7 +79,7 @@ export component AppWindow inherits Window {
         crumbs: [{ label: "odin", uri: "gungnir://odin/", icon: 3 }, { label: "asgard", uri: "gungnir://odin/asgard", icon: 0 }],
         sort-column: 1, sort-ascending: false, loading: false, error: "", filter: "",
         can-back: false, can-forward: false, cursor: 0,
-        is-trash: false, is-recent: false, selected-count: 0, has-clipboard: false,
+        is-trash: false, is-recent: false, is-read-only: false, selected-count: 0, has-clipboard: false,
     };
     in-out property <[FileRow]> left-files: [
         { name: "release_v1", size-text: "", type-text: "Folder", modified-text: "2026-10-12 21:40", perms-text: "drwxr-xr-x", status-text: "", status: 0, icon: 0, is-dir: true, hidden: false, selected: false, thumbnail: @image-url(""), has-thumbnail: false },
@@ -314,9 +314,10 @@ export component AppWindow inherits Window {
             MenuItem { title: "Move to Trash (Delete)"; activated => { root.command("trash"); } }
             MenuItem { title: "Delete Permanently… (Shift+Delete)"; activated => { root.command("delete"); } }
             MenuSeparator { }
-            MenuItem { title: "Select Items Matching…"; activated => { root.command("select-pattern"); } }
-            MenuItem { title: "Invert Selection"; activated => { root.command("invert-selection"); } }
+            MenuItem { title: "Select Items Matching…"; shortcut: @keys(Control + S); activated => { root.command("select-pattern"); } }
+            MenuItem { title: "Invert Selection"; shortcut: @keys(Control + Shift + I); activated => { root.command("invert-selection"); } }
             MenuItem { title: "Duplicate"; activated => { root.command("duplicate"); } }
+            MenuItem { title: "Create Link"; shortcut: @keys(Control + M); activated => { root.command("make-link"); } }
             MenuItem { title: "Select All (Ctrl+A)"; activated => { root.command("select-all"); } }
             MenuItem { title: "Filter…"; shortcut: @keys(Control + F); activated => { root.focus-filter(); } }
             MenuSeparator { }
@@ -398,6 +399,8 @@ export component AppWindow inherits Window {
             if e.modifiers.control && e.modifiers.shift && (e.text == "n" || e.text == "N") { root.command("new-folder-inline"); return accept; }
             if e.modifiers.control && e.modifiers.shift && (e.text == "f" || e.text == "F") { root.command("deep-search"); return accept; }
             if e.modifiers.control && e.modifiers.shift && (e.text == "d" || e.text == "D") { root.command("compare-panes"); return accept; }
+            if e.modifiers.control && e.modifiers.shift && (e.text == "i" || e.text == "I") { root.command("invert-selection"); return accept; }
+            if e.modifiers.control && !e.modifiers.shift && (e.text == "m" || e.text == "M") { root.command("make-link"); return accept; }
             if e.modifiers.control && e.modifiers.shift && (e.text == "t" || e.text == "T") { root.toggle-dark-mode(); return accept; }
             if e.modifiers.control && e.text == Key.Tab {
                 root.tab-cycle(p, e.modifiers.shift ? -1 : 1);

@@ -1048,6 +1048,23 @@ impl Controller {
             cursor: i32::try_from(t.cursor).unwrap_or(0),
             is_trash: t.location.scheme() == Scheme::Trash,
             is_recent: t.location.scheme() == Scheme::Recent,
+            is_read_only: if matches!(t.location.scheme(), Scheme::Trash | Scheme::Recent) {
+                false
+            } else if let Some(local_p) = t.location.to_local_path() {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::ffi::OsStrExt;
+                    std::ffi::CString::new(local_p.as_os_str().as_bytes())
+                        .map(|c| unsafe { libc::access(c.as_ptr(), libc::W_OK) != 0 })
+                        .unwrap_or(false)
+                }
+                #[cfg(not(unix))]
+                {
+                    false
+                }
+            } else {
+                false
+            },
             selected_count: i32::try_from(t.selected.len()).unwrap_or(0),
             has_clipboard: self.clipboard.is_some() || crate::clipboard::available(),
         };
@@ -2389,6 +2406,7 @@ impl Controller {
                     | "paste"
                     | "paste-into-folder"
                     | "duplicate"
+                    | "make-link"
                     | "cut"
                     | "copy-to-other"
                     | "move-to-other"
@@ -2440,6 +2458,63 @@ impl Controller {
                 let t = self.panes[p].tab();
                 let sources = t.targets().into_iter().map(|e| e.uri).collect();
                 self.execute_transfer(TransferKind::Copy, sources, t.location.clone(), false);
+            }
+            "make-link" => {
+                let t = self.panes[p].tab();
+                let targets = t.targets();
+                let targets =
+                    if targets.is_empty() { t.entry_at(t.cursor).cloned().into_iter().collect() } else { targets };
+                if targets.is_empty() {
+                    self.say("No items selected to link", true);
+                    return;
+                }
+                let loc = t.location.clone();
+                if loc.scheme() == Scheme::Trash {
+                    self.say("Restore items before creating links from the Trash", true);
+                    return;
+                }
+                let provider = match self.registry.resolve(&loc) {
+                    Ok(pr) => pr,
+                    Err(e) => {
+                        self.say(e.to_string(), true);
+                        return;
+                    }
+                };
+
+                let mut to_create = Vec::new();
+                for entry in targets {
+                    let base_name = format!("Link to {}", entry.name);
+                    let mut candidate = base_name.clone();
+                    let mut counter = 1;
+                    while t.entries.iter().any(|e| e.name == candidate)
+                        || to_create.iter().any(|(_, _, n)| n == &candidate)
+                    {
+                        candidate = format!("{base_name} ({counter})");
+                        counter += 1;
+                    }
+                    let Ok(link_uri) = loc.join(&candidate) else { continue };
+                    let target_spec = if entry.uri.parent().as_ref() == Some(&loc) {
+                        entry.name.clone()
+                    } else if let Some(lp) = entry.uri.to_local_path() {
+                        lp.display().to_string()
+                    } else {
+                        entry.uri.path().to_owned()
+                    };
+                    to_create.push((link_uri, target_spec, candidate));
+                }
+
+                if to_create.is_empty() {
+                    return;
+                }
+
+                let last_select = to_create.last().map(|(_, _, name)| (loc.clone(), name.clone()));
+                let count = to_create.len();
+                self.spawn_op(vec![loc], last_select, async move {
+                    for (link_uri, target_spec, _) in to_create {
+                        provider.create_symlink(&link_uri, &target_spec).await?;
+                    }
+                    Ok(format!("Created {count} link{}", if count == 1 { "" } else { "s" }))
+                });
             }
             "open-in-other-pane" => {
                 if let Some(folder) = self.panes[p].tab().targets().into_iter().find(FileEntry::is_navigable) {
@@ -3285,6 +3360,25 @@ impl Controller {
                     self.say(format!("Bookmarked {loc}"), false);
                 }
             }
+            "bookmark-target" => {
+                let t = self.panes[p].tab();
+                if let Some(folder) = t
+                    .targets()
+                    .into_iter()
+                    .find(FileEntry::is_navigable)
+                    .or_else(|| t.entry_at(t.cursor).filter(|e| e.is_navigable()).cloned())
+                {
+                    let loc = folder.uri;
+                    if !self.bookmarks.contains(&loc) {
+                        self.bookmarks.push(loc.clone());
+                        self.save_bookmarks();
+                        self.push_places();
+                        self.say(format!("Bookmarked {}", folder.name), false);
+                    } else {
+                        self.say(format!("{} is already bookmarked", folder.name), false);
+                    }
+                }
+            }
             "clear-bookmarks" => {
                 self.bookmarks.clear();
                 self.save_bookmarks();
@@ -3560,6 +3654,15 @@ impl Controller {
                     && let Ok(hashes) = crate::hash::compute_hashes(&local_p)
                 {
                     rows.push(("SHA-256".to_owned(), hashes.sha256));
+                }
+                for (k, v) in &e.vfs.attributes {
+                    let label = match k.as_str() {
+                        "orig" => "Original Location",
+                        "deletion-date" => "Date Deleted",
+                        "target" => "Target File",
+                        _ => continue,
+                    };
+                    rows.push((label.to_owned(), v.clone()));
                 }
             }
 

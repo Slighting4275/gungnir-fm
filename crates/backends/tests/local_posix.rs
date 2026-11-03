@@ -274,6 +274,26 @@ async fn watch_reports_changes() -> VfsResult<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn create_symlink_creates_valid_link() -> VfsResult<()> {
+    let t = TempDir::new("symlink-test");
+    let target = t.path().join("target.txt");
+    write(&target, 12);
+    let link_uri = t.uri("link-to-target.txt");
+    let b = LocalPosixBackend::new();
+    b.create_symlink(&link_uri, "target.txt").await?;
+    let link_path = t.path().join("link-to-target.txt");
+    assert!(link_path.is_symlink());
+    let read_target = std::fs::read_link(&link_path)
+        .map_err(|e| core_vfs::VfsError::from_io("readlink", &e, "link-to-target.txt"))?;
+    assert_eq!(read_target, std::path::Path::new("target.txt"));
+    let stat_entry = b.stat(&link_uri).await?;
+    assert_eq!(stat_entry.name, "link-to-target.txt");
+    assert_eq!(stat_entry.kind, core_vfs::FileKind::Symlink);
+    assert_eq!(stat_entry.size, 10);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn volume_and_inspect() -> VfsResult<()> {
     let t = TempDir::new("vol");
     write(&t.path().join("f"), 9);

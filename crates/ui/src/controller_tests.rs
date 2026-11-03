@@ -2232,3 +2232,71 @@ fn open_containing_folder_on_regular_file() {
     );
     let _ = std::fs::remove_dir_all(tmp);
 }
+
+#[test]
+fn make_link_creates_symlink_and_selects_it() {
+    let tmp = temp_dir("make-link");
+    let target_file = tmp.join("notes.txt");
+    std::fs::write(&target_file, b"hello world").unwrap();
+    let h = start(tmp.to_str().unwrap(), "gungnir://odin/asgard", MockConfig::instant());
+    h.until(Duration::from_secs(5), |u| full_rows(u, 0, 1));
+    h.send(Command::Run("select-all".into()));
+    h.send(Command::Run("make-link".into()));
+    h.until(Duration::from_secs(5), |u| full_rows(u, 0, 2));
+    let link_path = tmp.join("Link to notes.txt");
+    assert!(link_path.is_symlink());
+    assert_eq!(std::fs::read_link(&link_path).unwrap(), std::path::Path::new("notes.txt"));
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[test]
+fn bookmark_target_folder() {
+    let tmp = temp_dir("bm-target");
+    let sub = tmp.join("Projects");
+    std::fs::create_dir_all(&sub).unwrap();
+    let bm_file = tmp.join("bookmarks");
+    let h = start_configured(tmp.to_str().unwrap(), "gungnir://odin/asgard", MockConfig::instant(), true, |cfg| {
+        cfg.bookmarks_file = Some(bm_file.clone());
+    });
+    h.until(Duration::from_secs(5), |u| full_rows(u, 0, 1));
+    h.send(Command::Run("select-all".into()));
+    h.send(Command::Run("bookmark-target".into()));
+    h.until(
+        Duration::from_secs(5),
+        |u| matches!(u, Update::Places(p) if p.iter().any(|item| item.label == "Projects")),
+    );
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[test]
+fn read_only_folder_sets_is_read_only_flag() {
+    let tmp = temp_dir("read-only-folder");
+    let ro_dir = tmp.join("ro");
+    std::fs::create_dir_all(&ro_dir).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&ro_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+    }
+    let h = start(ro_dir.to_str().unwrap(), "gungnir://odin/asgard", MockConfig::instant());
+    h.until(Duration::from_secs(5), |u| matches!(u, Update::Pane { pane: 0, view } if view.is_read_only));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&ro_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[test]
+fn properties_dialog_displays_vfs_attributes() {
+    let tmp = temp_dir("props-vfs-attrs");
+    let target_file = tmp.join("test.txt");
+    std::fs::write(&target_file, b"content").unwrap();
+    let h = start(tmp.to_str().unwrap(), "gungnir://odin/asgard", MockConfig::instant());
+    h.until(Duration::from_secs(5), |u| full_rows(u, 0, 1));
+    h.send(Command::Run("select-all".into()));
+    h.send(Command::Run("properties".into()));
+    h.until(Duration::from_secs(5), |u| matches!(u, Update::Dialog(d) if d.kind == crate::DialogKind::Properties));
+    let _ = std::fs::remove_dir_all(tmp);
+}

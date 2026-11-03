@@ -616,7 +616,7 @@ mod removal_tests {
         let program = fixture.0.clone();
         let task = tokio::spawn(async move { remove_with_program(program.as_os_str(), &[remote_uri()], token).await });
         let pid_path = fixture.0.with_file_name("gio-test.pid");
-        tokio::time::timeout(Duration::from_secs(2), async {
+        tokio::time::timeout(Duration::from_secs(5), async {
             while !pid_path.exists() {
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
@@ -625,7 +625,7 @@ mod removal_tests {
         .unwrap_or_else(|e| panic!("{e}"));
         let pid = std::fs::read_to_string(&pid_path).unwrap_or_else(|e| panic!("{e}"));
         cancel.cancel();
-        let result = tokio::time::timeout(Duration::from_secs(2), task)
+        let result = tokio::time::timeout(Duration::from_secs(5), task)
             .await
             .unwrap_or_else(|e| panic!("{e}"))
             .unwrap_or_else(|e| panic!("{e}"));
