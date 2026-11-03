@@ -596,6 +596,10 @@ export component Pane inherits Rectangle {
                         activated => { root.command("paste"); }
                     }
                     MenuItem {
+                        title: "Copy Location";
+                        activated => { root.command("copy-location"); }
+                    }
+                    MenuItem {
                         title: "Bookmark This Location";
                         activated => { root.command("bookmark"); }
                     }
@@ -657,6 +661,10 @@ export component Pane inherits Rectangle {
                     if root.menu-has-target: MenuItem {
                         title: "Open Containing Folder";
                         activated => { root.command("open-containing-folder"); }
+                    }
+                    if root.menu-has-target: MenuItem {
+                        title: "Copy Path";
+                        activated => { root.command("copy-path"); }
                     }
                     if root.menu-has-target: MenuItem {
                         title: root.menu-is-multi-sel ? "Remove " + root.menu-effective-sel-count + " Items from Recent" : "Remove from Recent";
@@ -769,6 +777,10 @@ export component Pane inherits Rectangle {
                     if !root.menu-is-trash && root.menu-has-target: MenuItem {
                         title: "Copy";
                         activated => { root.command("copy"); }
+                    }
+                    if !root.menu-is-trash && root.menu-has-target: MenuItem {
+                        title: "Copy Path";
+                        activated => { root.command("copy-path"); }
                     }
                     if !root.menu-is-trash && root.menu-has-target && root.menu-has-clipboard: MenuItem {
                         title: root.menu-target-is-dir && !root.menu-is-multi-sel ? "Paste Into Folder" : "Paste";

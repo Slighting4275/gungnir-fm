@@ -2558,6 +2558,51 @@ impl Controller {
                     false,
                 );
             }
+            "copy-path" => {
+                let t = self.panes[p].tab();
+                let targets = t.targets();
+                let targets =
+                    if targets.is_empty() { t.entry_at(t.cursor).cloned().into_iter().collect() } else { targets };
+                if targets.is_empty() {
+                    self.say("No items selected to copy path", true);
+                    return;
+                }
+                let paths: Vec<String> = targets
+                    .iter()
+                    .map(|e| {
+                        if e.uri.scheme() == Scheme::Recent
+                            && let Some((_, target)) =
+                                e.vfs.attributes.iter().find(|(k, _)| k == "target" || k == "orig")
+                        {
+                            if let Some(stripped) = target.strip_prefix("file://") {
+                                return backends::recent::file_path(target.as_bytes())
+                                    .and_then(|b| String::from_utf8(b).ok())
+                                    .unwrap_or_else(|| stripped.to_owned());
+                            }
+                            return target.clone();
+                        }
+                        e.uri
+                            .to_local_path()
+                            .map(|lp| lp.display().to_string())
+                            .unwrap_or_else(|| e.uri.to_uri_string())
+                    })
+                    .collect();
+                let n = paths.len();
+                let text = paths.join("\n");
+                if let Some(service) = &self.clipboard_service {
+                    let _ = service.try_send(crate::clipboard::Request::WriteText(text));
+                }
+                self.say(format!("Copied {n} path{} to clipboard", if n == 1 { "" } else { "s" }), false);
+            }
+            "copy-location" => {
+                let loc = &self.panes[p].tab().location;
+                let text =
+                    loc.to_local_path().map(|lp| lp.display().to_string()).unwrap_or_else(|| loc.to_uri_string());
+                if let Some(service) = &self.clipboard_service {
+                    let _ = service.try_send(crate::clipboard::Request::WriteText(text));
+                }
+                self.say("Copied folder location to clipboard".to_owned(), false);
+            }
             "paste" | "paste-into-folder" => {
                 let dest = if name == "paste-into-folder" {
                     let targets = self.panes[p].tab().targets();

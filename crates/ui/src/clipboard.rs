@@ -36,6 +36,7 @@ fn decode(text: &str) -> Option<Files> {
 
 pub enum Request {
     Write(Files),
+    WriteText(String),
     Read(VfsUri),
     Moved(Vec<VfsUri>),
 }
@@ -46,6 +47,7 @@ pub fn spawn(tx: crate::controller::MsgTx) -> tokio::sync::mpsc::Sender<Request>
         while let Some(request) = rx.recv().await {
             match request {
                 Request::Write(files) => write(&files).await,
+                Request::WriteText(text) => write_text(&text).await,
                 Request::Moved(moved) => {
                     if let Ok(Some((mut pending, true))) = read().await {
                         pending.retain(|uri| !moved.contains(uri));
@@ -66,6 +68,29 @@ pub fn spawn(tx: crate::controller::MsgTx) -> tokio::sync::mpsc::Sender<Request>
         }
     });
     requests
+}
+
+pub async fn write_text(text: &str) {
+    if !available() {
+        return;
+    }
+    for (tool, args) in [("wl-copy", vec![]), ("xclip", vec!["-selection", "clipboard"])] {
+        if tool == "wl-copy" && std::env::var_os("WAYLAND_DISPLAY").is_none() {
+            continue;
+        }
+        let mut command = Command::new(tool);
+        command.args(args).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).kill_on_drop(true);
+        let Ok(mut child) = command.spawn() else { continue };
+        let operation = async {
+            let mut stdin = child.stdin.take()?;
+            stdin.write_all(text.as_bytes()).await.ok()?;
+            drop(stdin);
+            child.wait().await.ok().filter(|s| s.success())
+        };
+        if matches!(tokio::time::timeout(Duration::from_secs(2), operation).await, Ok(Some(_))) {
+            return;
+        }
+    }
 }
 
 pub async fn write(files: &Files) {

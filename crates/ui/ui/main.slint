@@ -302,6 +302,7 @@ export component AppWindow inherits Window {
             MenuSeparator { }
             MenuItem { title: "Cut (Ctrl+X)"; activated => { root.command("cut"); } }
             MenuItem { title: "Copy (Ctrl+C)"; activated => { root.command("copy"); } }
+            MenuItem { title: "Copy Path"; shortcut: @keys(Control + Shift + C); activated => { root.command("copy-path"); } }
             MenuItem { title: "Paste (Ctrl+V)"; activated => { root.command("paste"); } }
             MenuSeparator { }
             MenuItem { title: "Rename…"; shortcut: @keys(F2); activated => { root.command("rename"); } }
@@ -319,6 +320,7 @@ export component AppWindow inherits Window {
             MenuItem { title: "Duplicate"; activated => { root.command("duplicate"); } }
             MenuItem { title: "Create Link"; shortcut: @keys(Control + M); activated => { root.command("make-link"); } }
             MenuItem { title: "Select All (Ctrl+A)"; activated => { root.command("select-all"); } }
+            MenuItem { title: "Deselect All"; shortcut: @keys(Control + Shift + A); activated => { root.command("clear-selection"); } }
             MenuItem { title: "Filter…"; shortcut: @keys(Control + F); activated => { root.focus-filter(); } }
             MenuSeparator { }
             MenuItem { title: "Find & Grep Files…"; shortcut: @keys(Control + Shift + F); activated => { root.command("deep-search"); } }
@@ -452,11 +454,15 @@ export component AppWindow inherits Window {
             if e.text == Key.End { root.move-cursor(p, 1000000000, e.modifiers.shift); return accept; }
             if e.text == " " { root.command("toggle-select"); return accept; }
             // Clipboard keys live here, not in the MenuBar, so text fields keep their own.
-            if e.modifiers.control && (e.text == "c" || e.text == "C") { root.command("copy"); return accept; }
+            if e.modifiers.control && !e.modifiers.shift && (e.text == "l" || e.text == "L") { root.focus-path-bar(); return accept; }
+            if e.modifiers.control && !e.modifiers.shift && (e.text == "d" || e.text == "D") { root.command("bookmark"); return accept; }
+            if e.modifiers.control && e.modifiers.shift && (e.text == "c" || e.text == "C") { root.command("copy-path"); return accept; }
+            if e.modifiers.control && !e.modifiers.shift && (e.text == "c" || e.text == "C") { root.command("copy"); return accept; }
             if e.modifiers.control && (e.text == "x" || e.text == "X") { root.command("cut"); return accept; }
             if e.modifiers.control && (e.text == "v" || e.text == "V") { root.command("paste"); return accept; }
             if e.modifiers.control && (e.text == "s" || e.text == "S") { root.command("select-pattern"); return accept; }
-            if e.modifiers.control && (e.text == "a" || e.text == "A") { root.command("select-all"); return accept; }
+            if e.modifiers.control && e.modifiers.shift && (e.text == "a" || e.text == "A") { root.command("clear-selection"); return accept; }
+            if e.modifiers.control && !e.modifiers.shift && (e.text == "a" || e.text == "A") { root.command("select-all"); return accept; }
             if e.modifiers.control && (e.text == "+" || e.text == "=") {
                 root.zoom-level = Math.min(3.5, root.zoom-level + 0.25);
                 root.zoom-changed(root.zoom-level);

@@ -2300,3 +2300,32 @@ fn properties_dialog_displays_vfs_attributes() {
     h.until(Duration::from_secs(5), |u| matches!(u, Update::Dialog(d) if d.kind == crate::DialogKind::Properties));
     let _ = std::fs::remove_dir_all(tmp);
 }
+
+#[test]
+fn copy_path_and_copy_location_status_notification() {
+    let tmp = temp_dir("copy-path-test");
+    let target_file = tmp.join("myfile.txt");
+    std::fs::write(&target_file, b"sample").unwrap();
+    let h = start(tmp.to_str().unwrap(), "gungnir://odin/asgard", MockConfig::instant());
+    h.until(Duration::from_secs(5), |u| full_rows(u, 0, 1));
+    h.send(Command::Run("select-all".into()));
+    h.send(Command::Run("copy-path".into()));
+    h.until(Duration::from_secs(5), |u| matches!(u, Update::Status(s) if s.message.contains("Copied 1 path")));
+    h.send(Command::Run("copy-location".into()));
+    h.until(Duration::from_secs(5), |u| matches!(u, Update::Status(s) if s.message.contains("Copied folder location")));
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[test]
+fn deselect_all_clears_selection() {
+    let tmp = temp_dir("deselect-all-test");
+    let target_file = tmp.join("myfile.txt");
+    std::fs::write(&target_file, b"sample").unwrap();
+    let h = start(tmp.to_str().unwrap(), "gungnir://odin/asgard", MockConfig::instant());
+    h.until(Duration::from_secs(5), |u| full_rows(u, 0, 1));
+    h.send(Command::Run("select-all".into()));
+    h.until(Duration::from_secs(5), |u| matches!(u, Update::Pane { pane: 0, view } if view.selected_count == 1));
+    h.send(Command::Run("clear-selection".into()));
+    h.until(Duration::from_secs(5), |u| matches!(u, Update::Pane { pane: 0, view } if view.selected_count == 0));
+    let _ = std::fs::remove_dir_all(tmp);
+}
