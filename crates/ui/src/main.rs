@@ -93,6 +93,8 @@ fn wire(ui: &AppWindow, tx: &mpsc::Sender<Msg>) {
     on!(on_filter_changed, |p, t| Command::Filter { pane: pane(p), text: t.to_string() });
     on!(on_tab_new, |p| Command::TabNew(pane(p)));
     on!(on_tab_close, |p, i| Command::TabClose(pane(p), index(i)));
+    on!(on_tab_close_others, |p, i| Command::TabCloseOthers(pane(p), index(i)));
+    on!(on_tab_duplicate, |p, i| Command::TabDuplicate(pane(p), index(i)));
     on!(on_tab_select, |p, i| Command::TabSelect(pane(p), index(i)));
     on!(on_tab_cycle, |p, d| Command::TabCycle { pane: pane(p), delta: d });
     on!(on_custom_action, |p, id| Command::CustomAction { pane: pane(p), id: id.to_string() });
@@ -589,7 +591,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let left = left_arg.unwrap_or_else(|| {
         saved_session
             .as_ref()
-            .and_then(|s| s.primary_pane_tabs.get_paths().first().cloned())
+            .and_then(|s| {
+                let paths = s.primary_pane_tabs.get_paths();
+                let active = s.primary_pane_tabs.get_active_index();
+                paths.get(active).cloned().or_else(|| paths.first().cloned())
+            })
             .map(|p| crate::session::resolve_path_with_fallback(&p, &home))
             .unwrap_or_else(|| home.clone())
     });
@@ -597,7 +603,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         saved_session
             .as_ref()
             .and_then(|s| s.secondary_pane_tabs.as_ref())
-            .and_then(|s| s.get_paths().first().cloned())
+            .and_then(|s| {
+                let paths = s.get_paths();
+                let active = s.get_active_index();
+                paths.get(active).cloned().or_else(|| paths.first().cloned())
+            })
             .map(|p| crate::session::resolve_path_with_fallback(&p, &home))
             .unwrap_or(right_default)
     });
@@ -641,8 +651,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let window_timer = slint::Timer::default();
     let weak = ui.as_weak();
     let window_tx = tx.clone();
-    let mut normal_size = saved_session.as_ref().map(|s| s.window.clone()).unwrap_or_default();
+    let normal_size =
+        std::rc::Rc::new(std::cell::RefCell::new(saved_session.as_ref().map(|s| s.window.clone()).unwrap_or_default()));
     let mut previous: Option<session::WindowState> = None;
+    let normal_size_timer = normal_size.clone();
     window_timer.start(slint::TimerMode::Repeated, std::time::Duration::from_millis(250), move || {
         let Some(ui) = weak.upgrade() else { return };
         let window = ui.window();
@@ -654,10 +666,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
         // Keep the normal size when maximized or minimized so unmaximizing restores it.
         if state.maximized || state.width < 200 || state.height < 200 {
-            state.width = normal_size.width;
-            state.height = normal_size.height;
+            let cur = normal_size_timer.borrow();
+            state.width = cur.width;
+            state.height = cur.height;
         } else {
-            normal_size = state.clone();
+            *normal_size_timer.borrow_mut() = state.clone();
         }
         if previous.as_ref() != Some(&state)
             && window_tx.try_send(Msg::Ui(Command::WindowChanged(state.clone()))).is_ok()
@@ -666,7 +679,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
     let close_tx = tx.clone();
+    let weak_close = ui.as_weak();
+    let normal_size_close = normal_size.clone();
     ui.window().on_close_requested(move || {
+        if let Some(ui) = weak_close.upgrade() {
+            let window = ui.window();
+            let size = window.size().to_logical(window.scale_factor());
+            let cur = normal_size_close.borrow();
+            let state = if window.is_maximized() {
+                session::WindowState { width: cur.width, height: cur.height, maximized: true }
+            } else if size.width >= 200.0 && size.height >= 200.0 {
+                session::WindowState { width: size.width as u32, height: size.height as u32, maximized: false }
+            } else {
+                cur.clone()
+            };
+            let _ = close_tx.try_send(Msg::Ui(Command::WindowChanged(state)));
+        }
         send(&close_tx, Command::Quit);
         slint::CloseRequestResponse::KeepWindowShown
     });

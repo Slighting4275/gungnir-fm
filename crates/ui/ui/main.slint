@@ -185,6 +185,8 @@ export component AppWindow inherits Window {
     callback filter-changed(pane: int, text: string);
     callback tab-new(pane: int);
     callback tab-close(pane: int, index: int);
+    callback tab-close-others(pane: int, index: int);
+    callback tab-duplicate(pane: int, index: int);
     callback tab-select(pane: int, index: int);
     callback pane-focused(pane: int);
     callback command(name: string);
@@ -397,7 +399,16 @@ export component AppWindow inherits Window {
                 if root.dual-pane { root.activate-pane(1 - p); }
                 return accept;
             }
+            if e.text == Key.F3 { root.dual-pane = !root.dual-pane; root.command("toggle-dual"); return accept; }
             if e.text == Key.F4 { root.command("toggle-terminal"); return accept; }
+            if e.text == Key.F5 { root.nav(p, "refresh"); return accept; }
+            if e.text == Key.F9 { root.sidebar-visible = !root.sidebar-visible; root.command("toggle-sidebar"); return accept; }
+            if e.modifiers.control && (e.text == "r" || e.text == "R") { root.nav(p, "refresh"); return accept; }
+            if e.modifiers.control && (e.text == "h" || e.text == "H") { root.command("toggle-hidden"); return accept; }
+            if e.modifiers.control && !e.modifiers.shift && (e.text == "f" || e.text == "F") { root.focus-filter(); return accept; }
+            if e.modifiers.control && !e.modifiers.shift && e.text == "1" { root.view-mode = 2; root.view-mode-changed(2); return accept; }
+            if e.modifiers.control && !e.modifiers.shift && e.text == "2" { root.view-mode = 1; root.view-mode-changed(1); return accept; }
+            if e.modifiers.control && !e.modifiers.shift && e.text == "3" { root.view-mode = 0; root.view-mode-changed(0); return accept; }
             if e.modifiers.control && e.modifiers.shift && (e.text == "n" || e.text == "N") { root.command("new-folder-inline"); return accept; }
             if e.modifiers.control && e.modifiers.shift && (e.text == "f" || e.text == "F") { root.command("deep-search"); return accept; }
             if e.modifiers.control && e.modifiers.shift && (e.text == "d" || e.text == "D") { root.command("compare-panes"); return accept; }
@@ -428,6 +439,7 @@ export component AppWindow inherits Window {
                 if e.text == Key.UpArrow { root.nav(p, "up"); return accept; }
                 if e.text == Key.LeftArrow { root.nav(p, "back"); return accept; }
                 if e.text == Key.RightArrow { root.nav(p, "forward"); return accept; }
+                if e.text == Key.Home { root.nav(p, "home"); return accept; }
                 if e.text == "1" { root.tab-select(p, 0); return accept; }
                 if e.text == "2" { root.tab-select(p, 1); return accept; }
                 if e.text == "3" { root.tab-select(p, 2); return accept; }
@@ -491,20 +503,12 @@ export component AppWindow inherits Window {
                     padding-right: 8px;
                     spacing: 4px;
                     alignment: stretch;
-                    ToolButton { y: (parent.height - self.height) / 2; glyph: "back"; enabled: root.active-info.can-back; clicked => { root.nav(root.active-pane, "back"); } }
-                    ToolButton { y: (parent.height - self.height) / 2; glyph: "forward"; enabled: root.active-info.can-forward; clicked => { root.nav(root.active-pane, "forward"); } }
-                    ToolButton { y: (parent.height - self.height) / 2; glyph: "up"; clicked => { root.nav(root.active-pane, "up"); } }
-                    ToolButton { y: (parent.height - self.height) / 2; glyph: "refresh"; clicked => { root.nav(root.active-pane, "refresh"); } }
-                    ToolButton { y: (parent.height - self.height) / 2; glyph: "home"; clicked => { root.nav(root.active-pane, "home"); } }
-                    ToolButton {
-                        y: (parent.height - self.height) / 2;
-                        glyph: "folder";
-                        label: "New Folder";
-                        tooltip: "Create a new folder (Ctrl+Shift+N)";
-                        enabled: !root.active-info.is-trash;
-                        clicked => { root.command("new-folder-inline"); }
-                    }
-                    Rectangle { width: 6px; }
+                    ToolButton { y: (parent.height - self.height) / 2; glyph: "back"; tooltip: "Go to the previous visited location (Alt+Left)"; enabled: root.active-info.can-back; clicked => { root.nav(root.active-pane, "back"); } }
+                    ToolButton { y: (parent.height - self.height) / 2; glyph: "forward"; tooltip: "Go to the next visited location (Alt+Right)"; enabled: root.active-info.can-forward; clicked => { root.nav(root.active-pane, "forward"); } }
+                    ToolButton { y: (parent.height - self.height) / 2; glyph: "up"; tooltip: "Go to parent folder (Alt+Up)"; clicked => { root.nav(root.active-pane, "up"); } }
+                    ToolButton { y: (parent.height - self.height) / 2; glyph: "refresh"; tooltip: "Reload the current location (Ctrl+R)"; clicked => { root.nav(root.active-pane, "refresh"); } }
+                    ToolButton { y: (parent.height - self.height) / 2; glyph: "home"; tooltip: "Go to home directory (Alt+Home)"; clicked => { root.nav(root.active-pane, "home"); } }
+                    Rectangle { width: 4px; }
                     path-bar := PathBar {
                         y: (parent.height - self.height) / 2;
                         horizontal-stretch: 1;
@@ -569,9 +573,9 @@ export component AppWindow inherits Window {
                         }
                     }
                     if root.update-available : Separator { y: (parent.height - self.height) / 2; }
-                    ToolButton { y: (parent.height - self.height) / 2; glyph: "list"; checked: root.view-mode == 0; clicked => { root.view-mode = 0; root.view-mode-changed(0); } }
-                    ToolButton { y: (parent.height - self.height) / 2; glyph: "details"; checked: root.view-mode == 1; clicked => { root.view-mode = 1; root.view-mode-changed(1); } }
-                    ToolButton { y: (parent.height - self.height) / 2; glyph: "grid"; checked: root.view-mode == 2; clicked => { root.view-mode = 2; root.view-mode-changed(2); } }
+                    ToolButton { y: (parent.height - self.height) / 2; glyph: "grid"; tooltip: "Icon View (Ctrl+1)"; checked: root.view-mode == 2; clicked => { root.view-mode = 2; root.view-mode-changed(2); } }
+                    ToolButton { y: (parent.height - self.height) / 2; glyph: "details"; tooltip: "List View (Ctrl+2)"; checked: root.view-mode == 1; clicked => { root.view-mode = 1; root.view-mode-changed(1); } }
+                    ToolButton { y: (parent.height - self.height) / 2; glyph: "list"; tooltip: "Compact View (Ctrl+3)"; checked: root.view-mode == 0; clicked => { root.view-mode = 0; root.view-mode-changed(0); } }
                     Separator { y: (parent.height - self.height) / 2; }
                     ZoomControl {
                         y: (parent.height - self.height) / 2;
@@ -582,8 +586,8 @@ export component AppWindow inherits Window {
                         }
                     }
                     Separator { y: (parent.height - self.height) / 2; }
-                    ToolButton { y: (parent.height - self.height) / 2; glyph: "split"; checked: root.dual-pane; clicked => { root.dual-pane = !root.dual-pane; root.command("toggle-dual"); } }
-                    ToolButton { y: (parent.height - self.height) / 2; glyph: "sidebar"; checked: root.sidebar-visible; clicked => { root.sidebar-visible = !root.sidebar-visible; root.command("toggle-sidebar"); } }
+                    ToolButton { y: (parent.height - self.height) / 2; glyph: "split"; tooltip: "Open an extra folder view side-by-side (F3)"; checked: root.dual-pane; clicked => { root.dual-pane = !root.dual-pane; root.command("toggle-dual"); } }
+                    ToolButton { y: (parent.height - self.height) / 2; glyph: "sidebar"; tooltip: "Show/Hide Sidebar (F9)"; checked: root.sidebar-visible; clicked => { root.sidebar-visible = !root.sidebar-visible; root.command("toggle-sidebar"); } }
                     Separator { y: (parent.height - self.height) / 2; }
                     ThemeToggle {
                         y: (parent.height - self.height) / 2;
@@ -651,6 +655,8 @@ export component AppWindow inherits Window {
                         sort-by(c) => { root.sort-by(0, c); }
                         tab-select(i) => { root.tab-select(0, i); }
                         tab-close(i) => { root.tab-close(0, i); }
+                        tab-close-others(i) => { root.tab-close-others(0, i); }
+                        tab-duplicate(i) => { root.tab-duplicate(0, i); }
                         tab-new => { root.tab-new(0); }
                         command(n) => { root.activate-pane(0); root.command(n); }
                         rename-commit(i, n) => { root.rename-commit(0, i, n); key-handler.focus(); }
@@ -688,6 +694,8 @@ export component AppWindow inherits Window {
                         sort-by(c) => { root.sort-by(1, c); }
                         tab-select(i) => { root.tab-select(1, i); }
                         tab-close(i) => { root.tab-close(1, i); }
+                        tab-close-others(i) => { root.tab-close-others(1, i); }
+                        tab-duplicate(i) => { root.tab-duplicate(1, i); }
                         tab-new => { root.tab-new(1); }
                         command(n) => { root.activate-pane(1); root.command(n); }
                         rename-commit(i, n) => { root.rename-commit(1, i, n); key-handler.focus(); }

@@ -2329,3 +2329,75 @@ fn deselect_all_clears_selection() {
     h.until(Duration::from_secs(5), |u| matches!(u, Update::Pane { pane: 0, view } if view.selected_count == 0));
     let _ = std::fs::remove_dir_all(tmp);
 }
+
+#[test]
+fn tab_duplicate_and_close_others() {
+    let tmp = temp_dir("tab-dup-test");
+    let h = start(tmp.to_str().unwrap(), "gungnir://odin/asgard", MockConfig::instant());
+    h.until(Duration::from_secs(5), |u| matches!(u, Update::Pane { pane: 0, view } if view.tabs.len() == 1));
+
+    // Duplicate tab 0
+    h.send(Command::TabDuplicate(0, 0));
+    h.until(Duration::from_secs(5), |u| matches!(u, Update::Pane { pane: 0, view } if view.tabs.len() == 2));
+
+    // Create another new tab
+    h.send(Command::TabNew(0));
+    h.until(Duration::from_secs(5), |u| matches!(u, Update::Pane { pane: 0, view } if view.tabs.len() == 3));
+
+    // Close others keeping tab 1
+    h.send(Command::TabCloseOthers(0, 1));
+    h.until(Duration::from_secs(5), |u| matches!(u, Update::Pane { pane: 0, view } if view.tabs.len() == 1));
+
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[test]
+fn test_restored_session_tabs_lazy_load_on_select() {
+    let tmp = temp_dir("tab-restore-test");
+    let sub1 = tmp.join("sub1");
+    let sub2 = tmp.join("sub2");
+    std::fs::create_dir_all(&sub1).unwrap();
+    std::fs::create_dir_all(&sub2).unwrap();
+    std::fs::write(sub1.join("file1.txt"), b"1").unwrap();
+    std::fs::write(sub2.join("file2.txt"), b"2").unwrap();
+
+    let session = crate::session::SessionState {
+        window: crate::session::WindowState::default(),
+        split_view: false,
+        active_pane: 0,
+        primary_pane_tabs: crate::session::PaneTabsState::new(
+            vec![
+                VfsUri::from_local_path(&sub1).unwrap().to_uri_string(),
+                VfsUri::from_local_path(&sub2).unwrap().to_uri_string(),
+            ],
+            0,
+        ),
+        secondary_pane_tabs: None,
+        show_hidden: false,
+        sidebar_visible: true,
+        zoom_level: 1.0,
+        dark_mode: true,
+        view_mode: 1,
+    };
+
+    let h = start_configured(sub1.to_str().unwrap(), sub2.to_str().unwrap(), MockConfig::instant(), true, |cfg| {
+        cfg.initial_session = Some(session);
+    });
+
+    // Initial load of restored tab 0 contains file1.txt
+    h.until(
+        Duration::from_secs(10),
+        |u| matches!(u, Update::Rows { pane: 0, rows } if rows.iter().any(|r| r.name == "file1.txt")),
+    );
+
+    // Switch to tab 1 (sub2)
+    h.send(Command::TabSelect(0, 1));
+
+    // Verify tab 1 loads sub2 and its row file2.txt
+    h.until(
+        Duration::from_secs(10),
+        |u| matches!(u, Update::Rows { pane: 0, rows } if rows.iter().any(|r| r.name == "file2.txt")),
+    );
+
+    let _ = std::fs::remove_dir_all(tmp);
+}

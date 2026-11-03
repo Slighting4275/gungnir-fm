@@ -14,8 +14,10 @@ component Tab inherits Rectangle {
     in property <bool> closable;
     callback select;
     callback close;
-    height: 30px;
-    width: root.closable ? min(220px, max(110px, title.preferred-width + 52px)) : min(220px, max(80px, title.preferred-width + 24px));
+    height: 34px;
+    width: root.closable ? min(240px, max(120px, title.preferred-width + 64px)) : min(240px, max(100px, title.preferred-width + 44px));
+    border-top-left-radius: Theme.radius-small;
+    border-top-right-radius: Theme.radius-small;
     background: current ? Theme.surface : touch.has-hover ? Theme.hover : transparent;
     touch := TouchArea {
         mouse-cursor: pointer;
@@ -26,16 +28,38 @@ component Tab inherits Rectangle {
             }
         }
     }
-    // Accent line: active tab of the active pane.
+    // Nemo-style bottom accent line connecting active tab to view
     Rectangle {
-        y: 0;
+        y: parent.height - 2px;
         height: 2px;
         background: root.current ? (root.pane-active ? Theme.accent : Theme.border-strong) : transparent;
     }
+    // Top subtle highlight on active tab
+    Rectangle {
+        y: 0;
+        height: 1px;
+        background: root.current ? Theme.border-strong : transparent;
+    }
     HorizontalLayout {
         padding-left: 10px;
-        padding-right: 4px;
+        padding-right: 6px;
         spacing: 6px;
+        // Tab icon
+        Glyph {
+            y: (parent.height - self.height) / 2;
+            width: 14px;
+            height: 14px;
+            name: root.tab.location == "trash:///" ? "trash"
+                : root.tab.location == "recent:///" ? "recent"
+                : root.tab.location == "/" ? "drive"
+                : root.tab.title == "Downloads" ? "download"
+                : root.tab.title == "Documents" ? "document"
+                : root.tab.title == "Music" ? "music"
+                : root.tab.title == "Pictures" ? "image"
+                : root.tab.title == "Desktop" ? "desktop"
+                : "folder";
+            tint: root.current ? Theme.accent : Theme.text-faint;
+        }
         if root.tab.loading: Rectangle {
             width: 8px;
             Rectangle {
@@ -49,18 +73,20 @@ component Tab inherits Rectangle {
         title := Text {
             text: root.tab.title;
             color: root.current ? Theme.text : Theme.text-dim;
-            font-size: Theme.font-size-small;
+            font-size: Theme.font-size;
+            font-weight: root.current ? 600 : 400;
             vertical-alignment: center;
             overflow: elide;
             horizontal-stretch: 1;
         }
         if root.closable: Rectangle {
             width: 20px;
-            opacity: touch.has-hover || close-touch.has-hover ? 1.0 : 0.0;
+            opacity: root.current || touch.has-hover || close-touch.has-hover ? 1.0 : 0.0;
             animate opacity { duration: 100ms; }
             Rectangle {
-                y: (parent.height - 20px) / 2;
-                height: 20px;
+                y: (parent.height - 18px) / 2;
+                height: 18px;
+                width: 18px;
                 border-radius: Theme.radius-small;
                 background: close-touch.has-hover ? Theme.pressed : transparent;
                 Glyph {
@@ -76,8 +102,11 @@ component Tab inherits Rectangle {
             }
         }
     }
+    // Vertical separator between tabs
     Rectangle {
         x: parent.width - 1px;
+        y: 6px;
+        height: parent.height - 12px;
         width: 1px;
         background: Theme.divider;
     }
@@ -214,6 +243,8 @@ export component Pane inherits Rectangle {
     callback sort-by(column: int);
     callback tab-select(index: int);
     callback tab-close(index: int);
+    callback tab-close-others(index: int);
+    callback tab-duplicate(index: int);
     callback tab-new();
     callback zoom-changed(float);
     callback focus-pane();
@@ -281,35 +312,51 @@ export component Pane inherits Rectangle {
 
     VerticalLayout {
         padding: 0px;
-        // Tab strip: always visible, flat and unobtrusive when single tab.
-        if root.info.tabs.length >= 1: Rectangle {
-            height: root.info.tabs.length > 1 ? 30px : 26px;
+        // Tab strip: always visible, Nemo-style prominent tabs
+        Rectangle {
+            height: 34px;
             background: Theme.base;
             HorizontalLayout {
-                for t[i] in root.info.tabs: Tab {
-                    tab: t;
-                    current: i == root.info.active-tab;
-                    pane-active: root.active;
-                    closable: root.info.tabs.length > 1;
-                    select => { root.focus-pane(); root.tab-select(i); }
-                    close => { root.tab-close(i); }
+                padding-left: 4px;
+                padding-right: 4px;
+                spacing: 2px;
+                for t[i] in root.info.tabs: ContextMenuArea {
+                    Tab {
+                        tab: t;
+                        current: i == root.info.active-tab;
+                        pane-active: root.active;
+                        closable: root.info.tabs.length > 1;
+                        select => { root.focus-pane(); root.tab-select(i); }
+                        close => { root.tab-close(i); }
+                    }
+                    Menu {
+                        MenuItem { title: "New Tab (Ctrl+T)"; activated => { root.focus-pane(); root.tab-new(); } }
+                        MenuItem { title: "Close Tab (Ctrl+W)"; enabled: root.info.tabs.length > 1; activated => { root.tab-close(i); } }
+                        MenuItem { title: "Close Other Tabs"; enabled: root.info.tabs.length > 1; activated => { root.tab-close-others(i); } }
+                        MenuItem { title: "Duplicate Tab"; activated => { root.tab-duplicate(i); } }
+                    }
                 }
                 Rectangle {
-                    width: 28px;
+                    width: 32px;
                     Rectangle {
-                        width: 22px;
-                        height: 22px;
+                        width: 26px;
+                        height: 26px;
                         y: (parent.height - self.height) / 2;
                         border-radius: Theme.radius-small;
                         background: plus.has-hover ? Theme.hover : transparent;
-                        Glyph { name: "plus"; width: 12px; height: 12px; tint: plus.has-hover ? Theme.text : Theme.text-faint; }
+                        Glyph { name: "plus"; width: 14px; height: 14px; tint: plus.has-hover ? Theme.text : Theme.text-faint; }
                         plus := TouchArea {
                             mouse-cursor: pointer;
                             clicked => { root.focus-pane(); root.tab-new(); }
                         }
                     }
                 }
-                Rectangle { horizontal-stretch: 1; }
+                Rectangle {
+                    horizontal-stretch: 1;
+                    TouchArea {
+                        double-clicked => { root.focus-pane(); root.tab-new(); }
+                    }
+                }
             }
             Rectangle {
                 y: parent.height - 1px;

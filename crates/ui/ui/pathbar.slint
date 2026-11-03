@@ -20,10 +20,21 @@ component CrumbButton inherits Rectangle {
         padding-left: 8px;
         padding-right: 8px;
         spacing: 6px;
-        if root.crumb.icon != 0: Glyph {
+        Glyph {
             y: (parent.height - self.height) / 2;
-            name: root.crumb.icon == 1 ? "home" : root.crumb.icon == 2 ? "drive" : root.crumb.icon == 6 ? "network" : root.crumb.icon == 11 ? "recent" : "spear";
-            tint: root.crumb.icon == 3 ? Theme.gold : root.last ? Theme.text : Theme.text-dim;
+            name: root.crumb.icon == 1 ? "home"
+                : root.crumb.icon == 2 ? "drive"
+                : root.crumb.icon == 3 ? "spear"
+                : root.crumb.icon == 5 ? "trash"
+                : root.crumb.icon == 6 ? "network"
+                : root.crumb.icon == 11 ? "recent"
+                : root.crumb.label == "Downloads" ? "download"
+                : root.crumb.label == "Documents" ? "document"
+                : root.crumb.label == "Music" ? "music"
+                : root.crumb.label == "Pictures" ? "image"
+                : root.crumb.label == "Desktop" ? "desktop"
+                : "folder";
+            tint: root.crumb.icon == 3 ? Theme.gold : root.last ? Theme.accent : Theme.text-dim;
         }
         if root.crumb.label != "": Text {
             text: root.crumb.label;
@@ -67,26 +78,6 @@ export component PathBar inherits Rectangle {
 
     HorizontalLayout {
         spacing: 4px;
-        // Toggle between breadcrumbs and typing (Nemo's location button).
-        Rectangle {
-            width: 30px;
-            border-radius: Theme.radius-small;
-            background: toggle.has-hover ? Theme.hover : root.editing ? Theme.accent-soft : transparent;
-            Glyph {
-                name: root.editing ? "chevron-right" : "edit";
-                tint: root.editing ? Theme.accent : Theme.text-dim;
-            }
-            toggle := TouchArea {
-                mouse-cursor: pointer;
-                clicked => {
-                    if root.editing {
-                        root.stop-edit();
-                    } else {
-                        root.start-edit();
-                    }
-                }
-            }
-        }
 
         field := Rectangle {
             horizontal-stretch: 1;
@@ -97,14 +88,17 @@ export component PathBar inherits Rectangle {
             clip: true;
 
             // Connected crumbs; an overflowing path keeps its tail (current folder) visible.
-            Rectangle {
+            crumbs-container := Rectangle {
                 visible: !root.editing;
+                width: parent.width;
+                height: parent.height;
                 TouchArea {
                     mouse-cursor: text;
                     clicked => { root.start-edit(); }
                 }
                 crumb-row := HorizontalLayout {
                     x: crumb-row.preferred-width > parent.width - 4px ? parent.width - crumb-row.preferred-width - 2px : 2px;
+                    y: (parent.height - self.height) / 2;
                     width: crumb-row.preferred-width;
                     padding-top: 1px;
                     padding-bottom: 1px;
@@ -163,6 +157,27 @@ export component PathBar inherits Rectangle {
                     x: (parent.width + 80px) * phase - 80px;
                     width: 80px;
                     background: Theme.accent;
+                }
+            }
+        }
+
+        // Toggle between breadcrumbs and typing (Nemo's location button on the right).
+        Rectangle {
+            width: 30px;
+            border-radius: Theme.radius-small;
+            background: toggle.has-hover ? Theme.hover : root.editing ? Theme.accent-soft : transparent;
+            Glyph {
+                name: root.editing ? "chevron-right" : "edit";
+                tint: root.editing ? Theme.accent : Theme.text-dim;
+            }
+            toggle := TouchArea {
+                mouse-cursor: pointer;
+                clicked => {
+                    if root.editing {
+                        root.stop-edit();
+                    } else {
+                        root.start-edit();
+                    }
                 }
             }
         }

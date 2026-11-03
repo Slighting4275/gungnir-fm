@@ -66,6 +66,8 @@ pub enum Command {
     },
     TabNew(usize),
     TabClose(usize, usize),
+    TabCloseOthers(usize, usize),
+    TabDuplicate(usize, usize),
     TabSelect(usize, usize),
     TabCycle {
         pane: usize,
@@ -3782,12 +3784,44 @@ impl Controller {
             self.cancel_rename();
         }
         self.panes[pane].active = idx;
-        let id = self.panes[pane].tab().id;
-        self.prepare(pane, id, false);
-        self.push_pane(pane);
-        self.push_status();
-        self.push_places();
+        let loc = self.panes[pane].tab().location.clone();
+        let needs_load = self.panes[pane].tab().entries.is_empty() && !self.panes[pane].tab().loading;
+        if needs_load {
+            self.load(pane, loc, false);
+        } else {
+            let id = self.panes[pane].tab().id;
+            self.prepare(pane, id, false);
+            self.push_pane(pane);
+            self.push_status();
+            self.push_places();
+        }
         self.trigger_save_session();
+    }
+
+    fn close_other_tabs(&mut self, pane: usize, keep_idx: usize) {
+        self.cancel_rename();
+        if keep_idx >= self.panes[pane].tabs.len() {
+            return;
+        }
+        let keep_tab = self.panes[pane].tabs.remove(keep_idx);
+        for t in self.panes[pane].tabs.drain(..) {
+            t.cancel.cancel();
+            if let Some(w) = t.watch {
+                w.abort();
+            }
+        }
+        self.panes[pane].tabs.push(keep_tab);
+        self.panes[pane].active = 0;
+        self.select_tab(pane, 0);
+        self.trigger_save_session();
+    }
+
+    fn duplicate_tab(&mut self, pane: usize, idx: usize) {
+        if idx >= self.panes[pane].tabs.len() {
+            return;
+        }
+        let loc = self.panes[pane].tabs[idx].location.clone();
+        self.new_tab(pane, Some(loc));
     }
 
     fn cycle_tab(&mut self, pane: usize, delta: i32) {
@@ -3981,6 +4015,8 @@ impl Controller {
             }
             Command::TabNew(p) => self.new_tab(p, None),
             Command::TabClose(p, i) => self.close_tab(p, i),
+            Command::TabCloseOthers(p, i) => self.close_other_tabs(p, i),
+            Command::TabDuplicate(p, i) => self.duplicate_tab(p, i),
             Command::TabSelect(p, i) => {
                 self.focus_pane(p);
                 self.select_tab(p, i);
