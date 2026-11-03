@@ -583,8 +583,50 @@ fn trash_entry(row: proto::VfsRow) -> VfsResult<FileEntry> {
     })
 }
 
-async fn send_trash_rows(
+fn recent_entry(row: proto::VfsRow) -> VfsResult<FileEntry> {
+    let hex_name = String::from_utf8(row.name).map_err(|_| VfsError::BadUtf8)?;
+    let uri = VfsUri::recent(&hex_name)?;
+    let orig = String::from_utf8(row.orig).unwrap_or_default();
+    let target = String::from_utf8(row.target).unwrap_or_default();
+    let shown = if !target.is_empty() {
+        target.rsplit('/').next().unwrap_or(&target).to_owned()
+    } else if !orig.is_empty() {
+        let unquoted = orig.rsplit('/').next().unwrap_or(&orig);
+        crate::recent::file_path(unquoted.as_bytes())
+            .and_then(|p| String::from_utf8(p).ok())
+            .unwrap_or_else(|| unquoted.to_owned())
+    } else {
+        hex_name
+    };
+    let kind = match row.kind {
+        proto::VFS_KIND_FILE => core_vfs::FileKind::File,
+        proto::VFS_KIND_DIR => core_vfs::FileKind::Directory,
+        proto::VFS_KIND_SYMLINK => core_vfs::FileKind::Symlink,
+        _ => core_vfs::FileKind::Special,
+    };
+    let modified = u64::try_from(row.mtime).ok().map(|s| std::time::UNIX_EPOCH + Duration::from_secs(s));
+    let mut attributes = Vec::new();
+    if !orig.is_empty() {
+        attributes.push(("orig".to_owned(), orig));
+    }
+    if !target.is_empty() {
+        attributes.push(("target".to_owned(), target));
+    }
+    Ok(FileEntry {
+        name: shown,
+        uri,
+        kind,
+        target_is_dir: false,
+        size: row.size,
+        modified,
+        mode: 0,
+        vfs: core_vfs::VfsMetadata { status: core_vfs::VfsStatus::Local, attributes },
+    })
+}
+
+async fn send_vfs_rows(
     rows: Vec<proto::VfsRow>,
+    scheme: Scheme,
     partial: bool,
     opts: ListOptions,
     sink: &EntrySink,
@@ -597,7 +639,8 @@ async fn send_trash_rows(
         if cancel.is_cancelled() {
             return Err(VfsError::Cancelled);
         }
-        match trash_entry(row) {
+        let res = if scheme == Scheme::Recent { recent_entry(row) } else { trash_entry(row) };
+        match res {
             Ok(e) => batch.push(e),
             Err(_) => skipped += 1,
         }
@@ -662,15 +705,18 @@ impl GungnirVfsBackend {
         }
     }
 
-    /// Every row of the trash, or of a folder inside it, and whether that may not be all.
-    async fn trash_rows(&self, dir: &VfsUri) -> VfsResult<(Vec<proto::VfsRow>, bool)> {
+    /// Every row of the trash or recent, or of a folder inside it, and whether that may not be all.
+    async fn trash_or_recent_rows(&self, dir: &VfsUri) -> VfsResult<(Vec<proto::VfsRow>, bool)> {
         let _one_at_a_time = self.trash_listing.lock().await;
-        let inner = !trash_rel(dir).is_empty();
+        let is_recent = dir.scheme() == Scheme::Recent;
+        let inner = !is_recent && !trash_rel(dir).is_empty();
         let name = trash_name(dir);
         let (mut rows, mut partial, mut cursor) = (Vec::new(), false, 0u32);
         loop {
             let (kind, payload) = if inner {
                 (proto::MSG_VFS_CHILDREN, proto::req::vfs_children(cursor, name.as_bytes())?)
+            } else if is_recent {
+                (proto::MSG_VFS_LIST, proto::req::recent_list(cursor))
             } else {
                 (proto::MSG_VFS_LIST, proto::req::vfs_list(cursor))
             };
@@ -682,7 +728,7 @@ impl GungnirVfsBackend {
                 return Ok((rows, partial));
             }
             if next <= cursor {
-                return Err(VfsError::Transport("bad trash page".into()));
+                return Err(VfsError::Transport("bad vfs page".into()));
             }
             cursor = next;
         }
@@ -707,7 +753,7 @@ impl VfsProvider for GungnirVfsBackend {
     }
 
     fn handles(&self, uri: &VfsUri) -> bool {
-        is_local_gungnir(uri) || uri.scheme() == Scheme::Trash
+        is_local_gungnir(uri) || uri.scheme() == Scheme::Trash || uri.scheme() == Scheme::Recent
     }
 
     fn can_transfer(&self, src: &VfsUri, dest: &VfsUri) -> bool {
@@ -722,11 +768,11 @@ impl VfsProvider for GungnirVfsBackend {
         sink: EntrySink,
         cancel: CancellationToken,
     ) -> VfsResult<ListSummary> {
-        if dir.scheme() == Scheme::Trash {
-            return match self.trash_rows(dir).await {
+        if dir.scheme() == Scheme::Trash || dir.scheme() == Scheme::Recent {
+            return match self.trash_or_recent_rows(dir).await {
                 Err(e) if falls_back(&e) => self.local.list_dir(dir, opts, sink, cancel).await,
                 Err(e) => Err(e),
-                Ok((rows, partial)) => send_trash_rows(rows, partial, opts, &sink, &cancel).await,
+                Ok((rows, partial)) => send_vfs_rows(rows, dir.scheme(), partial, opts, &sink, &cancel).await,
             };
         }
         let path = local_path(dir)?;
@@ -765,6 +811,23 @@ impl VfsProvider for GungnirVfsBackend {
     }
 
     async fn stat(&self, uri: &VfsUri) -> VfsResult<FileEntry> {
+        if uri.scheme() == Scheme::Recent && uri.path() != "/" && !uri.path().is_empty() {
+            let name = uri.path().trim_start_matches('/');
+            let asked = async {
+                let body = self
+                    .trash_call(proto::MSG_VFS_STAT, proto::req::recent_item(name.as_bytes())?, LIST_TIMEOUT)
+                    .await?;
+                let (_, _, rows) = proto::parse_page(&body)?;
+                rows.into_iter().next().ok_or_else(|| VfsError::NotFound(name.into())).and_then(recent_entry)
+            };
+            return match asked.await {
+                Err(e) if falls_back(&e) => self.local.stat(uri).await,
+                r => r,
+            };
+        }
+        if uri.scheme() == Scheme::Recent {
+            return self.local.stat(uri).await;
+        }
         if uri.scheme() == Scheme::Trash && !trash_rel(uri).is_empty() {
             let asked = async {
                 let body = self
@@ -819,6 +882,20 @@ impl VfsProvider for GungnirVfsBackend {
 
     async fn delete(&self, uris: &[VfsUri], cancel: CancellationToken) -> VfsResult<()> {
         for u in uris {
+            if u.scheme() == Scheme::Recent {
+                if cancel.is_cancelled() {
+                    return Err(VfsError::Cancelled);
+                }
+                let name = u.path().trim_start_matches('/');
+                let payload = proto::req::recent_item(name.as_bytes())?;
+                match self.trash_call(proto::MSG_VFS_DELETE, payload, OP_SILENCE).await {
+                    Err(e) if falls_back(&e) => self.local.delete(std::slice::from_ref(u), cancel.clone()).await?,
+                    r => {
+                        r?;
+                    }
+                }
+                continue;
+            }
             if u.scheme() == Scheme::Trash {
                 if cancel.is_cancelled() {
                     return Err(VfsError::Cancelled);
@@ -883,6 +960,13 @@ impl VfsProvider for GungnirVfsBackend {
     async fn empty_trash(&self) -> VfsResult<()> {
         match self.trash_call(proto::MSG_TRASH_EMPTY, Vec::new(), OP_SILENCE).await {
             Err(e) if falls_back(&e) => self.local.empty_trash().await,
+            r => r.map(drop),
+        }
+    }
+
+    async fn clear_recent(&self) -> VfsResult<()> {
+        match self.trash_call(proto::MSG_TRASH_EMPTY, vec![proto::SCHEME_RECENT], OP_SILENCE).await {
+            Err(e) if falls_back(&e) => self.local.clear_recent().await,
             r => r.map(drop),
         }
     }

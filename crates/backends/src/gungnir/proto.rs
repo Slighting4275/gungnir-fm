@@ -89,6 +89,7 @@ pub const MSG_VFS_STAT: u32 = 45;
 pub const MSG_VFS_CHILDREN: u32 = 46;
 pub const MSG_VFS_STAMP: u32 = 47;
 pub const SCHEME_TRASH: u8 = 0;
+pub const SCHEME_RECENT: u8 = 1;
 pub const VFS_KIND_FILE: u8 = 1;
 pub const VFS_KIND_DIR: u8 = 2;
 pub const VFS_KIND_SYMLINK: u8 = 3;
@@ -785,6 +786,13 @@ pub mod req {
         out
     }
 
+    #[must_use]
+    pub fn recent_list(cursor: u32) -> Vec<u8> {
+        let mut out = vec![SCHEME_RECENT];
+        out.extend_from_slice(&cursor.to_le_bytes());
+        out
+    }
+
     /// # Errors
     /// Name too long.
     pub fn vfs_children(cursor: u32, name: &[u8]) -> VfsResult<Vec<u8>> {
@@ -799,6 +807,16 @@ pub mod req {
     /// Name too long.
     pub fn vfs_item(name: &[u8]) -> VfsResult<Vec<u8>> {
         let mut out = vec![SCHEME_TRASH];
+        blob16(&mut out, name)?;
+        Ok(out)
+    }
+
+    /// For recent stat and delete: `scheme u8 (1) | name len16`.
+    ///
+    /// # Errors
+    /// Name too long.
+    pub fn recent_item(name: &[u8]) -> VfsResult<Vec<u8>> {
+        let mut out = vec![SCHEME_RECENT];
         blob16(&mut out, name)?;
         Ok(out)
     }

@@ -627,6 +627,102 @@ pub fn home_trash() -> VfsResult<PathBuf> {
     Ok(base.join("Trash"))
 }
 
+/// Home recent xbel (`$XDG_DATA_HOME/recently-used.xbel`, else `~/.local/share/recently-used.xbel`).
+pub fn home_recent_xbel() -> VfsResult<PathBuf> {
+    let base = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
+        .ok_or_else(|| VfsError::Unsupported("no HOME for recent files".into()))?;
+    Ok(base.join("recently-used.xbel"))
+}
+
+fn list_recent_blocking(opts: ListOptions, sink: &EntrySink, cancel: &CancellationToken) -> VfsResult<ListSummary> {
+    let Ok(xbel_path) = home_recent_xbel() else {
+        return Ok(ListSummary::default());
+    };
+    let Ok(data) = crate::recent::load(&xbel_path) else {
+        return Ok(ListSummary::default());
+    };
+    let entries = crate::recent::parse(&data);
+    let mut sent = 0u64;
+    let mut batch = Vec::with_capacity(opts.first_batch);
+    let mut limit = opts.first_batch.max(1);
+
+    for e in entries {
+        if cancel.is_cancelled() {
+            return Err(VfsError::Cancelled);
+        }
+        let hex_name = crate::recent::to_hex(&e.uri);
+        let Ok(uri) = VfsUri::recent(&hex_name) else { continue };
+        let orig = String::from_utf8(e.uri.clone()).unwrap_or_default();
+        let target_bytes = crate::recent::file_path(&e.uri);
+        let target_str = target_bytes.as_ref().and_then(|b| String::from_utf8(b.clone()).ok()).unwrap_or_default();
+
+        let (mut kind, mut size, mut modified) = (core_vfs::FileKind::Special, 0u64, None);
+        if let Some(tb) = &target_bytes {
+            use std::os::unix::ffi::OsStrExt;
+            let tp = Path::new(std::ffi::OsStr::from_bytes(tb));
+            if let Ok(md) = fs::symlink_metadata(tp) {
+                let ft = md.file_type();
+                kind = if ft.is_dir() {
+                    core_vfs::FileKind::Directory
+                } else if ft.is_symlink() {
+                    core_vfs::FileKind::Symlink
+                } else if ft.is_file() {
+                    core_vfs::FileKind::File
+                } else {
+                    core_vfs::FileKind::Special
+                };
+                size = md.len();
+                modified = md.modified().ok();
+            }
+        }
+
+        let shown = if !target_str.is_empty() {
+            target_str.rsplit('/').next().unwrap_or(&target_str).to_owned()
+        } else if !orig.is_empty() {
+            let unquoted = orig.rsplit('/').next().unwrap_or(&orig);
+            crate::recent::file_path(unquoted.as_bytes())
+                .and_then(|p| String::from_utf8(p).ok())
+                .unwrap_or_else(|| unquoted.to_owned())
+        } else {
+            hex_name
+        };
+
+        let mut attributes = Vec::new();
+        if !orig.is_empty() {
+            attributes.push(("orig".to_owned(), orig));
+        }
+        if !target_str.is_empty() {
+            attributes.push(("target".to_owned(), target_str));
+        }
+
+        batch.push(FileEntry {
+            name: shown,
+            uri,
+            kind,
+            target_is_dir: false,
+            size,
+            modified,
+            mode: 0,
+            vfs: core_vfs::VfsMetadata { status: core_vfs::VfsStatus::Local, attributes },
+        });
+
+        if batch.len() >= limit {
+            sent += batch.len() as u64;
+            sink.blocking_send(std::mem::take(&mut batch)).map_err(|_| VfsError::Cancelled)?;
+            limit = opts.batch.max(1);
+        }
+    }
+
+    if !batch.is_empty() {
+        sent += batch.len() as u64;
+        sink.blocking_send(batch).map_err(|_| VfsError::Cancelled)?;
+    }
+    Ok(ListSummary { entries: sent, skipped: 0 })
+}
+
 /// Percent-encode a path for a `.trashinfo` `Path=` line.
 fn trash_encode(p: &Path) -> String {
     let mut out = String::new();
@@ -704,7 +800,7 @@ impl VfsProvider for LocalPosixBackend {
     }
 
     fn handles(&self, uri: &VfsUri) -> bool {
-        matches!(uri.scheme(), Scheme::File | Scheme::Trash)
+        matches!(uri.scheme(), Scheme::File | Scheme::Trash | Scheme::Recent)
     }
 
     async fn list_dir(
@@ -714,12 +810,90 @@ impl VfsProvider for LocalPosixBackend {
         sink: EntrySink,
         cancel: CancellationToken,
     ) -> VfsResult<ListSummary> {
+        if dir.scheme() == Scheme::Recent {
+            return blocking(move || list_recent_blocking(opts, &sink, &cancel)).await;
+        }
         let path = local(dir)?;
         let dir = dir.clone();
         blocking(move || list_blocking(&path, &dir, opts, &sink, &cancel)).await
     }
 
     async fn stat(&self, uri: &VfsUri) -> VfsResult<FileEntry> {
+        if uri.scheme() == Scheme::Recent {
+            let uri = uri.clone();
+            return blocking(move || {
+                let path_str = uri.path().trim_start_matches('/');
+                if path_str.is_empty() {
+                    return Ok(FileEntry {
+                        name: "Recent".to_owned(),
+                        uri,
+                        kind: core_vfs::FileKind::Directory,
+                        target_is_dir: false,
+                        size: 0,
+                        modified: None,
+                        mode: 0o755,
+                        vfs: core_vfs::VfsMetadata::default(),
+                    });
+                }
+                let xbel_path = home_recent_xbel()?;
+                let raw_uri = crate::recent::from_hex(path_str).ok_or_else(|| VfsError::NotFound(path_str.into()))?;
+                let data = crate::recent::load(&xbel_path).map_err(io_err("load", &xbel_path))?;
+                let entry = crate::recent::parse(&data)
+                    .into_iter()
+                    .find(|e| e.uri == raw_uri)
+                    .ok_or_else(|| VfsError::NotFound(path_str.into()))?;
+                let orig = String::from_utf8(entry.uri.clone()).unwrap_or_default();
+                let target_bytes = crate::recent::file_path(&entry.uri);
+                let target_str =
+                    target_bytes.as_ref().and_then(|b| String::from_utf8(b.clone()).ok()).unwrap_or_default();
+
+                let (mut kind, mut size, mut modified) = (core_vfs::FileKind::Special, 0u64, None);
+                if let Some(tb) = &target_bytes {
+                    use std::os::unix::ffi::OsStrExt;
+                    let tp = Path::new(std::ffi::OsStr::from_bytes(tb));
+                    if let Ok(md) = fs::symlink_metadata(tp) {
+                        let ft = md.file_type();
+                        kind = if ft.is_dir() {
+                            core_vfs::FileKind::Directory
+                        } else if ft.is_symlink() {
+                            core_vfs::FileKind::Symlink
+                        } else if ft.is_file() {
+                            core_vfs::FileKind::File
+                        } else {
+                            core_vfs::FileKind::Special
+                        };
+                        size = md.len();
+                        modified = md.modified().ok();
+                    }
+                }
+
+                let shown = if !target_str.is_empty() {
+                    target_str.rsplit('/').next().unwrap_or(&target_str).to_owned()
+                } else {
+                    path_str.to_owned()
+                };
+
+                let mut attributes = Vec::new();
+                if !orig.is_empty() {
+                    attributes.push(("orig".to_owned(), orig));
+                }
+                if !target_str.is_empty() {
+                    attributes.push(("target".to_owned(), target_str));
+                }
+
+                Ok(FileEntry {
+                    name: shown,
+                    uri,
+                    kind,
+                    target_is_dir: false,
+                    size,
+                    modified,
+                    mode: 0,
+                    vfs: core_vfs::VfsMetadata { status: core_vfs::VfsStatus::Local, attributes },
+                })
+            })
+            .await;
+        }
         let path = local(uri)?;
         let uri = uri.clone();
         blocking(move || {
@@ -773,17 +947,45 @@ impl VfsProvider for LocalPosixBackend {
     }
 
     async fn delete(&self, uris: &[VfsUri], cancel: CancellationToken) -> VfsResult<()> {
-        let paths: Vec<PathBuf> = uris.iter().map(local).collect::<VfsResult<_>>()?;
-        blocking(move || {
-            for p in &paths {
-                if cancel.is_cancelled() {
-                    return Err(VfsError::Cancelled);
+        let (recent_uris, other_uris): (Vec<_>, Vec<_>) =
+            uris.iter().cloned().partition(|u| u.scheme() == Scheme::Recent);
+        if !recent_uris.is_empty() {
+            let xbel_path = home_recent_xbel()?;
+            let cancel_recent = cancel.clone();
+            blocking(move || {
+                for u in recent_uris {
+                    if cancel_recent.is_cancelled() {
+                        return Err(VfsError::Cancelled);
+                    }
+                    let path_str = u.path().trim_start_matches('/');
+                    let raw_uri =
+                        crate::recent::from_hex(path_str).ok_or_else(|| VfsError::NotFound(path_str.into()))?;
+                    crate::recent::forget(&xbel_path, &raw_uri).map_err(|e| match e {
+                        crate::recent::ForgetError::NotFound => VfsError::NotFound(path_str.into()),
+                        crate::recent::ForgetError::Busy => VfsError::Busy,
+                        crate::recent::ForgetError::Io(err) => {
+                            VfsError::from_io("forget", &err, &xbel_path.display().to_string())
+                        }
+                    })?;
                 }
-                remove_any(p)?;
-            }
-            Ok(())
-        })
-        .await
+                Ok(())
+            })
+            .await?;
+        }
+        if !other_uris.is_empty() {
+            let paths: Vec<PathBuf> = other_uris.iter().map(local).collect::<VfsResult<_>>()?;
+            blocking(move || {
+                for p in &paths {
+                    if cancel.is_cancelled() {
+                        return Err(VfsError::Cancelled);
+                    }
+                    remove_any(p)?;
+                }
+                Ok(())
+            })
+            .await?;
+        }
+        Ok(())
     }
 
     async fn trash(&self, uris: &[VfsUri]) -> VfsResult<()> {
@@ -822,6 +1024,20 @@ impl VfsProvider for LocalPosixBackend {
         blocking(move || {
             let trash = home_trash()?;
             empty_trash_dir(&trash)
+        })
+        .await
+    }
+
+    async fn clear_recent(&self) -> VfsResult<()> {
+        let xbel_path = home_recent_xbel()?;
+        blocking(move || {
+            crate::recent::clear(&xbel_path).map_err(|e| match e {
+                crate::recent::ForgetError::NotFound => VfsError::NotFound(xbel_path.display().to_string()),
+                crate::recent::ForgetError::Busy => VfsError::Busy,
+                crate::recent::ForgetError::Io(err) => {
+                    VfsError::from_io("clear", &err, &xbel_path.display().to_string())
+                }
+            })
         })
         .await
     }

@@ -390,3 +390,41 @@ async fn trash_goes_through_the_daemon() -> VfsResult<()> {
     assert!(!files.join("tree").exists());
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn recent_goes_through_the_daemon() -> VfsResult<()> {
+    let t = TempDir::new("live-recent");
+    let dir = t.0.clone();
+    let data = dir.join("data");
+    std::fs::create_dir_all(&data).unwrap_or_else(|e| panic!("{e}"));
+    let doc = dir.join("recent-doc.txt");
+    std::fs::write(&doc, b"recent content").unwrap_or_else(|e| panic!("{e}"));
+    let xbel = format!(
+        "<?xml version=\"1.0\"?>\n<xbel version=\"1.0\">\n\
+         <bookmark href=\"file://{}\" added=\"x\"/>\n</xbel>\n",
+        doc.display()
+    );
+    std::fs::write(data.join("recently-used.xbel"), xbel).unwrap_or_else(|e| panic!("{e}"));
+
+    let Some(d) = Daemon::start(&dir) else { return Ok(()) };
+    let b = GungnirVfsBackend::connect(d.sock.clone()).await?;
+    let recent_root = VfsUri::recent("")?;
+    assert!(b.handles(&recent_root));
+
+    let opts = ListOptions::default();
+    let (_, items) = list(&b, &recent_root, opts).await?;
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].name, "recent-doc.txt");
+    assert_eq!(items[0].size, 14);
+
+    let stat_res = b.stat(&items[0].uri).await?;
+    assert_eq!(stat_res.name, "recent-doc.txt");
+
+    // Clear recent through daemon
+    b.clear_recent().await?;
+    let (_, items_after) = list(&b, &recent_root, opts).await?;
+    assert!(items_after.is_empty());
+    assert!(doc.exists(), "original document must remain intact");
+
+    Ok(())
+}

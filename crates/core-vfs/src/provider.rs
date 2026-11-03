@@ -109,6 +109,11 @@ pub trait VfsProvider: Send + Sync + 'static {
         Err(VfsError::Unsupported(format!("{} cannot empty trash", self.kind().badge())))
     }
 
+    /// Clear all recent files.
+    async fn clear_recent(&self) -> VfsResult<()> {
+        Err(VfsError::Unsupported(format!("{} cannot clear recent files", self.kind().badge())))
+    }
+
     /// Whether [`VfsProvider::transfer`] of `src` into `dest` can run here. The
     /// controller asks the destination's backend.
     fn can_transfer(&self, src: &VfsUri, dest: &VfsUri) -> bool {

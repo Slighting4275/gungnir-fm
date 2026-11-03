@@ -103,6 +103,7 @@ fn wire(ui: &AppWindow, tx: &mpsc::Sender<Msg>) {
     on!(on_sidebar_open, |uri| Command::SidebarOpen(uri.to_string()));
     on!(on_sidebar_open_tab, |uri| Command::SidebarOpenTab(uri.to_string()));
     on!(on_sidebar_open_window, |uri| Command::SidebarOpenWindow(uri.to_string()));
+    on!(on_remove_bookmark, |uri| Command::RemoveBookmark(uri.to_string()));
     on!(on_tree_toggle, |i| Command::TreeToggle(index(i)));
     on!(on_sidebar_mode_changed, |m| Command::SidebarMode(m));
     on!(on_transfer_action, |id, a| Command::TransferAction { id: i64::from(id), action: a.to_string() });

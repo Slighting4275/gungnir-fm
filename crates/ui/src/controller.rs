@@ -83,6 +83,7 @@ pub enum Command {
     SidebarOpen(String),
     SidebarOpenTab(String),
     SidebarOpenWindow(String),
+    RemoveBookmark(String),
     TreeToggle(usize),
     SidebarMode(i32),
     TransferAction {
@@ -413,6 +414,7 @@ enum PendingDialog {
         pane: usize,
     },
     EmptyTrash,
+    ClearRecent,
     OpenMany {
         pane: usize,
         entries: Vec<FileEntry>,
@@ -739,7 +741,7 @@ pub(crate) fn crumb_views(u: &VfsUri, home: &VfsUri) -> Vec<Crumb> {
                 (0, Scheme::Gungnir) => (uri.authority().to_owned(), 3),
                 (0, Scheme::Sftp | Scheme::Smb) => (uri.authority().to_owned(), 2),
                 (0, Scheme::Trash) => ("Trash".to_owned(), 5),
-                (0, Scheme::Recent) => ("Recent".to_owned(), 4),
+                (0, Scheme::Recent) => ("Recent".to_owned(), 11),
                 (0, Scheme::Network) => ("Network".to_owned(), 6),
                 _ => (label, 0),
             };
@@ -1045,6 +1047,7 @@ impl Controller {
             can_forward: !t.forward.is_empty(),
             cursor: i32::try_from(t.cursor).unwrap_or(0),
             is_trash: t.location.scheme() == Scheme::Trash,
+            is_recent: t.location.scheme() == Scheme::Recent,
             selected_count: i32::try_from(t.selected.len()).unwrap_or(0),
             has_clipboard: self.clipboard.is_some() || crate::clipboard::available(),
         };
@@ -1930,6 +1933,20 @@ impl Controller {
             Scheme::Gungnir if entry.uri.authority().is_empty() || entry.uri.authority() == "localhost" => {
                 Some(std::ffi::OsString::from(entry.uri.path()))
             }
+            Scheme::Recent => {
+                entry.vfs.attributes.iter().find(|(k, _)| k == "target" || k == "orig").and_then(|(_, v)| {
+                    if let Some(_rest) = v.strip_prefix("file://") {
+                        backends::recent::file_path(v.as_bytes()).map(|b| {
+                            use std::os::unix::ffi::OsStringExt;
+                            std::ffi::OsString::from_vec(b)
+                        })
+                    } else if v.starts_with('/') {
+                        Some(std::ffi::OsString::from(v))
+                    } else {
+                        None
+                    }
+                })
+            }
             Scheme::Sftp | Scheme::Smb => Some(std::ffi::OsString::from(entry.uri.to_uri_string())),
             _ => None,
         };
@@ -2671,6 +2688,76 @@ impl Controller {
                     message: "All items in the Trash will be permanently deleted. This cannot be undone.".into(),
                     ..Default::default()
                 }));
+            }
+            "clear-recent" => {
+                self.dialog = Some(PendingDialog::ClearRecent);
+                self.ui.send(Update::Dialog(DialogView {
+                    kind: DialogKind::ConfirmDelete,
+                    title: "Clear Recent History?".into(),
+                    message:
+                        "All items will be removed from your recent history. The files themselves will not be deleted."
+                            .into(),
+                    ..Default::default()
+                }));
+            }
+            "open-containing-folder" => {
+                let t = self.panes[p].tab();
+                let entry = t.targets().into_iter().next().or_else(|| t.entry_at(t.cursor).cloned());
+                let Some(entry) = entry else {
+                    self.say("No item selected", true);
+                    return;
+                };
+                let (target_dir, select_name) = match entry.uri.scheme() {
+                    Scheme::Recent => {
+                        let orig = entry
+                            .vfs
+                            .attributes
+                            .iter()
+                            .find(|(k, _)| k == "target" || k == "orig")
+                            .map(|(_, v)| v.as_str());
+                        if let Some(path_str) = orig {
+                            let clean_path = if let Some(stripped) = path_str.strip_prefix("file://") {
+                                backends::recent::file_path(path_str.as_bytes())
+                                    .and_then(|b| String::from_utf8(b).ok())
+                                    .unwrap_or_else(|| stripped.to_owned())
+                            } else {
+                                path_str.to_owned()
+                            };
+                            let path = Path::new(&clean_path);
+                            if let (Some(parent), Some(name)) = (path.parent(), path.file_name()) {
+                                let Ok(u) = VfsUri::from_local_path(parent) else {
+                                    self.say("Containing folder could not be resolved", true);
+                                    return;
+                                };
+                                (u, name.to_string_lossy().into_owned())
+                            } else {
+                                self.say("Containing folder could not be resolved", true);
+                                return;
+                            }
+                        } else {
+                            self.say("Containing folder unknown", true);
+                            return;
+                        }
+                    }
+                    Scheme::Trash => {
+                        self.say("Item is currently in the Trash", true);
+                        return;
+                    }
+                    _ => {
+                        let Some(parent) = entry.uri.parent() else {
+                            self.say("Item has no containing folder", true);
+                            return;
+                        };
+                        let Some(name) = entry.uri.file_name() else {
+                            self.say("Item has no containing folder", true);
+                            return;
+                        };
+                        (parent, name.to_owned())
+                    }
+                };
+                self.panes[p].tab_mut().pending_select = Some(select_name.clone());
+                self.panes[p].tab_mut().selected = [select_name].into();
+                self.navigate_to(p, target_dir);
             }
             "delete" => {
                 let targets = self.panes[p].tab().targets();
@@ -3828,6 +3915,16 @@ impl Controller {
                     let _ = tx.blocking_send(Msg::Ev(Event::Op { result, reload: Vec::new(), select: None }));
                 });
             }
+            Command::RemoveBookmark(uri_str) => {
+                if let Ok(uri) = VfsUri::parse(&uri_str)
+                    && let Some(pos) = self.bookmarks.iter().position(|b| b == &uri)
+                {
+                    self.bookmarks.remove(pos);
+                    self.save_bookmarks();
+                    self.push_places();
+                    self.say("Bookmark removed", false);
+                }
+            }
             Command::TreeToggle(i) => {
                 let Some(uri) = self.tree_rows.get(i).and_then(|s| VfsUri::parse(s).ok()) else { return };
                 if !self.tree_expanded.remove(&uri) {
@@ -4784,6 +4881,14 @@ impl Controller {
                     Ok("Trash emptied".into())
                 });
             }
+            PendingDialog::ClearRecent => {
+                let Ok(root) = VfsUri::recent("") else { return };
+                let Ok(provider) = self.registry.resolve(&root) else { return };
+                self.spawn_op(vec![root], None, async move {
+                    provider.clear_recent().await?;
+                    Ok("Recent history cleared".into())
+                });
+            }
             PendingDialog::ConnectServer { pane } => {
                 let target = text.trim().to_owned();
                 if !target.is_empty() {
@@ -5205,7 +5310,7 @@ fn yes(b: bool) -> &'static str {
 fn build_places(home: &VfsUri, bookmarks: Option<&std::path::Path>) -> (Vec<PlaceItem>, Vec<VfsUri>) {
     let mut out = Vec::new();
     let h = home.path().to_owned();
-    let candidates: [(&str, String, i32); 9] = [
+    let candidates: [(&str, String, i32); 10] = [
         ("Home", h.clone(), 0),
         ("Desktop", format!("{h}/Desktop"), 1),
         ("Documents", format!("{h}/Documents"), 2),
@@ -5213,11 +5318,12 @@ fn build_places(home: &VfsUri, bookmarks: Option<&std::path::Path>) -> (Vec<Plac
         ("Music", format!("{h}/Music"), 7),
         ("Pictures", format!("{h}/Pictures"), 8),
         ("Videos", format!("{h}/Videos"), 4),
+        ("Recent", "recent:///".to_owned(), 11),
         ("Trash", "trash:///".to_owned(), 5),
         ("File System", "/".to_owned(), 6),
     ];
     for (label, path, icon) in candidates {
-        if icon == 5 || std::path::Path::new(&path).is_dir() {
+        if icon == 5 || icon == 11 || std::path::Path::new(&path).is_dir() {
             out.push(PlaceItem { label: label.into(), uri: SharedString::from(path), icon, active: false });
         }
     }

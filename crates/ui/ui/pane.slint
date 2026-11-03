@@ -150,6 +150,7 @@ export component Pane inherits Rectangle {
         can-forward: false,
         cursor: 2,
         is-trash: false,
+        is-recent: false,
         selected-count: 2,
         has-clipboard: false,
     };
@@ -169,6 +170,7 @@ export component Pane inherits Rectangle {
     in-out property <float> zoom-level: 1.0;
     in-out property <int> context-index: -1;
     property <bool> is-trash: root.info.is-trash;
+    property <bool> is-recent: root.info.is-recent;
     property <bool> has-target: root.context-index >= 0 && root.context-index < root.files.length;
     property <bool> target-is-dir: root.has-target ? root.files[root.context-index].is-dir : false;
     property <bool> target-is-archive: root.has-target ? root.files[root.context-index].icon == 5 : false;
@@ -179,6 +181,7 @@ export component Pane inherits Rectangle {
     // Slint assigns IDs when the popup is opened. Changing menu inputs while
     // it is open invalidates those IDs, so child menus must use this snapshot.
     property <bool> menu-is-trash;
+    property <bool> menu-is-recent;
     property <bool> menu-has-target;
     property <bool> menu-target-is-dir;
     property <bool> menu-target-is-archive;
@@ -190,6 +193,7 @@ export component Pane inherits Rectangle {
     function capture-context(index: int) {
         root.context-index = index;
         root.menu-is-trash = root.is-trash;
+        root.menu-is-recent = root.is-recent;
         root.menu-has-target = root.has-target;
         root.menu-target-is-dir = root.target-is-dir;
         root.menu-target-is-archive = root.target-is-archive;
@@ -413,6 +417,85 @@ export component Pane inherits Rectangle {
             }
         }
 
+        // Nemo-style Recent Bar (action cluebar for recent:///)
+        if root.is-recent: Rectangle {
+            height: 38px;
+            background: Theme.surface;
+            Rectangle {
+                y: parent.height - 1px;
+                height: 1px;
+                background: Theme.divider;
+            }
+            HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 12px;
+                spacing: 8px;
+                alignment: space-between;
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    y: (parent.height - self.height) / 2;
+                    Glyph {
+                        y: (parent.height - self.height) / 2;
+                        name: "recent";
+                        tint: Theme.accent;
+                        width: 15px;
+                        height: 15px;
+                    }
+                    Text {
+                        y: (parent.height - self.height) / 2;
+                        text: "Recent";
+                        font-size: Theme.font-size;
+                        font-weight: 700;
+                        color: Theme.text;
+                    }
+                    Text {
+                        y: (parent.height - self.height) / 2;
+                        text: root.files.length == 0 ? "— No recent files" : root.files.length == 1 ? "— 1 item" : "— " + root.files.length + " items";
+                        font-size: 11px;
+                        color: Theme.text-dim;
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    y: (parent.height - self.height) / 2;
+
+                    Rectangle {
+                        height: 26px;
+                        border-radius: Theme.radius-small;
+                        background: !clear-touch.enabled ? transparent : clear-touch.has-hover ? Theme.hover : Theme.base;
+                        border-width: 1px;
+                        border-color: !clear-touch.enabled ? Theme.border.darker(10%) : clear-touch.has-hover ? Theme.bad : Theme.border;
+                        HorizontalLayout {
+                            padding-left: 10px;
+                            padding-right: 10px;
+                            spacing: 6px;
+                            Glyph {
+                                y: (parent.height - self.height) / 2;
+                                name: "recent";
+                                tint: !clear-touch.enabled ? Theme.text-faint : clear-touch.has-hover ? Theme.bad : Theme.text-dim;
+                                width: 12px;
+                                height: 12px;
+                            }
+                            Text {
+                                text: "Clear Recent History…";
+                                font-size: 11.5px;
+                                font-weight: 600;
+                                color: !clear-touch.enabled ? Theme.text-faint : clear-touch.has-hover ? Theme.bad : Theme.text;
+                                vertical-alignment: center;
+                            }
+                        }
+                        clear-touch := TouchArea {
+                            enabled: root.files.length > 0;
+                            mouse-cursor: self.enabled ? pointer : default;
+                            clicked => { root.command("clear-recent"); }
+                        }
+                    }
+                }
+            }
+        }
+
         // Column header (detailed view).
         if root.view-mode == 1: Rectangle {
             height: 26px;
@@ -524,6 +607,35 @@ export component Pane inherits Rectangle {
 
                 }
             }
+            recent-cm := ContextMenuArea {
+                Menu {
+                    // -----------------------------------------------------------------
+                    // RECENT CONTEXT (when viewing recent: scheme)
+                    // -----------------------------------------------------------------
+                    if root.menu-has-target: MenuItem {
+                        title: "Open";
+                        activated => { root.command("open"); }
+                    }
+                    if root.menu-has-target: MenuItem {
+                        title: "Open Containing Folder";
+                        activated => { root.command("open-containing-folder"); }
+                    }
+                    if root.menu-has-target: MenuItem {
+                        title: root.menu-is-multi-sel ? "Remove " + root.menu-effective-sel-count + " Items from Recent" : "Remove from Recent";
+                        activated => { root.command("delete"); }
+                    }
+                    if root.menu-has-target: MenuSeparator { }
+                    MenuItem {
+                        title: "Clear Recent History…";
+                        activated => { root.command("clear-recent"); }
+                    }
+                    if root.menu-has-target: MenuSeparator { }
+                    if root.menu-has-target: MenuItem {
+                        title: "Properties";
+                        activated => { root.command("properties"); }
+                    }
+                }
+            }
             cm := ContextMenuArea {
                 Menu {
                     // Creation acts on the displayed folder, including when a row
@@ -553,6 +665,10 @@ export component Pane inherits Rectangle {
                     if !root.menu-is-trash && root.menu-has-target && !root.menu-is-multi-sel: MenuItem {
                         title: "Open";
                         activated => { root.command("open"); }
+                    }
+                    if !root.menu-is-trash && root.menu-has-target && !root.menu-is-multi-sel && !root.menu-target-is-dir: MenuItem {
+                        title: "Open Containing Folder";
+                        activated => { root.command("open-containing-folder"); }
                     }
                     if !root.menu-is-trash && root.menu-has-target && !root.menu-is-multi-sel && root.menu-target-is-dir: MenuItem {
                         title: "Open in New Tab";
@@ -687,6 +803,8 @@ export component Pane inherits Rectangle {
                                 root.command("clear-selection");
                                 if root.is-trash {
                                     trash-cm.show({ x: self.mouse-x, y: self.mouse-y });
+                                } else if root.is-recent {
+                                    recent-cm.show({ x: self.mouse-x, y: self.mouse-y });
                                 } else {
                                     background-cm.show({ x: self.mouse-x, y: self.mouse-y });
                                 }
@@ -736,11 +854,16 @@ export component Pane inherits Rectangle {
                                                 x: self.absolute-position.x - trash-cm.absolute-position.x + self.mouse-x,
                                                 y: self.absolute-position.y - trash-cm.absolute-position.y + self.mouse-y,
                                             });
+                                        } else if root.is-recent {
+                                            recent-cm.show({
+                                                x: self.absolute-position.x - recent-cm.absolute-position.x + self.mouse-x,
+                                                y: self.absolute-position.y - recent-cm.absolute-position.y + self.mouse-y,
+                                            });
                                         } else {
-                                        cm.show({
-                                            x: self.absolute-position.x - cm.absolute-position.x + self.mouse-x,
-                                            y: self.absolute-position.y - cm.absolute-position.y + self.mouse-y,
-                                        });
+                                            cm.show({
+                                                x: self.absolute-position.x - cm.absolute-position.x + self.mouse-x,
+                                                y: self.absolute-position.y - cm.absolute-position.y + self.mouse-y,
+                                            });
                                         }
                                     }
                                 }
@@ -923,11 +1046,16 @@ export component Pane inherits Rectangle {
                                                             x: self.absolute-position.x - trash-cm.absolute-position.x + self.mouse-x,
                                                             y: self.absolute-position.y - trash-cm.absolute-position.y + self.mouse-y,
                                                         });
+                                                    } else if root.is-recent {
+                                                        recent-cm.show({
+                                                            x: self.absolute-position.x - recent-cm.absolute-position.x + self.mouse-x,
+                                                            y: self.absolute-position.y - recent-cm.absolute-position.y + self.mouse-y,
+                                                        });
                                                     } else {
-                                                    cm.show({
-                                                        x: self.absolute-position.x - cm.absolute-position.x + self.mouse-x,
-                                                        y: self.absolute-position.y - cm.absolute-position.y + self.mouse-y,
-                                                    });
+                                                        cm.show({
+                                                            x: self.absolute-position.x - cm.absolute-position.x + self.mouse-x,
+                                                            y: self.absolute-position.y - cm.absolute-position.y + self.mouse-y,
+                                                        });
                                                     }
                                                 }
                                             }
@@ -1002,7 +1130,7 @@ export component Pane inherits Rectangle {
                     alignment: center;
                     spacing: 8px;
                     Text {
-                        text: root.info.error != "" ? "Cannot open this location" : root.info.loading ? "Loading…" : root.info.filter != "" ? "No matches" : root.is-trash ? "Trash is empty" : "This folder is empty";
+                        text: root.info.error != "" ? "Cannot open this location" : root.info.loading ? "Loading…" : root.info.filter != "" ? "No matches" : root.is-trash ? "Trash is empty" : root.is-recent ? "No recent files" : "This folder is empty";
                         color: root.info.error != "" ? Theme.bad : Theme.text-faint;
                         font-size: Theme.font-size-large;
                         horizontal-alignment: center;

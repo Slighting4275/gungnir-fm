@@ -2153,3 +2153,82 @@ fn creation_from_a_selected_folder_context_uses_the_displayed_directory() {
     drop(h);
     std::fs::remove_dir_all(d).ok();
 }
+
+#[test]
+fn recent_navigation_sets_is_recent_flag() {
+    let tmp = temp_dir("recent-nav");
+    let h = start(tmp.to_str().unwrap(), "gungnir://odin/asgard", MockConfig::instant());
+    h.until(Duration::from_secs(5), |u| full_rows(u, 0, 0));
+    h.send(Command::SidebarOpen("recent:///".into()));
+    let updates = h.until(Duration::from_secs(5), |u| matches!(u, Update::Pane { pane: 0, view } if view.is_recent));
+    let view = updates
+        .iter()
+        .find_map(|u| match u {
+            Update::Pane { pane: 0, view } if view.is_recent => Some(view),
+            _ => None,
+        })
+        .unwrap();
+    assert!(view.is_recent);
+    assert_eq!(view.location, "recent:///");
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[test]
+fn clear_recent_history_dialog_and_execution() {
+    let tmp = temp_dir("clear-recent");
+    let h = start(tmp.to_str().unwrap(), "gungnir://odin/asgard", MockConfig::instant());
+    h.until(Duration::from_secs(5), |u| full_rows(u, 0, 0));
+    h.send(Command::SidebarOpen("recent:///".into()));
+    h.until(Duration::from_secs(5), |u| matches!(u, Update::Pane { pane: 0, view } if view.is_recent));
+    h.send(Command::Run("clear-recent".into()));
+    h.until(Duration::from_secs(5), |u| matches!(u, Update::Dialog(d) if d.title.contains("Clear Recent")));
+    h.send(Command::DialogAccept(String::new()));
+    h.until(Duration::from_secs(5), |u| matches!(u, Update::Status(s) if s.message.contains("Recent history cleared")));
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[test]
+fn remove_bookmark_command_updates_places() {
+    let tmp = temp_dir("remove-bookmark");
+    let bm_file = tmp.join("bookmarks");
+    std::fs::write(&bm_file, "file:///home/user/CustomMark\n").unwrap();
+    let h = start_configured(tmp.to_str().unwrap(), "gungnir://odin/asgard", MockConfig::instant(), true, |cfg| {
+        cfg.bookmarks_file = Some(bm_file.clone());
+    });
+    h.until(
+        Duration::from_secs(5),
+        |u| matches!(u, Update::Places(p) if p.iter().any(|item| item.label == "CustomMark")),
+    );
+    h.send(Command::RemoveBookmark("file:///home/user/CustomMark".into()));
+    h.until(
+        Duration::from_secs(5),
+        |u| matches!(u, Update::Places(p) if !p.iter().any(|item| item.label == "CustomMark")),
+    );
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_secs(3) {
+        if !std::fs::read_to_string(&bm_file).unwrap_or_default().contains("CustomMark") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(!std::fs::read_to_string(&bm_file).unwrap().contains("CustomMark"));
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[test]
+fn open_containing_folder_on_regular_file() {
+    let tmp = temp_dir("containing-folder");
+    let sub = tmp.join("subfolder");
+    std::fs::create_dir_all(&sub).unwrap();
+    let target_file = sub.join("doc.txt");
+    std::fs::write(&target_file, b"content").unwrap();
+    let h = start(sub.to_str().unwrap(), "gungnir://odin/asgard", MockConfig::instant());
+    h.until(Duration::from_secs(5), |u| full_rows(u, 0, 1));
+    h.send(Command::Run("select-all".into()));
+    h.send(Command::Run("open-containing-folder".into()));
+    h.until(
+        Duration::from_secs(5),
+        |u| matches!(u, Update::Pane { pane: 0, view } if view.location.ends_with("/subfolder")),
+    );
+    let _ = std::fs::remove_dir_all(tmp);
+}

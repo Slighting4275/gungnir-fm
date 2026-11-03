@@ -179,10 +179,14 @@ export component Sidebar inherits Rectangle {
     in property <string> gungnir-label: "GUNGNIR VFS";
     in-out property <string> target-uri;
     in-out property <bool> target-is-trash;
+    in-out property <bool> target-is-recent;
+    in-out property <bool> target-is-bookmark;
     callback open(uri: string);
     callback open-tab(uri: string);
     callback open-window(uri: string);
     callback empty-trash();
+    callback clear-recent();
+    callback remove-bookmark(uri: string);
     callback toggle-tree(index: int);
     callback mode-changed(mode: int);
 
@@ -197,6 +201,7 @@ export component Sidebar inherits Rectangle {
         if icon == 8 { return "image"; }
         if icon == 9 { return "network"; }
         if icon == 10 { return "trash-full"; }
+        if icon == 11 { return "recent"; }
         return "folder";
     }
 
@@ -225,6 +230,16 @@ export component Sidebar inherits Rectangle {
                 title: "Empty Trash";
                 activated => { root.empty-trash(); }
             }
+            if root.target-is-recent: MenuSeparator { }
+            if root.target-is-recent: MenuItem {
+                title: "Clear Recent History";
+                activated => { root.clear-recent(); }
+            }
+            if root.target-is-bookmark: MenuSeparator { }
+            if root.target-is-bookmark: MenuItem {
+                title: "Remove Bookmark";
+                activated => { root.remove-bookmark(root.target-uri); }
+            }
         }
     }
 
@@ -246,6 +261,8 @@ export component Sidebar inherits Rectangle {
                     context-menu(mx, my) => {
                         root.target-uri = p.uri;
                         root.target-is-trash = p.uri == "trash:///";
+                        root.target-is-recent = p.uri == "recent:///";
+                        root.target-is-bookmark = p.icon == 4;
                         place-cm.show({
                             x: self.absolute-position.x - place-cm.absolute-position.x + mx,
                             y: self.absolute-position.y - place-cm.absolute-position.y + my,

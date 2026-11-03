@@ -12,6 +12,8 @@ use core_vfs::{
 };
 use tokio::sync::{mpsc, watch};
 
+static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 fn write(p: &std::path::Path, n: usize) {
     std::fs::write(p, vec![b'x'; n]).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
 }
@@ -167,6 +169,7 @@ async fn pause_then_cancel_leaves_no_partial_file() -> VfsResult<()> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn trash_follows_the_freedesktop_spec() -> VfsResult<()> {
+    let _env_guard = ENV_LOCK.lock().await;
     let t = TempDir::new("trash");
     write(&t.path().join("doomed file.txt"), 4);
     // SAFETY: only this test in this binary reads XDG_DATA_HOME.
@@ -193,6 +196,69 @@ async fn trash_follows_the_freedesktop_spec() -> VfsResult<()> {
     assert!(!t.path().join("data/Trash/files/doomed file.txt").exists());
     assert!(!t.path().join("data/Trash/info/doomed file.txt.trashinfo").exists());
 
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn recent_listing_stat_delete_and_clear() -> VfsResult<()> {
+    let _env_guard = ENV_LOCK.lock().await;
+    let t = TempDir::new("recent");
+    let prev_xdg = std::env::var_os("XDG_DATA_HOME");
+    let data_dir = t.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap_or_else(|e| panic!("{e}"));
+    // SAFETY: test sets isolated env var for the test process
+    unsafe {
+        std::env::set_var("XDG_DATA_HOME", &data_dir);
+    }
+
+    let f = t.path().join("my-doc.txt");
+    write(&f, 10);
+    let xbel_content = format!(
+        "<?xml version=\"1.0\"?>\n<xbel version=\"1.0\">\n\
+         <bookmark href=\"file://{}\" added=\"x\"/>\n</xbel>\n",
+        f.display()
+    );
+    std::fs::write(data_dir.join("recently-used.xbel"), xbel_content).unwrap_or_else(|e| panic!("{e}"));
+
+    let b = LocalPosixBackend::new();
+    let recent_root = VfsUri::recent("")?;
+    let (_, entries) = list(&b, &recent_root, ListOptions::default()).await?;
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].name, "my-doc.txt");
+    assert_eq!(entries[0].size, 10);
+
+    let stat_entry = b.stat(&entries[0].uri).await?;
+    assert_eq!(stat_entry.name, "my-doc.txt");
+
+    // Remove entry
+    b.delete(&[entries[0].uri.clone()], CancellationToken::new()).await?;
+    let (_, left) = list(&b, &recent_root, ListOptions::default()).await?;
+    assert!(left.is_empty());
+    assert!(f.exists(), "original file must not be touched");
+
+    // Re-add and clear
+    let xbel_content2 = format!(
+        "<?xml version=\"1.0\"?>\n<xbel version=\"1.0\">\n\
+         <bookmark href=\"file://{}\" added=\"x\"/>\n</xbel>\n",
+        f.display()
+    );
+    std::fs::write(data_dir.join("recently-used.xbel"), xbel_content2).unwrap_or_else(|e| panic!("{e}"));
+    let (_, entries2) = list(&b, &recent_root, ListOptions::default()).await?;
+    assert_eq!(entries2.len(), 1);
+
+    b.clear_recent().await?;
+    let (_, empty_entries) = list(&b, &recent_root, ListOptions::default()).await?;
+    assert!(empty_entries.is_empty());
+    assert!(f.exists());
+
+    // Restore env
+    unsafe {
+        if let Some(prev) = prev_xdg {
+            std::env::set_var("XDG_DATA_HOME", prev);
+        } else {
+            std::env::remove_var("XDG_DATA_HOME");
+        }
+    }
     Ok(())
 }
 

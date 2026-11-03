@@ -30,6 +30,7 @@ pub struct PaneView {
     pub can_forward: bool,
     pub cursor: i32,
     pub is_trash: bool,
+    pub is_recent: bool,
     pub selected_count: i32,
     pub has_clipboard: bool,
 }
@@ -287,6 +288,7 @@ pub fn apply(ui: &AppWindow, u: Update) {
                 can_forward: view.can_forward,
                 cursor: view.cursor,
                 is_trash: view.is_trash,
+                is_recent: view.is_recent,
                 selected_count: view.selected_count,
                 has_clipboard: view.has_clipboard,
             };

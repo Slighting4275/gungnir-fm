@@ -11,6 +11,7 @@ pub mod archive;
 pub mod gungnir;
 pub mod local;
 pub mod mock;
+pub mod recent;
 pub mod remote;
 pub mod time;
 
