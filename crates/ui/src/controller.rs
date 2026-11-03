@@ -330,11 +330,19 @@ impl Tab {
         }
     }
 
-    fn title(&self) -> String {
-        match self.location.file_name() {
-            Some(n) => n.to_owned(),
-            None if !self.location.crumbs().is_empty() => self.location.crumbs()[0].0.clone(),
-            None => "/".into(),
+    fn title(&self, home: &VfsUri) -> String {
+        if &self.location == home {
+            return "Home".to_owned();
+        }
+        match self.location.scheme() {
+            core_vfs::Scheme::Trash => "Trash".to_owned(),
+            core_vfs::Scheme::Recent => "Recent".to_owned(),
+            core_vfs::Scheme::Network => "Network".to_owned(),
+            _ => match self.location.file_name() {
+                Some(n) if !n.is_empty() => n.to_owned(),
+                _ if !self.location.crumbs().is_empty() => self.location.crumbs()[0].0.clone(),
+                _ => "/".into(),
+            },
         }
     }
 
@@ -1035,7 +1043,11 @@ impl Controller {
             tabs: pane
                 .tabs
                 .iter()
-                .map(|t| TabInfo { title: t.title().into(), location: t.location.display().into(), loading: t.loading })
+                .map(|t| TabInfo {
+                    title: t.title(&self.cfg.home).into(),
+                    location: t.location.display().into(),
+                    loading: t.loading,
+                })
                 .collect(),
             active_tab: i32::try_from(pane.active).unwrap_or(0),
             location: t.location.display(),
@@ -3793,8 +3805,8 @@ impl Controller {
             self.prepare(pane, id, false);
             self.push_pane(pane);
             self.push_status();
-            self.push_places();
         }
+        self.push_places();
         self.trigger_save_session();
     }
 

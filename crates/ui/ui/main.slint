@@ -23,7 +23,7 @@ component Separator inherits Rectangle {
 }
 
 export component AppWindow inherits Window {
-    title: "Gungnir FM";
+    title: root.active-info.tabs.length > 0 && root.active-info.active-tab < root.active-info.tabs.length ? (root.active-info.tabs[root.active-info.active-tab].title + " - Gungnir FM") : "Gungnir FM";
     icon: @image-url("../assets/gungnir-fm.svg");
     preferred-width: 1320px;
     preferred-height: 820px;
@@ -403,9 +403,9 @@ export component AppWindow inherits Window {
             if e.text == Key.F4 { root.command("toggle-terminal"); return accept; }
             if e.text == Key.F5 { root.nav(p, "refresh"); return accept; }
             if e.text == Key.F9 { root.sidebar-visible = !root.sidebar-visible; root.command("toggle-sidebar"); return accept; }
-            if e.modifiers.control && (e.text == "r" || e.text == "R") { root.nav(p, "refresh"); return accept; }
-            if e.modifiers.control && (e.text == "h" || e.text == "H") { root.command("toggle-hidden"); return accept; }
-            if e.modifiers.control && !e.modifiers.shift && (e.text == "f" || e.text == "F") { root.focus-filter(); return accept; }
+            if e.modifiers.control && (e.text == "r" || e.text == "R" || e.text == "\u{0012}") { root.nav(p, "refresh"); return accept; }
+            if e.modifiers.control && (e.text == "h" || e.text == "H" || e.text == "\u{0008}") { root.command("toggle-hidden"); return accept; }
+            if e.modifiers.control && !e.modifiers.shift && (e.text == "f" || e.text == "F" || e.text == "\u{0006}") { root.focus-filter(); return accept; }
             if e.modifiers.control && !e.modifiers.shift && e.text == "1" { root.view-mode = 2; root.view-mode-changed(2); return accept; }
             if e.modifiers.control && !e.modifiers.shift && e.text == "2" { root.view-mode = 1; root.view-mode-changed(1); return accept; }
             if e.modifiers.control && !e.modifiers.shift && e.text == "3" { root.view-mode = 0; root.view-mode-changed(0); return accept; }
@@ -427,12 +427,16 @@ export component AppWindow inherits Window {
                 root.tab-cycle(p, 1);
                 return accept;
             }
-            if e.modifiers.control && (e.text == "t" || e.text == "T") {
+            if e.modifiers.control && (e.text == "t" || e.text == "T" || e.text == "\u{0014}") {
                 root.tab-new(p);
                 return accept;
             }
-            if e.modifiers.control && (e.text == "w" || e.text == "W") {
+            if e.modifiers.control && (e.text == "w" || e.text == "W" || e.text == "\u{0017}") {
                 root.tab-close(p, root.active-info.active-tab);
+                return accept;
+            }
+            if e.modifiers.control && (e.text == "q" || e.text == "Q" || e.text == "\u{0011}") {
+                root.command("quit");
                 return accept;
             }
             if e.modifiers.alt {

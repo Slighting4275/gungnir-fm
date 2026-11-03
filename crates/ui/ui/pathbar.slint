@@ -15,6 +15,8 @@ component CrumbButton inherits Rectangle {
     width: row.preferred-width;
     border-radius: Theme.radius-small;
     background: touch.pressed ? Theme.pressed : last ? Theme.overlay : touch.has-hover ? Theme.hover : transparent;
+    border-width: 1px;
+    border-color: root.last ? Theme.accent-dim : touch.has-hover ? Theme.border : transparent;
     animate background { duration: Theme.fast; }
     row := HorizontalLayout {
         padding-left: 8px;
@@ -42,6 +44,13 @@ component CrumbButton inherits Rectangle {
             font-size: Theme.font-size;
             font-weight: root.last ? 600 : 400;
             vertical-alignment: center;
+        }
+        Glyph {
+            y: (parent.height - self.height) / 2;
+            name: "chevron-right";
+            tint: root.last ? Theme.accent : Theme.text-faint;
+            width: 10px;
+            height: 10px;
         }
     }
     touch := TouchArea {

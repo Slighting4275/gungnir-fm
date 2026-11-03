@@ -14,17 +14,26 @@ component Tab inherits Rectangle {
     in property <bool> closable;
     callback select;
     callback close;
+    callback context-menu(length, length);
     height: 34px;
-    width: root.closable ? min(240px, max(120px, title.preferred-width + 64px)) : min(240px, max(100px, title.preferred-width + 44px));
+    horizontal-stretch: 1;
+    max-width: 260px;
+    min-width: 110px;
     border-top-left-radius: Theme.radius-small;
     border-top-right-radius: Theme.radius-small;
     background: current ? Theme.surface : touch.has-hover ? Theme.hover : transparent;
     touch := TouchArea {
+        z: 1;
+        width: parent.width;
+        height: parent.height;
         mouse-cursor: pointer;
         clicked => { root.select(); }
         pointer-event(e) => {
             if e.kind == PointerEventKind.down && e.button == PointerEventButton.middle && root.closable {
                 root.close();
+            }
+            if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
+                root.context-menu(self.mouse-x, self.mouse-y);
             }
         }
     }
@@ -39,6 +48,15 @@ component Tab inherits Rectangle {
         y: 0;
         height: 1px;
         background: root.current ? Theme.border-strong : transparent;
+    }
+    // Tab divider line for inactive tabs
+    Rectangle {
+        x: parent.width - 1px;
+        y: 6px;
+        width: 1px;
+        height: parent.height - 12px;
+        background: Theme.divider;
+        visible: !root.current;
     }
     HorizontalLayout {
         padding-left: 10px;
@@ -80,6 +98,7 @@ component Tab inherits Rectangle {
             horizontal-stretch: 1;
         }
         if root.closable: Rectangle {
+            z: 5;
             width: 20px;
             opacity: root.current || touch.has-hover || close-touch.has-hover ? 1.0 : 0.0;
             animate opacity { duration: 100ms; }
@@ -96,8 +115,15 @@ component Tab inherits Rectangle {
                     tint: close-touch.has-hover ? Theme.text : Theme.text-faint;
                 }
                 close-touch := TouchArea {
+                    width: parent.width;
+                    height: parent.height;
                     mouse-cursor: pointer;
                     clicked => { root.close(); }
+                    pointer-event(e) => {
+                        if e.kind == PointerEventKind.down && e.button == PointerEventButton.left {
+                            root.close();
+                        }
+                    }
                 }
             }
         }
@@ -222,6 +248,16 @@ export component Pane inherits Rectangle {
     property <bool> menu-has-clipboard;
     property <[CustomActionItem]> menu-custom-actions;
     property <[TemplateItem]> menu-document-templates;
+    property <int> target-tab-idx: 0;
+
+    tab-cm := ContextMenuArea {
+        Menu {
+            MenuItem { title: "New Tab (Ctrl+T)"; activated => { root.focus-pane(); root.tab-new(); } }
+            MenuItem { title: "Close Tab (Ctrl+W)"; enabled: root.info.tabs.length > 1; activated => { root.tab-close(root.target-tab-idx); } }
+            MenuItem { title: "Close Other Tabs"; enabled: root.info.tabs.length > 1; activated => { root.tab-close-others(root.target-tab-idx); } }
+            MenuItem { title: "Duplicate Tab"; activated => { root.tab-duplicate(root.target-tab-idx); } }
+        }
+    }
     function capture-context(index: int) {
         root.context-index = index;
         root.menu-is-trash = root.is-trash;
@@ -320,20 +356,19 @@ export component Pane inherits Rectangle {
                 padding-left: 4px;
                 padding-right: 4px;
                 spacing: 2px;
-                for t[i] in root.info.tabs: ContextMenuArea {
-                    Tab {
-                        tab: t;
-                        current: i == root.info.active-tab;
-                        pane-active: root.active;
-                        closable: root.info.tabs.length > 1;
-                        select => { root.focus-pane(); root.tab-select(i); }
-                        close => { root.tab-close(i); }
-                    }
-                    Menu {
-                        MenuItem { title: "New Tab (Ctrl+T)"; activated => { root.focus-pane(); root.tab-new(); } }
-                        MenuItem { title: "Close Tab (Ctrl+W)"; enabled: root.info.tabs.length > 1; activated => { root.tab-close(i); } }
-                        MenuItem { title: "Close Other Tabs"; enabled: root.info.tabs.length > 1; activated => { root.tab-close-others(i); } }
-                        MenuItem { title: "Duplicate Tab"; activated => { root.tab-duplicate(i); } }
+                for t[i] in root.info.tabs: Tab {
+                    tab: t;
+                    current: i == root.info.active-tab;
+                    pane-active: root.active;
+                    closable: root.info.tabs.length > 1;
+                    select => { root.focus-pane(); root.tab-select(i); }
+                    close => { root.tab-close(i); }
+                    context-menu(mx, my) => {
+                        root.target-tab-idx = i;
+                        tab-cm.show({
+                            x: self.absolute-position.x - tab-cm.absolute-position.x + mx,
+                            y: self.absolute-position.y - tab-cm.absolute-position.y + my,
+                        });
                     }
                 }
                 Rectangle {
@@ -346,14 +381,24 @@ export component Pane inherits Rectangle {
                         background: plus.has-hover ? Theme.hover : transparent;
                         Glyph { name: "plus"; width: 14px; height: 14px; tint: plus.has-hover ? Theme.text : Theme.text-faint; }
                         plus := TouchArea {
+                            width: parent.width;
+                            height: parent.height;
                             mouse-cursor: pointer;
                             clicked => { root.focus-pane(); root.tab-new(); }
+                            pointer-event(e) => {
+                                if e.kind == PointerEventKind.down && e.button == PointerEventButton.left {
+                                    root.focus-pane();
+                                    root.tab-new();
+                                }
+                            }
                         }
                     }
                 }
                 Rectangle {
                     horizontal-stretch: 1;
                     TouchArea {
+                        width: parent.width;
+                        height: parent.height;
                         double-clicked => { root.focus-pane(); root.tab-new(); }
                     }
                 }
