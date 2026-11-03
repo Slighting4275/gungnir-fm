@@ -17,8 +17,8 @@ component Tab inherits Rectangle {
     callback context-menu(length, length);
     height: 34px;
     horizontal-stretch: 1;
-    max-width: 260px;
-    min-width: 110px;
+    max-width: 500px;
+    min-width: 130px;
     border-top-left-radius: Theme.radius-small;
     border-top-right-radius: Theme.radius-small;
     background: current ? Theme.surface : touch.has-hover ? Theme.hover : transparent;
@@ -89,7 +89,7 @@ component Tab inherits Rectangle {
             }
         }
         title := Text {
-            text: root.tab.title;
+            text: root.tab.location == "" || root.tab.location == "/" || root.tab.location == root.tab.title || root.tab.location == "trash:///" || root.tab.location == "recent:///" ? root.tab.title : (root.tab.title + " (" + root.tab.location + ")");
             color: root.current ? Theme.text : Theme.text-dim;
             font-size: Theme.font-size;
             font-weight: root.current ? 600 : 400;
@@ -119,11 +119,6 @@ component Tab inherits Rectangle {
                     height: parent.height;
                     mouse-cursor: pointer;
                     clicked => { root.close(); }
-                    pointer-event(e) => {
-                        if e.kind == PointerEventKind.down && e.button == PointerEventButton.left {
-                            root.close();
-                        }
-                    }
                 }
             }
         }
@@ -253,7 +248,7 @@ export component Pane inherits Rectangle {
     tab-cm := ContextMenuArea {
         Menu {
             MenuItem { title: "New Tab (Ctrl+T)"; activated => { root.focus-pane(); root.tab-new(); } }
-            MenuItem { title: "Close Tab (Ctrl+W)"; enabled: root.info.tabs.length > 1; activated => { root.tab-close(root.target-tab-idx); } }
+            MenuItem { title: "Close Tab (Ctrl+W)"; activated => { root.tab-close(root.target-tab-idx); } }
             MenuItem { title: "Close Other Tabs"; enabled: root.info.tabs.length > 1; activated => { root.tab-close-others(root.target-tab-idx); } }
             MenuItem { title: "Duplicate Tab"; activated => { root.tab-duplicate(root.target-tab-idx); } }
         }
@@ -360,7 +355,7 @@ export component Pane inherits Rectangle {
                     tab: t;
                     current: i == root.info.active-tab;
                     pane-active: root.active;
-                    closable: root.info.tabs.length > 1;
+                    closable: true;
                     select => { root.focus-pane(); root.tab-select(i); }
                     close => { root.tab-close(i); }
                     context-menu(mx, my) => {
@@ -385,12 +380,6 @@ export component Pane inherits Rectangle {
                             height: parent.height;
                             mouse-cursor: pointer;
                             clicked => { root.focus-pane(); root.tab-new(); }
-                            pointer-event(e) => {
-                                if e.kind == PointerEventKind.down && e.button == PointerEventButton.left {
-                                    root.focus-pane();
-                                    root.tab-new();
-                                }
-                            }
                         }
                     }
                 }
@@ -1015,6 +1004,12 @@ export component Pane inherits Rectangle {
                                                 y: self.absolute-position.y - cm.absolute-position.y + self.mouse-y,
                                             });
                                         }
+                                    } else if e.button == PointerEventButton.middle {
+                                        root.focus-pane();
+                                        if f.is-dir {
+                                            root.row-clicked(idx, false, false);
+                                            root.command("open-in-tab");
+                                        }
                                     }
                                 }
                             }
@@ -1206,6 +1201,12 @@ export component Pane inherits Rectangle {
                                                             x: self.absolute-position.x - cm.absolute-position.x + self.mouse-x,
                                                             y: self.absolute-position.y - cm.absolute-position.y + self.mouse-y,
                                                         });
+                                                    }
+                                                } else if e.button == PointerEventButton.middle {
+                                                    root.focus-pane();
+                                                    if cell.f.is-dir {
+                                                        root.row-clicked(cell.idx, false, false);
+                                                        root.command("open-in-tab");
                                                     }
                                                 }
                                             }

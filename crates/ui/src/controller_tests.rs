@@ -361,6 +361,10 @@ fn tab_creation_cycling_and_closing() {
     h.send(Command::TabClose(1, 0));
     h.until(Duration::from_secs(5), |u| matches!(u, Update::Flags(f) if !f.dual_pane));
 
+    // 7. Close the last remaining tab in the main pane (pane 0) -> Nemo closes the window
+    h.send(Command::TabClose(0, 0));
+    h.until(Duration::from_secs(5), |u| matches!(u, Update::Quit));
+
     let _ = std::fs::remove_dir_all(&d);
 }
 

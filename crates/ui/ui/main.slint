@@ -23,7 +23,11 @@ component Separator inherits Rectangle {
 }
 
 export component AppWindow inherits Window {
-    title: root.active-info.tabs.length > 0 && root.active-info.active-tab < root.active-info.tabs.length ? (root.active-info.tabs[root.active-info.active-tab].title + " - Gungnir FM") : "Gungnir FM";
+    title: root.active-info.tabs.length > 0 && root.active-info.active-tab < root.active-info.tabs.length ? (
+        root.active-info.tabs[root.active-info.active-tab].location != "" && root.active-info.tabs[root.active-info.active-tab].location != "/" && root.active-info.tabs[root.active-info.active-tab].location != root.active-info.tabs[root.active-info.active-tab].title && root.active-info.tabs[root.active-info.active-tab].location != "trash:///" && root.active-info.tabs[root.active-info.active-tab].location != "recent:///" ?
+            (root.active-info.tabs[root.active-info.active-tab].title + " (" + root.active-info.tabs[root.active-info.active-tab].location + ") - Gungnir FM") :
+            (root.active-info.tabs[root.active-info.active-tab].title + " - Gungnir FM")
+    ) : (root.active-info.location != "" ? (root.active-info.location + " - Gungnir FM") : "Gungnir FM");
     icon: @image-url("../assets/gungnir-fm.svg");
     preferred-width: 1320px;
     preferred-height: 820px;
@@ -470,7 +474,7 @@ export component AppWindow inherits Window {
             if e.text == Key.End { root.move-cursor(p, 1000000000, e.modifiers.shift); return accept; }
             if e.text == " " { root.command("toggle-select"); return accept; }
             // Clipboard keys live here, not in the MenuBar, so text fields keep their own.
-            if e.modifiers.control && !e.modifiers.shift && (e.text == "l" || e.text == "L") { root.focus-path-bar(); return accept; }
+            if e.modifiers.control && !e.modifiers.shift && (e.text == "l" || e.text == "L" || e.text == "\u{000c}") { root.focus-path-bar(); return accept; }
             if e.modifiers.control && !e.modifiers.shift && (e.text == "d" || e.text == "D") { root.command("bookmark"); return accept; }
             if e.modifiers.control && e.modifiers.shift && (e.text == "c" || e.text == "C") { root.command("copy-path"); return accept; }
             if e.modifiers.control && !e.modifiers.shift && (e.text == "c" || e.text == "C") { root.command("copy"); return accept; }

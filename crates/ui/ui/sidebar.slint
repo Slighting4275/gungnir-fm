@@ -43,6 +43,7 @@ component SideItem inherits Rectangle {
     in property <string> trailing;
     in property <color> dot: transparent;
     callback clicked;
+    callback middle-clicked;
     callback context-menu(length, length);
     height: 28px;
     border-radius: Theme.radius-small;
@@ -80,6 +81,9 @@ component SideItem inherits Rectangle {
         mouse-cursor: pointer;
         clicked => { root.clicked(); }
         pointer-event(e) => {
+            if e.kind == PointerEventKind.down && e.button == PointerEventButton.middle {
+                root.middle-clicked();
+            }
             if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
                 root.context-menu(self.mouse-x, self.mouse-y);
             }
@@ -90,6 +94,7 @@ component SideItem inherits Rectangle {
 component DeviceRow inherits Rectangle {
     in property <DeviceItem> item;
     callback open;
+    callback middle-clicked;
     callback eject;
     height: 28px;
     border-radius: Theme.radius-small;
@@ -97,6 +102,11 @@ component DeviceRow inherits Rectangle {
     touch := TouchArea {
         mouse-cursor: pointer;
         clicked => { root.open(); }
+        pointer-event(e) => {
+            if e.kind == PointerEventKind.down && e.button == PointerEventButton.middle {
+                root.middle-clicked();
+            }
+        }
     }
     HorizontalLayout {
         padding-left: 8px;
@@ -258,6 +268,7 @@ export component Sidebar inherits Rectangle {
                     glyph: root.place-glyph(p.icon);
                     active: p.active;
                     clicked => { root.open(p.uri); }
+                    middle-clicked => { root.open-tab(p.uri); }
                     context-menu(mx, my) => {
                         root.target-uri = p.uri;
                         root.target-is-trash = p.uri == "trash:///";
@@ -273,6 +284,7 @@ export component Sidebar inherits Rectangle {
                 if root.devices-open && root.devices.length > 0: VerticalLayout { spacing: 1px; for d in root.devices: DeviceRow {
                     item: d;
                     open => { root.device-open(d.object); }
+                    middle-clicked => { root.open-tab(d.uri); }
                     eject => { root.device-eject(d.object); }
                 } }
                 SectionHeader { text: "NETWORK"; open <=> root.network-open; }
@@ -281,6 +293,7 @@ export component Sidebar inherits Rectangle {
                     glyph: root.place-glyph(n.icon);
                     active: n.active;
                     clicked => { root.open(n.uri); }
+                    middle-clicked => { root.open-tab(n.uri); }
                 } }
                 // Hidden entirely when Gungnir is off (empty label).
                 if root.gungnir-label != "": SectionHeader { text: root.gungnir-label; tint: Theme.gold.darker(10%); open <=> root.gungnir-open; }
@@ -292,6 +305,7 @@ export component Sidebar inherits Rectangle {
                     trailing: m.status-text;
                     dot: Theme.mount-color(m.status);
                     clicked => { root.open(m.uri); }
+                    middle-clicked => { root.open-tab(m.uri); }
                 } }
                 Rectangle { vertical-stretch: 1; }
             }
@@ -314,6 +328,11 @@ export component Sidebar inherits Rectangle {
                     mouse-cursor: pointer;
                     clicked => { root.open(t.uri); }
                     double-clicked => { root.toggle-tree(i); }
+                    pointer-event(e) => {
+                        if e.kind == PointerEventKind.down && e.button == PointerEventButton.middle {
+                            root.open-tab(t.uri);
+                        }
+                    }
                 }
                 HorizontalLayout {
                     padding-left: 4px + t.depth * 14px;

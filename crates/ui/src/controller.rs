@@ -3865,11 +3865,18 @@ impl Controller {
                 self.push_places();
                 self.push_status();
                 self.trigger_save_session();
+            } else if self.dual {
+                self.panes.swap(0, 1);
+                self.dual = false;
+                self.active_pane = 0;
+                self.push_pane(0);
+                self.push_flags();
+                self.push_places();
+                self.push_status();
+                self.trigger_save_session();
             } else {
-                let home = self.cfg.home.clone();
-                if self.panes[0].tab().location != home {
-                    self.navigate_to(0, home);
-                }
+                self.trigger_save_session();
+                self.ui.send(Update::Quit);
             }
             return;
         }
