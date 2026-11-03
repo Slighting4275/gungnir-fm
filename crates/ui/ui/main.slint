@@ -581,17 +581,7 @@ export component AppWindow inherits Window {
                     ToolButton { y: (parent.height - self.height) / 2; glyph: "details"; tooltip: "List View (Ctrl+2)"; checked: root.view-mode == 1; clicked => { root.view-mode = 1; root.view-mode-changed(1); } }
                     ToolButton { y: (parent.height - self.height) / 2; glyph: "list"; tooltip: "Compact View (Ctrl+3)"; checked: root.view-mode == 0; clicked => { root.view-mode = 0; root.view-mode-changed(0); } }
                     Separator { y: (parent.height - self.height) / 2; }
-                    ZoomControl {
-                        y: (parent.height - self.height) / 2;
-                        value: root.zoom-level;
-                        changed(v) => {
-                            root.zoom-level = v;
-                            root.zoom-changed(v);
-                        }
-                    }
-                    Separator { y: (parent.height - self.height) / 2; }
                     ToolButton { y: (parent.height - self.height) / 2; glyph: "split"; tooltip: "Open an extra folder view side-by-side (F3)"; checked: root.dual-pane; clicked => { root.dual-pane = !root.dual-pane; root.command("toggle-dual"); } }
-                    ToolButton { y: (parent.height - self.height) / 2; glyph: "sidebar"; tooltip: "Show/Hide Sidebar (F9)"; checked: root.sidebar-visible; clicked => { root.sidebar-visible = !root.sidebar-visible; root.command("toggle-sidebar"); } }
                     Separator { y: (parent.height - self.height) / 2; }
                     ThemeToggle {
                         y: (parent.height - self.height) / 2;
@@ -788,7 +778,22 @@ export component AppWindow inherits Window {
                 info: root.status;
                 active-transfers: root.active-transfers;
                 drawer-open: root.transfers-open;
+                sidebar-mode: root.sidebar-mode;
+                sidebar-visible: root.sidebar-visible;
+                zoom-level: root.zoom-level;
                 toggle-drawer => { root.transfers-open = !root.transfers-open; }
+                sidebar-mode-changed(m) => {
+                    root.sidebar-mode = m;
+                    root.sidebar-mode-changed(m);
+                }
+                toggle-sidebar => {
+                    root.sidebar-visible = !root.sidebar-visible;
+                    root.command("toggle-sidebar");
+                }
+                zoom-changed(z) => {
+                    root.zoom-level = z;
+                    root.zoom-changed(z);
+                }
             }
         }
 

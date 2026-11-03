@@ -3,7 +3,7 @@
 
 import { Theme } from "theme.slint";
 import { StatusInfo, TransferRow } from "types.slint";
-import { Badge, Bar, Glyph, ToolButton } from "widgets.slint";
+import { Badge, Bar, Glyph, ToolButton, ZoomControl } from "widgets.slint";
 
 export component StatusBar inherits Rectangle {
     in property <StatusInfo> info: {
@@ -17,9 +17,15 @@ export component StatusBar inherits Rectangle {
     };
     in property <int> active-transfers: 2;
     in property <bool> drawer-open: false;
+    in-out property <int> sidebar-mode: 0;
+    in-out property <bool> sidebar-visible: true;
+    in-out property <float> zoom-level: 1.0;
     callback toggle-drawer();
+    callback sidebar-mode-changed(int);
+    callback toggle-sidebar();
+    callback zoom-changed(float);
 
-    height: 28px;
+    height: 30px;
     background: Theme.base;
     Rectangle {
         y: 0;
@@ -27,9 +33,56 @@ export component StatusBar inherits Rectangle {
         background: Theme.border;
     }
     HorizontalLayout {
-        padding-left: 12px;
+        padding-left: 6px;
         padding-right: 8px;
-        spacing: 14px;
+        spacing: 6px;
+
+        // Nemo sidebar view toggles (Places / Treeview / Hide)
+        ToolButton {
+            y: (parent.height - self.height) / 2;
+            height: 22px;
+            glyph: "places";
+            tooltip: "Show Places";
+            checked: root.sidebar-visible && root.sidebar-mode == 0;
+            clicked => {
+                if !root.sidebar-visible { root.toggle-sidebar(); }
+                root.sidebar-mode = 0;
+                root.sidebar-mode-changed(0);
+            }
+        }
+        ToolButton {
+            y: (parent.height - self.height) / 2;
+            height: 22px;
+            glyph: "tree";
+            tooltip: "Show Treeview";
+            checked: root.sidebar-visible && root.sidebar-mode == 1;
+            clicked => {
+                if !root.sidebar-visible { root.toggle-sidebar(); }
+                root.sidebar-mode = 1;
+                root.sidebar-mode-changed(1);
+            }
+        }
+        Rectangle {
+            width: 1px;
+            height: 14px;
+            y: (parent.height - self.height) / 2;
+            background: Theme.divider;
+        }
+        ToolButton {
+            y: (parent.height - self.height) / 2;
+            height: 22px;
+            glyph: "sidebar";
+            tooltip: root.sidebar-visible ? "Hide the Sidebar (F9)" : "Show the Sidebar (F9)";
+            checked: root.sidebar-visible;
+            clicked => { root.toggle-sidebar(); }
+        }
+        Rectangle {
+            width: 1px;
+            height: 14px;
+            y: (parent.height - self.height) / 2;
+            background: Theme.divider;
+        }
+        Rectangle { width: 4px; }
         Text {
             text: root.info.items;
             color: Theme.text-dim;
@@ -70,6 +123,20 @@ export component StatusBar inherits Rectangle {
                 label: root.active-transfers > 0 ? root.active-transfers + " active" : "Transfers";
                 checked: root.drawer-open;
                 clicked => { root.toggle-drawer(); }
+            }
+        }
+        Rectangle {
+            width: 1px;
+            height: 14px;
+            y: (parent.height - self.height) / 2;
+            background: Theme.divider;
+        }
+        ZoomControl {
+            y: (parent.height - self.height) / 2;
+            value: root.zoom-level;
+            changed(v) => {
+                root.zoom-level = v;
+                root.zoom-changed(v);
             }
         }
     }

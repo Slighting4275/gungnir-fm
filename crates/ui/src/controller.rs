@@ -852,6 +852,7 @@ impl Controller {
 
         let window_state = cfg.initial_session.as_ref().map(|s| s.window.clone()).unwrap_or_default();
         let view_mode = cfg.initial_session.as_ref().map_or(1, |s| s.view_mode.clamp(0, 2));
+        let sidebar_mode = cfg.initial_session.as_ref().map_or(0, |s| s.sidebar_mode.clamp(0, 1));
         Self {
             registry,
             ui,
@@ -861,7 +862,7 @@ impl Controller {
             active_pane,
             dual,
             sidebar,
-            sidebar_mode: 0,
+            sidebar_mode,
             show_hidden,
             view_mode,
             window_state,
@@ -943,6 +944,9 @@ impl Controller {
             self.session_saver = Some(saver);
         }
         self.push_flags();
+        if self.sidebar && self.sidebar_mode == 1 {
+            self.rebuild_tree();
+        }
         self.ui.send(Update::Mounts { items: Vec::new(), label: self.cfg.gungnir_label.clone() });
         for p in 0..2 {
             let loc = self.panes[p].tab().location.clone();
@@ -1029,6 +1033,7 @@ impl Controller {
             active_pane: i32::try_from(self.active_pane).unwrap_or(0),
             dual_pane: self.dual,
             sidebar_visible: self.sidebar,
+            sidebar_mode: self.sidebar_mode,
             show_hidden: self.show_hidden,
             view_mode: self.view_mode,
             zoom_level: self.zoom_level,
@@ -1206,6 +1211,7 @@ impl Controller {
             secondary_pane_tabs: secondary,
             show_hidden: self.show_hidden,
             sidebar_visible: self.sidebar,
+            sidebar_mode: self.sidebar_mode,
             zoom_level: self.zoom_level,
             dark_mode: self.dark_mode,
             view_mode: self.view_mode,
@@ -3979,6 +3985,7 @@ impl Controller {
                     // The history stacks were updated above; load without recording again.
                     self.load(pane, target, false);
                     self.push_places();
+                    self.trigger_save_session();
                 } else {
                     let prev = self.panes[pane].tab().location.clone();
                     self.navigate_to(pane, target);
@@ -4133,6 +4140,8 @@ impl Controller {
                 if m == 1 {
                     self.rebuild_tree();
                 }
+                self.push_flags();
+                self.trigger_save_session();
             }
             Command::TransferAction { id, action } => self.transfer_action(id, &action),
             Command::DialogAccept(text) => self.dialog_accept(text),

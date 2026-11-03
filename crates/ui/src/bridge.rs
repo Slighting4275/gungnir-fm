@@ -94,6 +94,7 @@ pub struct Flags {
     pub active_pane: i32,
     pub dual_pane: bool,
     pub sidebar_visible: bool,
+    pub sidebar_mode: i32,
     pub show_hidden: bool,
     pub view_mode: i32,
     pub zoom_level: f32,
@@ -326,6 +327,7 @@ pub fn apply(ui: &AppWindow, u: Update) {
             ui.set_active_pane(f.active_pane);
             ui.set_dual_pane(f.dual_pane);
             ui.set_sidebar_visible(f.sidebar_visible);
+            ui.set_sidebar_mode(f.sidebar_mode);
             ui.set_show_hidden(f.show_hidden);
             ui.set_view_mode(f.view_mode);
             ui.set_zoom_level(f.zoom_level);

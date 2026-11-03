@@ -100,6 +100,8 @@ pub struct SessionState {
     pub show_hidden: bool,
     #[serde(default = "default_true")]
     pub sidebar_visible: bool,
+    #[serde(default)]
+    pub sidebar_mode: i32,
     #[serde(default = "default_zoom")]
     pub zoom_level: f32,
     #[serde(default = "default_true")]
@@ -124,6 +126,7 @@ pub fn startup_state(
         secondary_pane_tabs: None,
         show_hidden: false,
         sidebar_visible: true,
+        sidebar_mode: 0,
         zoom_level: 1.0,
         dark_mode: true,
         view_mode: default_view_mode(),
@@ -314,6 +317,7 @@ mod tests {
             secondary_pane_tabs: Some(PaneTabsState::new(vec!["/home/user/backup_01".into()], 0)),
             show_hidden: true,
             sidebar_visible: false,
+            sidebar_mode: 0,
             zoom_level: 1.5,
             dark_mode: false,
             view_mode: 2,
@@ -364,6 +368,7 @@ mod tests {
             secondary_pane_tabs: None,
             show_hidden: false,
             sidebar_visible: true,
+            sidebar_mode: 0,
             zoom_level: 1.0,
             dark_mode: true,
             view_mode: 1,
@@ -524,6 +529,7 @@ mod tests {
             secondary_pane_tabs: None,
             show_hidden: false,
             sidebar_visible: true,
+            sidebar_mode: 0,
             zoom_level: 1.0,
             dark_mode: true,
             view_mode: 1,
