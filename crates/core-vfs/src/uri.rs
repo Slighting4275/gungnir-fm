@@ -261,6 +261,12 @@ impl VfsUri {
     }
 }
 
+impl Default for VfsUri {
+    fn default() -> Self {
+        Self { scheme: Scheme::File, authority: String::new(), path: "/".to_owned() }
+    }
+}
+
 impl fmt::Display for VfsUri {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.display())

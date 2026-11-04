@@ -370,11 +370,22 @@ struct Pane {
 
 impl Pane {
     fn tab(&self) -> &Tab {
-        &self.tabs[self.active]
+        if self.tabs.is_empty() {
+            static FALLBACK_TAB: std::sync::OnceLock<Tab> = std::sync::OnceLock::new();
+            return FALLBACK_TAB.get_or_init(|| Tab::new(0, VfsUri::default()));
+        }
+        let idx = self.active.min(self.tabs.len().saturating_sub(1));
+        &self.tabs[idx]
     }
 
     fn tab_mut(&mut self) -> &mut Tab {
-        &mut self.tabs[self.active]
+        if self.tabs.is_empty() {
+            self.tabs.push(Tab::new(0, VfsUri::default()));
+            self.active = 0;
+        }
+        let idx = self.active.min(self.tabs.len().saturating_sub(1));
+        self.active = idx;
+        &mut self.tabs[idx]
     }
 }
 
@@ -733,6 +744,7 @@ pub struct Controller {
     updating: bool,
     package_format: crate::updater::PackageFormat,
     pub dark_mode: bool,
+    quitting: bool,
 }
 
 /// Breadcrumbs as Nemo shows them: a folder below `home` starts at a "Home" crumb, the
@@ -902,6 +914,7 @@ impl Controller {
             updating: false,
             package_format: crate::updater::detect_package_format(),
             dark_mode,
+            quitting: false,
         }
     }
 
@@ -909,8 +922,12 @@ impl Controller {
     pub async fn run(mut self, mut rx: mpsc::Receiver<Msg>) {
         self.start();
         while let Some(m) = rx.recv().await {
+            if self.quitting {
+                break;
+            }
             match m {
                 Msg::Ui(Command::Quit) => {
+                    self.quitting = true;
                     self.trigger_save_session();
                     if let Some(ref saver) = self.session_saver
                         && let Err(e) = saver.flush().await
@@ -922,6 +939,9 @@ impl Controller {
                 }
                 Msg::Ui(c) => self.command(c),
                 Msg::Ev(e) => self.event(e),
+            }
+            if self.quitting {
+                break;
             }
         }
     }
@@ -3914,7 +3934,13 @@ impl Controller {
                 if let Some(w) = t.watch {
                     w.abort();
                 }
+                let home = self.cfg.home.clone();
+                let id = self.next_tab;
+                self.next_tab += 1;
+                self.panes[0].tabs.push(Tab::new(id, home));
+                self.panes[0].active = 0;
                 self.trigger_save_session();
+                self.quitting = true;
                 self.ui.send(Update::Quit);
             }
             return;
@@ -4089,6 +4115,8 @@ impl Controller {
             Command::TabCycle { pane, delta } => self.cycle_tab(pane, delta),
             Command::CustomAction { pane, id } => self.run_custom_action(pane, &id),
             Command::Quit => {
+                self.quitting = true;
+                self.trigger_save_session();
                 if let Some(ref saver) = self.session_saver {
                     let saver = saver.clone();
                     tokio::spawn(async move {

@@ -426,67 +426,81 @@ pub fn generate_thumbnail(source_path: &Path, uri: &str, mtime_secs: i64, is_vid
 }
 
 fn generate_image_thumbnail(source: &Path, target: &Path) -> Result<(), String> {
-    // Primary path: fast in-process image crate
-    match image::open(source) {
-        Ok(img) => {
-            let thumb = img.thumbnail(512, 512);
-            thumb
-                .save_with_format(target, image::ImageFormat::Png)
-                .map_err(|e| format!("failed to save thumbnail {}: {e}", target.display()))
+    let target_str = target.to_str().unwrap_or("");
+    let target_png = format!("png:{target_str}");
+
+    // Inspect image dimensions first without decoding full pixel buffer into memory.
+    let is_huge = if let Ok(reader) = image::ImageReader::open(source) {
+        match reader.into_dimensions() {
+            Ok((w, h)) => w > 4096 || h > 4096 || (w as u64 * h as u64) > 16_000_000,
+            Err(_) => false,
         }
-        Err(err) => {
-            let target_str = target.to_str().unwrap_or("");
-            let target_png = format!("png:{target_str}");
-            // Fallback to ImageMagick if installed
-            if let Ok(status) = Command::new("magick")
-                .arg(source)
-                .args(["-resize", "512x512", &target_png])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                && status.success()
-                && target.exists()
-            {
-                return Ok(());
-            }
-            if let Ok(status) = Command::new("convert")
-                .arg(source)
-                .args(["-resize", "512x512", &target_png])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                && status.success()
-                && target.exists()
-            {
-                return Ok(());
-            }
+    } else {
+        false
+    };
 
-            // Fallback to ffmpeg for specialized/video-like formats
-            if let Ok(status) = Command::new("ffmpeg")
-                .args(["-nostdin", "-y", "-i"])
-                .arg(source)
-                .args([
-                    "-vf",
-                    "scale=512:512:force_original_aspect_ratio=decrease",
-                    "-frames:v",
-                    "1",
-                    "-update",
-                    "1",
-                    target_str,
-                ])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                && status.success()
-                && target.is_file()
-                && target.metadata().map(|m| m.len() > 0).unwrap_or(false)
-            {
-                return Ok(());
+    if !is_huge {
+        let mut limits = image::Limits::default();
+        limits.max_alloc = Some(64 * 1024 * 1024);
+        if let Ok(mut reader) = image::ImageReader::open(source) {
+            reader.limits(limits);
+            if let Ok(img) = reader.decode() {
+                let thumb = img.thumbnail(512, 512);
+                if thumb.save_with_format(target, image::ImageFormat::Png).is_ok() {
+                    return Ok(());
+                }
             }
-
-            Err(format!("image thumbnailing failed: {err}"))
         }
     }
+
+    // Fallback to ImageMagick if installed (efficient streaming and downsampling)
+    if let Ok(status) = Command::new("magick")
+        .arg(source)
+        .args(["-thumbnail", "512x512", &target_png])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        && status.success()
+        && target.exists()
+    {
+        return Ok(());
+    }
+    if let Ok(status) = Command::new("convert")
+        .arg(source)
+        .args(["-thumbnail", "512x512", &target_png])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        && status.success()
+        && target.exists()
+    {
+        return Ok(());
+    }
+
+    // Fallback to ffmpeg for specialized/video-like formats
+    if let Ok(status) = Command::new("ffmpeg")
+        .args(["-nostdin", "-y", "-i"])
+        .arg(source)
+        .args([
+            "-vf",
+            "scale=512:512:force_original_aspect_ratio=decrease",
+            "-frames:v",
+            "1",
+            "-update",
+            "1",
+            target_str,
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        && status.success()
+        && target.is_file()
+        && target.metadata().map(|m| m.len() > 0).unwrap_or(false)
+    {
+        return Ok(());
+    }
+
+    Err(format!("image thumbnailing failed for {}", source.display()))
 }
 
 fn generate_raw_thumbnail(source: &Path, target: &Path) -> Result<(), String> {

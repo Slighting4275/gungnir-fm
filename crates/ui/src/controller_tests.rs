@@ -2415,3 +2415,44 @@ fn test_restored_session_tabs_lazy_load_on_select() {
 
     let _ = std::fs::remove_dir_all(tmp);
 }
+
+#[test]
+fn test_close_last_tab_single_pane_clean_quit() {
+    let tmp = temp_dir("close_last_tab");
+    let h = start(tmp.to_str().unwrap(), tmp.to_str().unwrap(), MockConfig::instant());
+
+    h.until(Duration::from_secs(5), |u| matches!(u, Update::Rows { pane: 0, .. }));
+
+    // Close the single tab in pane 0
+    h.send(Command::TabClose(0, 0));
+
+    // Send racing background events that would previously trigger bounds panic
+    h.send(Command::WindowChanged(crate::session::WindowState::default()));
+    h.send(Command::Nav { pane: 0, action: "reload".into() });
+
+    // Expect clean quit dispatch
+    h.until(Duration::from_secs(5), |u| matches!(u, Update::Quit));
+
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[test]
+fn test_tab_bounds_safety() {
+    let tmp = temp_dir("tab_bounds_safe");
+    let h = start(tmp.to_str().unwrap(), tmp.to_str().unwrap(), MockConfig::instant());
+
+    h.until(Duration::from_secs(5), |u| matches!(u, Update::Rows { pane: 0, .. }));
+
+    // Out of bounds selection, cycle, and close must not panic
+    h.send(Command::TabSelect(0, 9999));
+    h.send(Command::TabCycle { pane: 0, delta: 42 });
+    h.send(Command::TabClose(0, 8888));
+    h.send(Command::TabDuplicate(0, 7777));
+    h.send(Command::TabCloseOthers(0, 6666));
+
+    // Controller remains responsive and functional
+    h.send(Command::Nav { pane: 0, action: "reload".into() });
+    h.until(Duration::from_secs(5), |u| matches!(u, Update::Rows { pane: 0, .. }));
+
+    let _ = std::fs::remove_dir_all(tmp);
+}
