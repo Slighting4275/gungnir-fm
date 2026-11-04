@@ -45,13 +45,6 @@ component CrumbButton inherits Rectangle {
             font-weight: root.last ? 600 : 400;
             vertical-alignment: center;
         }
-        Glyph {
-            y: (parent.height - self.height) / 2;
-            name: "chevron-right";
-            tint: root.last ? Theme.accent : Theme.text-faint;
-            width: 10px;
-            height: 10px;
-        }
     }
     touch := TouchArea {
         mouse-cursor: pointer;

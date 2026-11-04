@@ -3821,8 +3821,13 @@ impl Controller {
         self.next_tab += 1;
         let mut tab = Tab::new(id, loc.clone());
         tab.sort = self.panes[pane].tab().sort;
-        self.panes[pane].tabs.push(tab);
-        self.panes[pane].active = self.panes[pane].tabs.len() - 1;
+        let insert_idx = if self.panes[pane].tabs.is_empty() {
+            0
+        } else {
+            (self.panes[pane].active + 1).min(self.panes[pane].tabs.len())
+        };
+        self.panes[pane].tabs.insert(insert_idx, tab);
+        self.panes[pane].active = insert_idx;
         self.focus_pane(pane);
         self.load(pane, loc, false);
         self.trigger_save_session();
