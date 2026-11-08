@@ -407,9 +407,11 @@ export component AppWindow inherits Window {
             if e.text == Key.F4 { root.command("toggle-terminal"); return accept; }
             if e.text == Key.F5 { root.nav(p, "refresh"); return accept; }
             if e.text == Key.F9 { root.sidebar-visible = !root.sidebar-visible; root.command("toggle-sidebar"); return accept; }
-            if e.modifiers.control && (e.text == "r" || e.text == "R" || e.text == "\u{0012}") { root.nav(p, "refresh"); return accept; }
-            if e.modifiers.control && (e.text == "h" || e.text == "H" || e.text == "\u{0008}") { root.command("toggle-hidden"); return accept; }
-            if e.modifiers.control && !e.modifiers.shift && (e.text == "f" || e.text == "F" || e.text == "\u{0006}") { root.focus-filter(); return accept; }
+            // Slint sends the letter with a control modifier, not an ASCII Ctrl
+            // character. Those character codes overlap Key.Control/Alt/etc.
+            if e.modifiers.control && (e.text == "r" || e.text == "R") { root.nav(p, "refresh"); return accept; }
+            if e.modifiers.control && (e.text == "h" || e.text == "H") { root.command("toggle-hidden"); return accept; }
+            if e.modifiers.control && !e.modifiers.shift && (e.text == "f" || e.text == "F") { root.focus-filter(); return accept; }
             if e.modifiers.control && !e.modifiers.shift && e.text == "1" { root.view-mode = 2; root.view-mode-changed(2); return accept; }
             if e.modifiers.control && !e.modifiers.shift && e.text == "2" { root.view-mode = 1; root.view-mode-changed(1); return accept; }
             if e.modifiers.control && !e.modifiers.shift && e.text == "3" { root.view-mode = 0; root.view-mode-changed(0); return accept; }
@@ -431,15 +433,15 @@ export component AppWindow inherits Window {
                 root.tab-cycle(p, 1);
                 return accept;
             }
-            if e.modifiers.control && (e.text == "t" || e.text == "T" || e.text == "\u{0014}") {
+            if e.modifiers.control && (e.text == "t" || e.text == "T") {
                 root.tab-new(p);
                 return accept;
             }
-            if e.modifiers.control && (e.text == "w" || e.text == "W" || e.text == "\u{0017}") {
+            if e.modifiers.control && (e.text == "w" || e.text == "W") {
                 root.tab-close(p, root.active-info.active-tab);
                 return accept;
             }
-            if e.modifiers.control && (e.text == "q" || e.text == "Q" || e.text == "\u{0011}") {
+            if e.modifiers.control && (e.text == "q" || e.text == "Q") {
                 root.command("quit");
                 return accept;
             }
@@ -474,7 +476,7 @@ export component AppWindow inherits Window {
             if e.text == Key.End { root.move-cursor(p, 1000000000, e.modifiers.shift); return accept; }
             if e.text == " " { root.command("toggle-select"); return accept; }
             // Clipboard keys live here, not in the MenuBar, so text fields keep their own.
-            if e.modifiers.control && !e.modifiers.shift && (e.text == "l" || e.text == "L" || e.text == "\u{000c}") { root.focus-path-bar(); return accept; }
+            if e.modifiers.control && !e.modifiers.shift && (e.text == "l" || e.text == "L") { root.focus-path-bar(); return accept; }
             if e.modifiers.control && !e.modifiers.shift && (e.text == "d" || e.text == "D") { root.command("bookmark"); return accept; }
             if e.modifiers.control && e.modifiers.shift && (e.text == "c" || e.text == "C") { root.command("copy-path"); return accept; }
             if e.modifiers.control && !e.modifiers.shift && (e.text == "c" || e.text == "C") { root.command("copy"); return accept; }

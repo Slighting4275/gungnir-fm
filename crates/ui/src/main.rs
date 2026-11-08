@@ -28,6 +28,8 @@ mod desktop;
 mod drives;
 mod hash;
 mod init;
+#[cfg(test)]
+mod keyboard_tests;
 mod rename;
 mod rows;
 mod session;
