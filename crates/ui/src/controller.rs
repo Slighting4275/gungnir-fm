@@ -181,6 +181,13 @@ pub enum Event {
         kind: DialogKind,
         result: VfsResult<Vec<(String, String)>>,
     },
+    /// A Quick Preview prepared on the blocking pool.
+    Preview {
+        seq: u64,
+        title: String,
+        detail: String,
+        image_path: Option<PathBuf>,
+    },
     Progress(TransferProgress),
     TransferEnded {
         id: u64,
@@ -506,6 +513,29 @@ fn app_icon_glyph(app: &crate::desktop::App) -> &'static str {
     }
 }
 
+/// Quick Preview's text: the first 12 lines of the first KiB, if that is UTF-8. Opened
+/// non-blocking and read only if it is a regular file (a FIFO would wait for a writer).
+fn text_snippet(path: &std::path::Path) -> Option<String> {
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+    let file = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK).open(path).ok()?;
+    if !file.metadata().ok()?.is_file() {
+        return None;
+    }
+    let mut buf = vec![0u8; 1024];
+    let n = file.take(1024).read(&mut buf).ok()?;
+    let s = std::str::from_utf8(buf.get(..n)?).ok()?;
+    let lines: Vec<&str> = s.lines().take(12).collect();
+    if lines.is_empty() {
+        return None;
+    }
+    let mut out = format!("\n\n---\n{}", lines.join("\n"));
+    if lines.len() == 12 || n == 1024 {
+        out.push_str("\n...");
+    }
+    Some(out)
+}
+
 fn build_open_with_items(
     idx: &crate::desktop::DesktopIndex,
     mime: &str,
@@ -711,6 +741,11 @@ pub struct Controller {
     transfers: Vec<(u64, Transfer)>,
     transfers_dirty: bool,
     dialog: Option<PendingDialog>,
+    /// Number of the latest Quick Preview, to drop a result that arrives too late.
+    preview_seq: u64,
+    /// The Quick Preview being prepared, if any. Not a dialog: nothing is shown yet and
+    /// nothing is held back meanwhile (a slow or stuck thumbnail must not lock the menus).
+    preview_wait: Option<u64>,
     renaming: Option<RenameEdit>,
     rename_history: crate::rename::History,
     rename_busy: bool,
@@ -884,6 +919,8 @@ impl Controller {
             transfers: Vec::new(),
             transfers_dirty: false,
             dialog: None,
+            preview_seq: 0,
+            preview_wait: None,
             renaming: None,
             rename_history: crate::rename::History::default(),
             rename_busy: false,
@@ -3269,49 +3306,50 @@ impl Controller {
                 let is_vid =
                     matches!(cat, core_vfs::format::Category::Video) || crate::thumbnails::is_video_ext(ext.as_deref());
 
-                let thumb_path = if crate::thumbnails::is_previewable(cat, ext.as_deref()) {
-                    crate::thumbnails::lookup_cached(&uri_str, mtime_secs)
-                        .or_else(|| {
-                            local_path.as_ref().and_then(|lp| {
-                                crate::thumbnails::generate_thumbnail(lp, &uri_str, mtime_secs, is_vid).ok()
-                            })
-                        })
-                        .or_else(|| if !is_vid { local_path.clone() } else { None })
-                } else {
-                    None
-                };
-
+                let previewable = crate::thumbnails::is_previewable(cat, ext.as_deref());
+                let wants_text = matches!(cat, core_vfs::format::Category::Code | core_vfs::format::Category::Document);
                 let mut detail = format!(
                     "{} • {} • modified {}",
                     format::type_label(e),
                     format::size(e.size),
                     backends::time::format_local(e.modified)
                 );
+                let title = e.name.clone();
 
-                // For text, code, markup, config and text-document files, append a clean preview snippet
-                if thumb_path.is_none()
-                    && matches!(cat, core_vfs::format::Category::Code | core_vfs::format::Category::Document)
-                    && let Some(ref lp) = local_path
-                    && let Ok(file) = std::fs::File::open(lp)
-                {
-                    use std::io::Read;
-                    let mut buf = vec![0u8; 1024];
-                    if let Ok(n) = file.take(1024).read(&mut buf)
-                        && let Ok(s) = std::str::from_utf8(&buf[..n])
+                // The thumbnail (ffmpeg, ImageMagick, a decode of up to 64 MiB) and the text
+                // snippet are made on the blocking pool: on the controller they held every
+                // other command for as long as they took (0.6 s for a 48 MP image).
+                self.preview_seq += 1;
+                let seq = self.preview_seq;
+                self.preview_wait = Some(seq);
+                let tx = self.tx.clone();
+                tokio::task::spawn_blocking(move || {
+                    let image_path = if previewable {
+                        crate::thumbnails::lookup_cached(&uri_str, mtime_secs)
+                            .or_else(|| {
+                                local_path.as_ref().and_then(|lp| {
+                                    crate::thumbnails::generate_thumbnail(lp, &uri_str, mtime_secs, is_vid).ok()
+                                })
+                            })
+                            .or_else(|| {
+                                if !is_vid {
+                                    local_path.clone().filter(|p| crate::thumbnails::is_regular_file(p))
+                                } else {
+                                    None
+                                }
+                            })
+                    } else {
+                        None
+                    };
+                    // For text, code, markup, config and text-document files, a clean snippet.
+                    if image_path.is_none()
+                        && wants_text
+                        && let Some(snippet) = local_path.as_deref().and_then(text_snippet)
                     {
-                        let preview_lines: Vec<&str> = s.lines().take(12).collect();
-                        if !preview_lines.is_empty() {
-                            detail.push_str("\n\n---\n");
-                            detail.push_str(&preview_lines.join("\n"));
-                            if preview_lines.len() == 12 || n == 1024 {
-                                detail.push_str("\n...");
-                            }
-                        }
+                        detail.push_str(&snippet);
                     }
-                }
-
-                self.dialog = Some(PendingDialog::Info);
-                self.ui.send(Update::Preview { title: e.name.clone(), detail, image_path: thumb_path });
+                    let _ = tx.blocking_send(Msg::Ev(Event::Preview { seq, title, detail, image_path }));
+                });
             }
             "inspect" => {
                 let t = self.panes[p].tab();
@@ -3720,7 +3758,13 @@ impl Controller {
                                 crate::thumbnails::generate_thumbnail(&local_p, &uri_str, mtime_secs, is_vid).ok()
                             })
                         })
-                        .or_else(|| if !is_vid { e.uri.to_local_path() } else { None });
+                        .or_else(|| {
+                            if !is_vid {
+                                e.uri.to_local_path().filter(|p| crate::thumbnails::is_regular_file(p))
+                            } else {
+                                None
+                            }
+                        });
                 }
                 rows = vec![
                     ("Name".to_owned(), e.name.clone()),
@@ -4232,6 +4276,7 @@ impl Controller {
             }
             Command::DialogCancel => {
                 self.dialog = None;
+                self.preview_wait = None;
                 self.ui.send(Update::CloseDialog);
             }
             Command::RenameCommit { pane, index, name } => {
@@ -5362,6 +5407,15 @@ impl Controller {
                 }
                 self.reload_matching(&reload);
                 self.push_places();
+            }
+            Event::Preview { seq, title, detail, image_path } => {
+                // Only the preview still waited for (not cancelled or superseded), and only
+                // over no other dialog the user opened meanwhile.
+                if self.preview_wait == Some(seq) && self.dialog.is_none() {
+                    self.preview_wait = None;
+                    self.dialog = Some(PendingDialog::Info);
+                    self.ui.send(Update::Preview { title, detail, image_path });
+                }
             }
             Event::Info { title, kind, result } => match result {
                 Ok(rows) => self.info_dialog(kind, &title, "", rows),
