@@ -615,7 +615,6 @@ mod tests {
 #[cfg(test)]
 mod removal_tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
     struct Fixture(PathBuf);
     impl Fixture {
@@ -626,9 +625,18 @@ mod removal_tests {
                 .join(format!("{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
             std::fs::create_dir_all(&path).unwrap_or_else(|e| panic!("{e}"));
             let program = path.join("gio-test");
-            std::fs::write(&program, format!("#!/bin/sh\n{body}\n")).unwrap_or_else(|e| panic!("{e}"));
-            std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700))
-                .unwrap_or_else(|e| panic!("{e}"));
+            // The executable is written by a child `install`, never by this process: a
+            // script this process wrote and then ran failed now and then with "Text file
+            // busy", when another test thread forked while the write handle was open.
+            let source = path.join("gio-test.src");
+            std::fs::write(&source, format!("#!/bin/sh\n{body}\n")).unwrap_or_else(|e| panic!("{e}"));
+            let st = std::process::Command::new("install")
+                .args(["-m", "700"])
+                .arg(&source)
+                .arg(&program)
+                .status()
+                .unwrap_or_else(|e| panic!("install: {e}"));
+            assert!(st.success(), "install: {st}");
             Self(program)
         }
     }
@@ -692,14 +700,20 @@ mod removal_tests {
         let program = fixture.0.clone();
         let task = tokio::spawn(async move { remove_with_program(program.as_os_str(), &[remote_uri()], token).await });
         let pid_path = fixture.0.with_file_name("gio-test.pid");
-        tokio::time::timeout(Duration::from_secs(5), async {
-            while !pid_path.exists() {
+        // The whole pid, not just the file: the shell creates it before writing to it,
+        // and an empty pid made the reaped check look at /proc itself.
+        let pid = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Ok(p) = std::fs::read_to_string(&pid_path)
+                    && p.trim().parse::<u32>().is_ok()
+                {
+                    return p;
+                }
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
         })
         .await
         .unwrap_or_else(|e| panic!("{e}"));
-        let pid = std::fs::read_to_string(&pid_path).unwrap_or_else(|e| panic!("{e}"));
         cancel.cancel();
         let result = tokio::time::timeout(Duration::from_secs(5), task)
             .await
@@ -715,7 +729,8 @@ mod removal_tests {
 
     fn gone(fixture: &Fixture) -> bool {
         let pid = std::fs::read_to_string(fixture.0.with_file_name("pid")).unwrap_or_else(|e| panic!("{e}"));
-        !std::path::Path::new("/proc").join(pid.trim()).exists()
+        let pid: u32 = pid.trim().parse().unwrap_or_else(|e| panic!("no whole pid ({pid:?}): {e}"));
+        !std::path::Path::new("/proc").join(pid.to_string()).exists()
     }
 
     fn list(backend: &RemoteVfsBackend, uri: &VfsUri, cancel: CancellationToken) -> VfsResult<Vec<FileEntry>> {
@@ -767,7 +782,8 @@ mod removal_tests {
         let backend = RemoteVfsBackend::sftp().with_gio(&fixture.0, Duration::from_millis(300));
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap_or_else(|e| panic!("{e}"));
         let u = VfsUri::parse("sftp://h/d/x").unwrap_or_else(|e| panic!("{e}"));
-        assert!(matches!(rt.block_on(backend.stat(&u)), Err(VfsError::Timeout)));
+        let r = rt.block_on(backend.stat(&u));
+        assert!(matches!(r, Err(VfsError::Timeout)), "{r:?}");
         assert!(matches!(rt.block_on(backend.create_dir(&u)), Err(VfsError::Timeout)));
         assert!(matches!(rt.block_on(backend.rename(&u, "y")), Err(VfsError::Timeout)));
         assert!(gone(&fixture));

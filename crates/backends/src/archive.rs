@@ -37,6 +37,9 @@ pub enum ArchiveError {
     PathTraversal(String),
     #[error("Empty item list provided for compression")]
     EmptyItemList,
+    /// The archive is encrypted: no password was given (`wrong` false) or a wrong one.
+    #[error("{}", if *wrong { "Wrong password for this archive" } else { "This archive needs its password" })]
+    PasswordRequired { wrong: bool },
 }
 
 // ---- libarchive C FFI --------------------------------------------------------
@@ -618,10 +621,181 @@ pub fn extract_archive(
     password: Option<&str>,
 ) -> Result<ExtractStats, ArchiveError> {
     std::fs::create_dir_all(target_dir)?;
+    let target_dir = std::fs::canonicalize(target_dir)?;
+    // Everything is extracted into a private staging directory inside the destination
+    // and only moved in once complete, never over anything already there. Extracting
+    // straight into the destination replaced files of the same name, and an encrypted
+    // entry with a wrong password replaced them with zeros before failing.
+    let staging = Staging::new(&target_dir)?;
 
     // Use the same validated extraction path for password-protected archives.
-    // Never retry rejected input through a CLI with different safety rules.
-    extract_archive_libarchive(archive_path, target_dir, password)
+    // Never retry rejected input through a CLI with different safety rules: the one
+    // exception is a 7z whose headers are encrypted (names hidden, which is how we make
+    // them), which libarchive cannot read at all. That goes through 7z and is checked by
+    // our own rules before anything arrives.
+    let stats = match extract_archive_libarchive(archive_path, &staging.0, password) {
+        Err(ArchiveError::Libarchive(msg)) if msg.contains("header is encrypted") && is_7z(archive_path) => {
+            let Some(password) = password else {
+                return Err(ArchiveError::PasswordRequired { wrong: false });
+            };
+            extract_7z_into(archive_path, &staging.0, password)?
+        }
+        Err(ArchiveError::Libarchive(msg)) if msg.contains("Passphrase required") => {
+            return Err(ArchiveError::PasswordRequired { wrong: false });
+        }
+        Err(ArchiveError::Libarchive(msg)) if msg.contains("Incorrect passphrase") => {
+            return Err(ArchiveError::PasswordRequired { wrong: true });
+        }
+        r => r?,
+    };
+    move_in_without_replacing(&staging.0, &target_dir)?;
+    Ok(stats)
+}
+
+/// A private (0700) directory inside the destination, removed (without following a
+/// link) when dropped.
+struct Staging(PathBuf);
+
+impl Staging {
+    fn new(target_dir: &Path) -> std::io::Result<Self> {
+        use std::os::unix::fs::DirBuilderExt;
+        static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let p = target_dir.join(format!(".gungnir-extract-{}-{n}", std::process::id()));
+        std::fs::DirBuilder::new().mode(0o700).create(&p)?;
+        Ok(Self(p))
+    }
+}
+
+impl Drop for Staging {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Move what was extracted into `staging` into `target_dir`: a directory that is already
+/// there (a real one) is merged into; anything else already there stops it before
+/// anything moves (nothing is replaced). Renames never replace either, so a name that
+/// appears meanwhile is an error, not an overwrite.
+fn move_in_without_replacing(staging: &Path, target_dir: &Path) -> Result<(), ArchiveError> {
+    let mut moves = Vec::new();
+    let mut todo = vec![PathBuf::new()];
+    while let Some(rel) = todo.pop() {
+        for entry in std::fs::read_dir(staging.join(&rel))? {
+            let rel = rel.join(entry?.file_name());
+            let staged = std::fs::symlink_metadata(staging.join(&rel))?;
+            match std::fs::symlink_metadata(target_dir.join(&rel)) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => moves.push(rel),
+                Ok(there) if there.is_dir() && staged.is_dir() => todo.push(rel),
+                Ok(_) => {
+                    return Err(ArchiveError::Io(std::io::Error::new(
+                        std::io::ErrorKind::AlreadyExists,
+                        format!("{} already exists; nothing was extracted", target_dir.join(&rel).display()),
+                    )));
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+    }
+    for rel in moves {
+        rename_noreplace(&staging.join(&rel), &target_dir.join(&rel))?;
+    }
+    Ok(())
+}
+
+/// The file starts with the 7z signature.
+fn is_7z(path: &Path) -> bool {
+    use std::io::Read;
+    let mut sig = [0u8; 6];
+    std::fs::File::open(path).and_then(|mut f| f.read_exact(&mut sig)).is_ok() && sig == *b"7z\xBC\xAF\x27\x1C"
+}
+
+/// Extract a 7z with encrypted headers through `7z` into `staging` (private, empty), the
+/// password on its stdin. Then our own rules, as for any archive: a symlink must stay
+/// inside (relative, no `..`), only files, directories and such links, modes masked to
+/// [`EXTRACT_PERM_MASK`]. [`extract_archive`] moves the result in.
+fn extract_7z_into(archive_path: &Path, staging: &Path, password: &str) -> Result<ExtractStats, ArchiveError> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let t0 = Instant::now();
+    // No -p: 7z asks for the password and reads it from stdin. -snld is not given, so 7z
+    // also refuses links it finds dangerous; ours are checked below either way.
+    let mut child = std::process::Command::new("7z")
+        .args(["x", "-y", "-bd", "-bso0", "-bsp0"])
+        .arg(format!("-o{}", staging.display()))
+        .arg("--")
+        .arg(archive_path)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                ArchiveError::ToolNotFound("7z".into())
+            } else {
+                ArchiveError::Io(e)
+            }
+        })?;
+    if let Some(mut stdin) = child.stdin.take() {
+        use std::io::Write;
+        let _ = stdin.write_all(format!("{password}\n").as_bytes());
+    }
+    let out = child.wait_with_output()?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        // 7z refuses some escaping links itself: the same violation as ours below.
+        if let Some(line) = stderr.lines().find(|l| l.contains("Dangerous link path")) {
+            return Err(ArchiveError::PathTraversal(line.trim().to_owned()));
+        }
+        if stderr.contains("Wrong password") {
+            return Err(ArchiveError::PasswordRequired { wrong: true });
+        }
+        return Err(ArchiveError::CliToolFailed { tool: "7z".into(), status: out.status.code().unwrap_or(-1), stderr });
+    }
+
+    // Check everything 7z wrote before any of it leaves the staging directory.
+    let mut stats = ExtractStats::default();
+    let mut todo = vec![staging.to_path_buf()];
+    while let Some(dir) = todo.pop() {
+        for entry in std::fs::read_dir(&dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            let md = std::fs::symlink_metadata(&path)?;
+            let ft = md.file_type();
+            if ft.is_symlink() {
+                let target = std::fs::read_link(&path)?;
+                safe_archive_path(&target)?;
+                stats.symlinks_extracted += 1;
+            } else if ft.is_dir() {
+                std::fs::set_permissions(
+                    &path,
+                    std::fs::Permissions::from_mode((md.mode() & EXTRACT_PERM_MASK) | 0o700),
+                )?;
+                stats.directories_extracted += 1;
+                todo.push(path);
+            } else if ft.is_file() {
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(md.mode() & EXTRACT_PERM_MASK))?;
+                stats.files_extracted += 1;
+                stats.total_bytes_written += md.len();
+            } else {
+                return Err(ArchiveError::UnsupportedFormat(format!(
+                    "{} is not a file, directory or link",
+                    path.strip_prefix(staging).unwrap_or(&path).display()
+                )));
+            }
+        }
+    }
+    stats.elapsed_ms = t0.elapsed().as_millis() as u64;
+    Ok(stats)
+}
+
+/// `renameat2(RENAME_NOREPLACE)`.
+fn rename_noreplace(from: &Path, to: &Path) -> std::io::Result<()> {
+    let c =
+        |p: &Path| CString::new(p.as_os_str().as_bytes()).map_err(|_| std::io::Error::from_raw_os_error(libc::EINVAL));
+    let (f, t) = (c(from)?, c(to)?);
+    // SAFETY: two valid NUL-terminated paths.
+    let r = unsafe { libc::renameat2(libc::AT_FDCWD, f.as_ptr(), libc::AT_FDCWD, t.as_ptr(), libc::RENAME_NOREPLACE) };
+    if r == 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) }
 }
 
 fn safe_archive_path(path: &Path) -> Result<&Path, ArchiveError> {
@@ -1683,6 +1857,199 @@ mod tests {
                 assert_eq!(std::fs::read(out.join("secret.txt")).unwrap(), b"top secret bytes");
             }
         }
+    }
+
+    /// Write `files` (relative path, contents, mode) and `links` (name, target) under
+    /// `src`, then pack them into `dest` as a 7z with encrypted headers, symlinks stored
+    /// as links (7z required: no silent pass without it).
+    fn make_encrypted_7z(src: &Path, dest: &Path, files: &[(&str, &[u8], u32)], links: &[(&str, &str)], pass: &str) {
+        use std::io::Write;
+        use std::os::unix::fs::PermissionsExt;
+        for (rel, body, mode) in files {
+            let p = src.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, body).unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(*mode)).unwrap();
+        }
+        for (name, target) in links {
+            std::os::unix::fs::symlink(target, src.join(name)).unwrap();
+        }
+        let mut child = std::process::Command::new("7z")
+            .args(["a", "-y", "-t7z", "-mhe=on", "-snl", "-p", "--"])
+            .arg(dest)
+            .arg(".")
+            .current_dir(src)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap_or_else(|e| panic!("7z required: {e}"));
+        child.stdin.take().unwrap().write_all(format!("{pass}\n{pass}\n").as_bytes()).unwrap();
+        assert!(child.wait().unwrap().success(), "7z could not make the test archive");
+    }
+
+    /// Leftover staging directories of ours in `dir`.
+    fn staging_left(dir: &Path) -> Vec<String> {
+        std::fs::read_dir(dir)
+            .map(|d| {
+                d.flatten()
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .filter(|n| n.starts_with(".gungnir-extract-"))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The 7z we make with encrypted headers (names hidden) could not be extracted by our
+    /// own extractor: libarchive cannot read such headers. Now it extracts through 7z into
+    /// a private staging directory, checked like any other extraction.
+    #[test]
+    fn a_7z_with_encrypted_headers_extracts_with_its_password() {
+        let t = TestTempDir::new("7z-he");
+        let src = t.path().join("src");
+        let archive = t.path().join("names-hidden.7z");
+        make_encrypted_7z(
+            &src,
+            &archive,
+            &[
+                ("tax-2026.pdf", b"private", 0o644),
+                ("sub/deep/note.txt", b"deeper", 0o600),
+                ("run.sh", b"#!/bin/sh\n", 0o777),
+            ],
+            &[("inside", "sub/deep/note.txt")],
+            "Hidden-Names-7",
+        );
+        let out = t.path().join("out");
+        let stats = extract_archive(&archive, &out, Some("Hidden-Names-7")).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(std::fs::read(out.join("tax-2026.pdf")).unwrap(), b"private");
+        assert_eq!(std::fs::read(out.join("sub/deep/note.txt")).unwrap(), b"deeper");
+        assert_eq!(std::fs::read_link(out.join("inside")).unwrap(), Path::new("sub/deep/note.txt"));
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(out.join("run.sh")).unwrap().permissions().mode() & 0o7777;
+        assert_eq!(mode & 0o7022, 0, "run.sh: {mode:o}");
+        assert_eq!(mode & 0o700, 0o700, "run.sh: {mode:o}");
+        assert!(stats.files_extracted >= 3, "{stats:?}");
+        assert_eq!(staging_left(&out), Vec::<String>::new());
+    }
+
+    /// A wrong or missing password extracts nothing and leaves no staging behind.
+    #[test]
+    fn a_7z_with_encrypted_headers_needs_the_right_password() {
+        let t = TestTempDir::new("7z-he-wrong");
+        let src = t.path().join("src");
+        let archive = t.path().join("a.7z");
+        make_encrypted_7z(&src, &archive, &[("secret.txt", b"s", 0o644)], &[], "Right-Pass-1");
+        for pass in [Some("wrong-pass"), None] {
+            let out = t.path().join(format!("out-{}", pass.is_some()));
+            assert!(extract_archive(&archive, &out, pass).is_err(), "{pass:?}");
+            assert!(!out.join("secret.txt").exists(), "{pass:?}");
+            assert_eq!(staging_left(&out), Vec::<String>::new(), "{pass:?}");
+        }
+    }
+
+    /// Hostile content in such a 7z: a symlink out of the destination (absolute or by
+    /// `..`) is refused before anything reaches the destination; a name that is already
+    /// there is never overwritten.
+    #[test]
+    fn a_7z_with_encrypted_headers_is_checked_like_any_archive() {
+        let t = TestTempDir::new("7z-he-hostile");
+        let outside = t.path().join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        for (i, target) in ["/etc/passwd".to_string(), "../outside".to_string()].iter().enumerate() {
+            let src = t.path().join(format!("src{i}"));
+            let archive = t.path().join(format!("evil{i}.7z"));
+            make_encrypted_7z(&src, &archive, &[("ok.txt", b"ok", 0o644)], &[("escape", target)], "P-1");
+            let out = t.path().join(format!("out{i}"));
+            let r = extract_archive(&archive, &out, Some("P-1"));
+            assert!(matches!(r, Err(ArchiveError::PathTraversal(_))), "{target}: {r:?}");
+            assert!(std::fs::symlink_metadata(out.join("escape")).is_err(), "{target}: the link arrived");
+            assert!(!out.join("ok.txt").exists(), "{target}: part of a refused archive arrived");
+            assert_eq!(staging_left(&out), Vec::<String>::new(), "{target}");
+        }
+        assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
+        // An existing name is never overwritten.
+        let src = t.path().join("src-clash");
+        let archive = t.path().join("clash.7z");
+        make_encrypted_7z(&src, &archive, &[("same.txt", b"from the archive", 0o644)], &[], "P-2");
+        let out = t.path().join("out-clash");
+        std::fs::create_dir(&out).unwrap();
+        std::fs::write(out.join("same.txt"), b"mine").unwrap();
+        assert!(extract_archive(&archive, &out, Some("P-2")).is_err());
+        assert_eq!(std::fs::read(out.join("same.txt")).unwrap(), b"mine");
+        assert_eq!(staging_left(&out), Vec::<String>::new());
+    }
+
+    /// Extracting next to a file of the same name replaced it (a plain tar silently; an
+    /// encrypted zip with a wrong password with zeros, then failed). Now nothing is ever
+    /// replaced: the extraction stops before anything moves, and the file is untouched.
+    #[test]
+    fn extraction_never_replaces_or_destroys_an_existing_file() {
+        let t = TestTempDir::new("no-replace");
+        std::fs::write(t.path().join("notes.txt"), b"from the archive").unwrap();
+        let tar = t.path().join("plain.tar");
+        compress_items(
+            &tar,
+            t.path(),
+            &[PathBuf::from("notes.txt")],
+            &ArchiveOptions { format: Some(ArchiveFormat::Tar), ..Default::default() },
+        )
+        .unwrap();
+        let zip = t.path().join("locked.zip");
+        let opts =
+            ArchiveOptions { format: Some(ArchiveFormat::Zip), password: Some("pw-1".into()), ..Default::default() };
+        compress_items(&zip, t.path(), &[PathBuf::from("notes.txt")], &opts)
+            .unwrap_or_else(|e| panic!("7z required: {e}"));
+        for (archive, pass) in [(&tar, None), (&zip, Some("wrong")), (&zip, Some("pw-1"))] {
+            let out = t.path().join("mine");
+            let _ = std::fs::remove_dir_all(&out);
+            std::fs::create_dir(&out).unwrap();
+            std::fs::write(out.join("notes.txt"), b"MY OWN NOTES").unwrap();
+            let r = extract_archive(archive, &out, pass);
+            assert!(r.is_err(), "{archive:?} {pass:?}: {r:?}");
+            assert_eq!(std::fs::read(out.join("notes.txt")).unwrap(), b"MY OWN NOTES", "{archive:?} {pass:?}");
+            assert_eq!(staging_left(&out), Vec::<String>::new());
+        }
+        // The wrong password is reported as such.
+        let out = t.path().join("empty");
+        assert!(matches!(
+            extract_archive(&zip, &out, Some("wrong")),
+            Err(ArchiveError::PasswordRequired { wrong: true })
+        ));
+        assert!(matches!(extract_archive(&zip, &out, None), Err(ArchiveError::PasswordRequired { wrong: false })));
+        assert_eq!(std::fs::read_dir(&out).unwrap().count(), 0, "a failed extraction left something");
+    }
+
+    /// A folder that is already there is merged into: what was in it stays, the archive's
+    /// new files arrive. A corrupt archive leaves the destination as it was.
+    #[test]
+    fn extraction_merges_into_folders_and_leaves_nothing_on_failure() {
+        let t = TestTempDir::new("merge");
+        let src = t.path().join("src");
+        std::fs::create_dir_all(src.join("photos")).unwrap();
+        std::fs::write(src.join("photos/new.jpg"), b"new").unwrap();
+        let tar = t.path().join("p.tar");
+        compress_items(
+            &tar,
+            &src,
+            &[PathBuf::from("photos")],
+            &ArchiveOptions { format: Some(ArchiveFormat::Tar), ..Default::default() },
+        )
+        .unwrap();
+        let out = t.path().join("out");
+        std::fs::create_dir_all(out.join("photos")).unwrap();
+        std::fs::write(out.join("photos/old.jpg"), b"old").unwrap();
+        extract_archive(&tar, &out, None).unwrap();
+        assert_eq!(std::fs::read(out.join("photos/old.jpg")).unwrap(), b"old");
+        assert_eq!(std::fs::read(out.join("photos/new.jpg")).unwrap(), b"new");
+        // Corrupt: cut in the middle of the data.
+        let mut bytes = std::fs::read(&tar).unwrap();
+        bytes.truncate(700);
+        let bad = t.path().join("bad.tar");
+        std::fs::write(&bad, &bytes).unwrap();
+        let out2 = t.path().join("out2");
+        std::fs::create_dir(&out2).unwrap();
+        assert!(extract_archive(&bad, &out2, None).is_err());
+        assert_eq!(std::fs::read_dir(&out2).unwrap().count(), 0, "a corrupt archive left something");
     }
 
     #[test]

@@ -212,6 +212,11 @@ pub enum Event {
         text: String,
         reload_loc: VfsUri,
     },
+    /// An extraction needs a password (`wrong`: the one given was not it).
+    ArchiveNeedsPassword {
+        job: Box<Extraction>,
+        wrong: bool,
+    },
     UpdateCheckResult(crate::updater::UpdateCheckResult),
     UpdateFinished {
         success: bool,
@@ -496,6 +501,20 @@ enum PendingDialog {
         targets: Vec<PathBuf>,
         base_dir: PathBuf,
     },
+    /// An encrypted archive waits for its password; accepting retries the extraction.
+    ArchivePassword(Box<Extraction>),
+}
+
+/// One extraction ("Extract Here" / "Extract To"), kept to retry it with a password.
+#[derive(Debug, Clone)]
+pub struct Extraction {
+    archive: PathBuf,
+    target: PathBuf,
+    /// Shown in messages: the archive's name.
+    name: String,
+    /// The folder extracted into, by name, for "Extract To" (selected afterwards).
+    into: Option<String>,
+    loc: VfsUri,
 }
 
 fn app_icon_glyph(app: &crate::desktop::App) -> &'static str {
@@ -2085,6 +2104,39 @@ impl Controller {
         });
     }
 
+    /// Extract on the blocking pool. An encrypted archive without (the right) password
+    /// asks for it ([`Event::ArchiveNeedsPassword`]) instead of failing; a folder this
+    /// attempt created stays only if something was extracted into it.
+    fn spawn_extract(&self, job: Extraction, password: Option<String>) {
+        let tx = self.tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let created = !job.target.exists();
+            let r = backends::archive::extract_archive(&job.archive, &job.target, password.as_deref());
+            if r.is_err() && created {
+                let _ = std::fs::remove_dir(&job.target); // only if still empty
+            }
+            let (name, loc) = (job.name.clone(), job.loc.clone());
+            let msg = match r {
+                Err(backends::archive::ArchiveError::PasswordRequired { wrong }) => {
+                    let _ = tx.blocking_send(Msg::Ev(Event::ArchiveNeedsPassword { job: Box::new(job), wrong }));
+                    return;
+                }
+                Ok(stats) => Ok(match &job.into {
+                    Some(stem) => format!(
+                        "Extracted {} file(s) from {name} into {stem}/ in {}ms",
+                        stats.files_extracted, stats.elapsed_ms
+                    ),
+                    None => {
+                        format!("Extracted {} file(s) from {name} in {}ms", stats.files_extracted, stats.elapsed_ms)
+                    }
+                }),
+                Err(e) => Err(format!("Extract {name}: {e}")),
+            };
+            let select = job.into.clone().map(|stem| (loc.clone(), stem));
+            let _ = tx.blocking_send(Msg::Ev(Event::Op { result: msg, reload: vec![loc], select }));
+        });
+    }
+
     /// Run a provider operation in the background, then report and reload.
     fn spawn_op<F>(&self, reload: Vec<VfsUri>, select: Option<(VfsUri, String)>, f: F)
     where
@@ -3236,13 +3288,14 @@ impl Controller {
                     self.say("Extraction destination must be a local directory", true);
                     return;
                 };
-                let loc = t.location.clone();
-                let name = e.name.clone();
-                self.spawn_blocking_op(vec![loc.clone()], None, move || {
-                    let stats = backends::archive::extract_archive(&archive_path, &target_dir, None)
-                        .map_err(|e| core_vfs::error::VfsError::Io { op: "extract", errno: 0, msg: format!("{e}") })?;
-                    Ok(format!("Extracted {} file(s) from {name} in {}ms", stats.files_extracted, stats.elapsed_ms))
-                });
+                let job = Extraction {
+                    archive: archive_path,
+                    target: target_dir,
+                    name: e.name.clone(),
+                    into: None,
+                    loc: t.location.clone(),
+                };
+                self.spawn_extract(job, None);
             }
             "extract-to" => {
                 let t = self.panes[p].tab();
@@ -3274,17 +3327,14 @@ impl Controller {
                         target_dir = base_dir.join(&stem);
                     }
                 }
-                let loc = t.location.clone();
-                let select_folder = stem.clone();
-                let name = e.name.clone();
-                self.spawn_blocking_op(vec![loc.clone()], Some((loc, select_folder)), move || {
-                    let stats = backends::archive::extract_archive(&archive_path, &target_dir, None)
-                        .map_err(|e| core_vfs::error::VfsError::Io { op: "extract", errno: 0, msg: format!("{e}") })?;
-                    Ok(format!(
-                        "Extracted {} file(s) from {name} into {stem}/ in {}ms",
-                        stats.files_extracted, stats.elapsed_ms
-                    ))
-                });
+                let job = Extraction {
+                    archive: archive_path,
+                    target: target_dir,
+                    name: e.name.clone(),
+                    into: Some(stem),
+                    loc: t.location.clone(),
+                };
+                self.spawn_extract(job, None);
             }
             "test-archive" => {
                 let t = self.panes[p].tab();
@@ -5244,6 +5294,10 @@ impl Controller {
                     Ok(format!("Created {name}"))
                 });
             }
+            PendingDialog::ArchivePassword(job) => {
+                self.say(format!("Extracting {}…", job.name), false);
+                self.spawn_extract(*job, Some(text));
+            }
             PendingDialog::OpenMany { pane, entries } => {
                 for entry in entries {
                     self.open_entry(pane, entry, true);
@@ -5465,6 +5519,24 @@ impl Controller {
                 }
                 self.reload_matching(&reload);
                 self.push_places();
+            }
+            Event::ArchiveNeedsPassword { job, wrong } => {
+                if self.dialog.is_some() {
+                    return self.say(format!("{} needs its password; extract it again to enter it", job.name), true);
+                }
+                let message = if wrong {
+                    format!("That password does not open {}. Try again:", job.name)
+                } else {
+                    format!("{} is encrypted. Enter its password:", job.name)
+                };
+                self.dialog = Some(PendingDialog::ArchivePassword(job));
+                self.ui.send(Update::Dialog(DialogView {
+                    kind: DialogKind::ArchivePassword,
+                    title: "Archive password".into(),
+                    message,
+                    input: String::new(),
+                    ..Default::default()
+                }));
             }
             Event::Preview { seq, title, detail, image_path } => {
                 // Only the preview still waited for (not cancelled or superseded), and only
@@ -5731,6 +5803,18 @@ fn build_places(home: &VfsUri, bookmarks: Option<&std::path::Path>) -> (Vec<Plac
 }
 
 /// Launch an external terminal emulator in `dir` with fallback detection.
+/// Test builds open no terminal on the desktop (the tests opened real terminal windows):
+/// the folder asked for is recorded here, for the tests to check.
+#[cfg(test)]
+pub(crate) static TERMINALS_OPENED: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+
+#[cfg(test)]
+fn launch_terminal_in(dir: &Path) -> Option<&'static str> {
+    TERMINALS_OPENED.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(dir.to_path_buf());
+    Some("test terminal")
+}
+
+#[cfg(not(test))]
 fn launch_terminal_in(dir: &Path) -> Option<&'static str> {
     #[cfg(unix)]
     use std::os::unix::process::CommandExt;
