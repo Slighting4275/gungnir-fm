@@ -43,6 +43,25 @@ pub fn thumbnail_cache_dir() -> PathBuf {
     }
 }
 
+/// The cache holds pictures of private files, so it must be ours alone: a directory
+/// owned by us (made 0700 if it is looser), reached directly or through a link that is
+/// itself ours. The fallback is a fixed name in /tmp, which another user could create
+/// first, as a directory or a link to one of theirs; such a cache is never used.
+fn cache_dir_is_private(dir: &Path) -> bool {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    // SAFETY: geteuid has no preconditions.
+    let me = unsafe { libc::geteuid() };
+    let Ok(link) = std::fs::symlink_metadata(dir) else { return false };
+    if link.uid() != me {
+        return false;
+    }
+    let Ok(md) = std::fs::metadata(dir) else { return false };
+    if !md.is_dir() || md.uid() != me {
+        return false;
+    }
+    md.mode() & 0o077 == 0 || std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).is_ok()
+}
+
 /// Computes a deterministic cache filename based on URI and modified timestamp.
 #[must_use]
 pub fn cache_filename(uri: &str, mtime_secs: i64) -> String {
@@ -364,6 +383,9 @@ const STALE_TEMP: std::time::Duration = std::time::Duration::from_secs(3600);
 /// `.png`, or one of their temporaries), only regular files, nothing below. Returns how
 /// many files went.
 pub fn prune_cache_in(cache_dir: &Path, max_bytes: u64) -> usize {
+    if !cache_dir_is_private(cache_dir) {
+        return 0; // never delete in someone else's directory
+    }
     let Ok(entries) = std::fs::read_dir(cache_dir) else { return 0 };
     let now = std::time::SystemTime::now();
     let mut removed = 0;
@@ -416,6 +438,9 @@ pub fn prune_cache() -> usize {
 /// Checks if a cached thumbnail exists in `cache_dir` and is valid on disk.
 #[must_use]
 pub fn lookup_cached_in(cache_dir: &Path, uri: &str, mtime_secs: i64) -> Option<PathBuf> {
+    if !cache_dir_is_private(cache_dir) {
+        return None;
+    }
     let file = cache_dir.join(cache_filename(uri, mtime_secs));
     if file.is_file() && file.metadata().map(|m| m.len() > 0).unwrap_or(false) {
         return Some(file);
@@ -453,6 +478,9 @@ pub fn generate_thumbnail_in(
     builder.mode(0o700);
     if let Err(e) = builder.create(cache_dir) {
         return Err(format!("failed to create thumbnail dir {}: {e}", cache_dir.display()));
+    }
+    if !cache_dir_is_private(cache_dir) {
+        return Err(format!("thumbnail dir {} is not private to this user", cache_dir.display()));
     }
 
     let target_file = cache_dir.join(cache_filename(uri, mtime_secs));
@@ -843,6 +871,66 @@ mod tests {
         assert!(!is_raw_sensor_ext(Some("png")));
     }
 
+    fn red_png(dir: &Path) -> PathBuf {
+        let p = dir.join("sample.png");
+        image::RgbImage::from_pixel(16, 16, image::Rgb([255, 0, 0])).save(&p).unwrap_or_else(|e| panic!("{e}"));
+        p
+    }
+
+    /// The fallback cache is a fixed name in /tmp: one planted there, a link to a
+    /// directory of someone else's, received thumbnails of private files and its planted
+    /// "thumbnails" were shown.
+    #[test]
+    fn a_cache_reached_through_a_link_to_someone_elses_directory_is_never_used() {
+        let sandbox = std::env::temp_dir().join(format!("gungnir-thumb-link-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&sandbox);
+        fs::create_dir_all(&sandbox).unwrap_or_else(|e| panic!("{e}"));
+        let img = red_png(&sandbox);
+        // /tmp: root's, and writable by everyone, like a directory another user planted.
+        let tmp = Path::new("/tmp");
+        assert_ne!(std::os::unix::fs::MetadataExt::uid(&fs::metadata(tmp).unwrap_or_else(|e| panic!("{e}"))), unsafe {
+            libc::geteuid()
+        });
+        let foreign = sandbox.join("foreign");
+        std::os::unix::fs::symlink(tmp, &foreign).unwrap_or_else(|e| panic!("{e}"));
+        let uri = format!("file:///private/photo-{}.png", std::process::id());
+        let leaked = tmp.join(cache_filename(&uri, 7));
+        let _ = fs::remove_file(&leaked);
+        let written = generate_thumbnail_in(&foreign, &img, &uri, 7, false);
+        let was_written = leaked.exists();
+        let _ = fs::remove_file(&leaked);
+        assert!(written.is_err() && !was_written, "a thumbnail of a private file went to /tmp");
+        fs::write(&leaked, b"planted").unwrap_or_else(|e| panic!("{e}"));
+        let shown = lookup_cached_in(&foreign, &uri, 7);
+        let _ = fs::remove_file(&leaked);
+        assert_eq!(shown, None, "a planted thumbnail was shown");
+        assert_eq!(prune_cache_in(&foreign, 0), 0);
+        // A link of the user's own to a directory of theirs (a cache moved to another
+        // disk) keeps working.
+        fs::create_dir(sandbox.join("ssd")).unwrap_or_else(|e| panic!("{e}"));
+        let own = sandbox.join("own");
+        std::os::unix::fs::symlink(sandbox.join("ssd"), &own).unwrap_or_else(|e| panic!("{e}"));
+        let thumb = generate_thumbnail_in(&own, &img, "file:///p.png", 7, false).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(lookup_cached_in(&own, "file:///p.png", 7), Some(thumb));
+        let _ = fs::remove_dir_all(&sandbox);
+    }
+
+    /// A cache directory of ours that others can enter or write is made 0700 before use.
+    #[test]
+    fn a_loose_cache_directory_is_made_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let sandbox = std::env::temp_dir().join(format!("gungnir-thumb-loose-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&sandbox);
+        let cache = sandbox.join("cache");
+        fs::create_dir_all(&cache).unwrap_or_else(|e| panic!("{e}"));
+        fs::set_permissions(&cache, fs::Permissions::from_mode(0o777)).unwrap_or_else(|e| panic!("{e}"));
+        let img = red_png(&sandbox);
+        assert!(generate_thumbnail_in(&cache, &img, "file:///p.png", 1, false).is_ok());
+        let mode = fs::metadata(&cache).map(|m| m.permissions().mode() & 0o777).unwrap_or(0);
+        assert_eq!(mode, 0o700);
+        let _ = fs::remove_dir_all(&sandbox);
+    }
+
     #[test]
     fn test_image_thumbnail_generation() {
         let sandbox = std::env::temp_dir().join("gungnir-test-sandbox").join("img_test");
@@ -886,20 +974,20 @@ mod tests {
             .stderr(Stdio::null())
             .status();
 
-        if let Ok(st) = status
-            && st.success()
-            && vid_path.is_file()
-        {
-            let uri = "file:///tmp/sample.mp4";
-            let res = generate_thumbnail_in(&cache_dir, &vid_path, uri, 54321, true);
-            assert!(res.is_ok(), "video thumbnail generation must succeed: {:?}", res.err());
+        // No silent pass: without ffmpeg this test fails instead of checking nothing.
+        assert!(
+            status.as_ref().is_ok_and(std::process::ExitStatus::success) && vid_path.is_file(),
+            "ffmpeg could not make the sample video ({status:?}); video thumbnails need ffmpeg"
+        );
+        let uri = "file:///tmp/sample.mp4";
+        let res = generate_thumbnail_in(&cache_dir, &vid_path, uri, 54321, true);
+        assert!(res.is_ok(), "video thumbnail generation must succeed: {:?}", res.err());
 
-            let thumb = res.unwrap_or_else(|e| panic!("{e}"));
-            assert!(thumb.is_file(), "thumbnail file must exist");
+        let thumb = res.unwrap_or_else(|e| panic!("{e}"));
+        assert!(thumb.is_file(), "thumbnail file must exist");
 
-            let slint_img = slint::Image::load_from_path(&thumb);
-            assert!(slint_img.is_ok(), "slint must be able to load video thumbnail: {:?}", slint_img.err());
-        }
+        let slint_img = slint::Image::load_from_path(&thumb);
+        assert!(slint_img.is_ok(), "slint must be able to load video thumbnail: {:?}", slint_img.err());
 
         let _ = fs::remove_dir_all(&sandbox);
     }
@@ -912,16 +1000,14 @@ mod tests {
 
         let svg_path = sandbox.join("vector.svg");
         let svg_content = r#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><circle cx="50" cy="50" r="40" fill="purple"/></svg>"#;
-        if fs::write(&svg_path, svg_content).is_ok() {
-            let uri = "file:///tmp/vector.svg";
-            let res = generate_thumbnail_in(&cache_dir, &svg_path, uri, 99999, false);
-            if res.is_ok() {
-                let thumb = res.unwrap_or_else(|e| panic!("{e}"));
-                assert!(thumb.is_file(), "svg thumbnail file must exist");
-                let slint_img = slint::Image::load_from_path(&thumb);
-                assert!(slint_img.is_ok(), "slint must load svg rendered png");
-            }
-        }
+        fs::write(&svg_path, svg_content).unwrap_or_else(|e| panic!("{e}"));
+        let uri = "file:///tmp/vector.svg";
+        // No silent pass: a failed render fails the test.
+        let thumb = generate_thumbnail_in(&cache_dir, &svg_path, uri, 99999, false)
+            .unwrap_or_else(|e| panic!("svg thumbnail generation must succeed: {e}"));
+        assert!(thumb.is_file(), "svg thumbnail file must exist");
+        let slint_img = slint::Image::load_from_path(&thumb);
+        assert!(slint_img.is_ok(), "slint must load svg rendered png");
 
         let _ = fs::remove_dir_all(&sandbox);
     }

@@ -255,10 +255,12 @@ async fn mixed_same_device_and_cross_device_moves_do_not_recopy_moved_sources() 
     let t = TempDir::new("live-mixed-move");
     let Some(d) = Daemon::start(t.path()) else { return Ok(()) };
     let external = PathBuf::from("/dev/shm").join(format!("gungnir-fm-mixed-move-{}", std::process::id()));
-    if std::fs::metadata("/dev/shm").map(|m| m.dev()).ok() == std::fs::metadata(t.path()).map(|m| m.dev()).ok() {
-        eprintln!("SKIP: no separate /dev/shm filesystem");
-        return Ok(());
-    }
+    // No silent pass: the cross-device half needs /dev/shm on a filesystem of its own.
+    assert_ne!(
+        std::fs::metadata("/dev/shm").map(|m| m.dev()).ok(),
+        std::fs::metadata(t.path()).map(|m| m.dev()).ok(),
+        "/dev/shm is not a separate filesystem here, so the cross-device move cannot be tested"
+    );
     std::fs::create_dir(&external).unwrap_or_else(|e| panic!("{e}"));
     let external = TempDir(external);
     std::fs::create_dir(t.path().join("local-dir")).unwrap_or_else(|e| panic!("{e}"));
