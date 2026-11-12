@@ -2369,6 +2369,39 @@ fn a_bookmark_save_that_fails_is_reported() {
 }
 
 #[test]
+fn compressing_never_holds_up_the_controller() {
+    // Compress ran libarchive on the async workers the controller itself runs on: with
+    // as many compressions as workers (2 here, 4 in the app) the window stopped answering
+    // until one finished.
+    let tmp = temp_dir("compress-busy");
+    let mut x: u64 = 0x9e37_79b9_7f4a_7c15;
+    let data: Vec<u8> = (0..8usize << 20)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x as u8
+        })
+        .collect();
+    std::fs::write(tmp.join("noise.bin"), data).unwrap();
+    let h = start(tmp.to_str().unwrap(), "gungnir://odin/asgard", MockConfig::instant());
+    h.until(Duration::from_secs(5), |u| full_rows(u, 0, 1));
+    for name in ["one.tar.xz", "two.tar.xz"] {
+        h.send(Command::Run("compress".into()));
+        h.until(Duration::from_secs(5), |u| matches!(u, Update::Dialog(d) if d.title == "Lossless Compression"));
+        h.send(Command::DialogAccept(name.into()));
+    }
+    std::thread::sleep(Duration::from_millis(50)); // both are running now
+    let t0 = Instant::now();
+    h.send(Command::SetDarkMode(false));
+    h.until(Duration::from_secs(60), |u| matches!(u, Update::Flags(f) if !f.dark_mode));
+    let answered = t0.elapsed();
+    h.until(Duration::from_secs(60), |u| matches!(u, Update::Status(s) if s.message.contains("two.tar.xz")));
+    assert!(answered < Duration::from_millis(200), "controller answered after {answered:?}");
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[test]
 fn open_containing_folder_on_regular_file() {
     let tmp = temp_dir("containing-folder");
     let sub = tmp.join("subfolder");
