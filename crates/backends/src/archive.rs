@@ -55,6 +55,9 @@ const ARCHIVE_FATAL: c_int = -30;
 const ARCHIVE_EXTRACT_TIME: c_int = 0x0004;
 const ARCHIVE_EXTRACT_PERM: c_int = 0x0002;
 const ARCHIVE_EXTRACT_SECURE_SYMLINKS: c_int = 0x0100;
+/// The mode bits an extracted entry may keep: no group/other write, no setuid, setgid or
+/// sticky bit.
+const EXTRACT_PERM_MASK: c_uint = 0o755;
 const ARCHIVE_EXTRACT_SECURE_NODOTDOT: c_int = 0x0200;
 #[allow(dead_code)]
 const ARCHIVE_EXTRACT_SECURE_NOABSOLUTEPATHS: c_int = 0x10000;
@@ -718,6 +721,12 @@ fn extract_archive_libarchive(
             let c_full_out = CString::new(full_out.as_os_str().as_bytes())
                 .map_err(|_| ArchiveError::Libarchive("Invalid output path".into()))?;
             archive_entry_set_pathname(entry, c_full_out.as_ptr());
+            // ARCHIVE_EXTRACT_PERM takes the archive's mode as is: a hostile archive made
+            // its files world-writable (another local user could change an extracted
+            // script before it runs) or setuid. Keep the owner's bits and read/execute
+            // for others; never group/other write, setuid, setgid or sticky (what GNU tar
+            // does for a normal user).
+            archive_entry_set_perm(entry, archive_entry_perm(entry) & EXTRACT_PERM_MASK);
 
             let write_header_res = archive_write_header(ext, entry);
             let ftype = archive_entry_filetype(entry);
@@ -879,13 +888,14 @@ unsafe fn get_archive_error(a: *mut c_void) -> String {
 
 // ---- Tier 3: CLI Fallbacks & Specialized Codecs ------------------------------
 
-fn compress_via_7z_cli(
+/// The `7z a` command for `options` (the password, if any, is not in it: see
+/// [`compress_via_7z_cli`]).
+fn seven_zip_command(
     dest_path: &Path,
     base_dir: &Path,
     items: &[PathBuf],
     options: &ArchiveOptions,
-) -> Result<ArchiveStats, ArchiveError> {
-    let t0 = Instant::now();
+) -> Result<std::process::Command, ArchiveError> {
     let mut cmd = std::process::Command::new("7z");
     cmd.current_dir(base_dir);
     cmd.arg("a");
@@ -905,14 +915,18 @@ fn compress_via_7z_cli(
         if pass.is_empty() {
             return Err(ArchiveError::UnsupportedFormat("Password must not be empty".into()));
         }
-        cmd.arg(format!("-p{pass}"));
+        // A bare -p: 7z reads the password from stdin. On the command line every local
+        // user could read it (/proc/<pid>/cmdline, ps).
+        cmd.arg("-p");
         if format == ArchiveFormat::SevenZip {
             cmd.arg("-mhe=on");
         } else {
             cmd.arg("-mem=AES256");
         }
+        cmd.stdin(std::process::Stdio::piped());
+    } else {
+        cmd.stdin(std::process::Stdio::null());
     }
-    cmd.stdin(std::process::Stdio::null());
 
     cmd.arg("--");
     cmd.arg(dest_path);
@@ -920,14 +934,31 @@ fn compress_via_7z_cli(
         let rel = item.strip_prefix(base_dir).unwrap_or(item);
         cmd.arg(rel);
     }
+    Ok(cmd)
+}
 
-    let output = cmd.output().map_err(|e| {
+fn compress_via_7z_cli(
+    dest_path: &Path,
+    base_dir: &Path,
+    items: &[PathBuf],
+    options: &ArchiveOptions,
+) -> Result<ArchiveStats, ArchiveError> {
+    let t0 = Instant::now();
+    let mut cmd = seven_zip_command(dest_path, base_dir, items, options)?;
+    cmd.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+    let mut child = cmd.spawn().map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             ArchiveError::ToolNotFound("7z".into())
         } else {
             ArchiveError::Io(e)
         }
     })?;
+    if let (Some(pass), Some(mut stdin)) = (options.password.as_ref(), child.stdin.take()) {
+        use std::io::Write;
+        // Twice, for a 7z that asks to confirm it; then closed, so it never waits.
+        let _ = stdin.write_all(format!("{pass}\n{pass}\n").as_bytes());
+    }
+    let output = child.wait_with_output()?;
 
     if !output.status.success() {
         return Err(ArchiveError::CliToolFailed {
@@ -1469,6 +1500,32 @@ mod tests {
         std::fs::write(path, data).unwrap();
     }
 
+    /// A tar of several entries: (name, type flag, link target, mode, contents).
+    fn write_tar_entries(path: &Path, entries: &[(&str, u8, &str, u32, &[u8])]) {
+        let mut data = Vec::new();
+        for &(name, kind, link, mode, body) in entries {
+            let mut h = [0u8; 512];
+            h[..name.len()].copy_from_slice(name.as_bytes());
+            h[100..108].copy_from_slice(format!("{mode:07o}\0").as_bytes());
+            h[108..116].copy_from_slice(b"0000000\0");
+            h[116..124].copy_from_slice(b"0000000\0");
+            h[124..136].copy_from_slice(format!("{:011o}\0", body.len()).as_bytes());
+            h[136..148].copy_from_slice(b"00000000000\0");
+            h[148..156].fill(b' ');
+            h[156] = kind;
+            h[157..157 + link.len()].copy_from_slice(link.as_bytes());
+            h[257..263].copy_from_slice(b"ustar\0");
+            h[263..265].copy_from_slice(b"00");
+            let sum: u32 = h.iter().map(|&b| u32::from(b)).sum();
+            h[148..156].copy_from_slice(format!("{sum:06o}\0 ").as_bytes());
+            data.extend_from_slice(&h);
+            data.extend_from_slice(body);
+            data.resize(data.len().next_multiple_of(512), 0);
+        }
+        data.extend_from_slice(&[0; 1024]);
+        std::fs::write(path, data).unwrap();
+    }
+
     #[test]
     fn archive_round_trip_preserves_non_utf8_filenames() {
         let t = TestTempDir::new("non-utf8");
@@ -1507,6 +1564,125 @@ mod tests {
         let result = extract_archive(&archive, &t.path().join("output"), None);
         assert!(matches!(result, Err(ArchiveError::PathTraversal(_))));
         assert!(!t.path().join("escaped").exists());
+    }
+
+    /// PEN: hostile archives never write outside the destination: an absolute path, a
+    /// hardlink to an absolute or `..` target, and a symlink already in the destination
+    /// (planted there, e.g. in a shared folder) that points outside.
+    #[test]
+    fn hostile_archives_never_write_outside_the_destination() {
+        let t = TestTempDir::new("hostile");
+        let outside = t.path().join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(outside.join("victim"), b"untouched").unwrap();
+        let victim = outside.join("victim");
+        type Entry = (String, u8, String, u32, Vec<u8>);
+        let cases: Vec<(&str, Vec<Entry>)> = vec![
+            ("absolute", vec![(format!("{}/abs", outside.display()), b'0', String::new(), 0o644, b"x".to_vec())]),
+            ("hardlink-absolute", vec![("h".into(), b'1', victim.display().to_string(), 0o644, Vec::new())]),
+            ("hardlink-dotdot", vec![("h".into(), b'1', "../outside/victim".into(), 0o644, Vec::new())]),
+            ("through-planted-link", vec![("planted/pwn".into(), b'0', String::new(), 0o644, b"pwned".to_vec())]),
+            ("overwrite-planted-link", vec![("planted".into(), b'0', String::new(), 0o644, b"pwned".to_vec())]),
+        ];
+        for (name, entries) in cases {
+            let archive = t.path().join(format!("{name}.tar"));
+            let refs: Vec<(&str, u8, &str, u32, &[u8])> =
+                entries.iter().map(|(n, k, l, m, b)| (n.as_str(), *k, l.as_str(), *m, b.as_slice())).collect();
+            write_tar_entries(&archive, &refs);
+            let dest = t.path().join(format!("dest-{name}"));
+            std::fs::create_dir(&dest).unwrap();
+            std::os::unix::fs::symlink(&outside, dest.join("planted")).unwrap();
+            let r = extract_archive(&archive, &dest, None);
+            assert_eq!(std::fs::read(&victim).unwrap(), b"untouched", "{name}: the victim changed ({r:?})");
+            assert!(!outside.join("abs").exists(), "{name}: wrote an absolute path ({r:?})");
+            assert!(!outside.join("pwn").exists(), "{name}: wrote through a planted link ({r:?})");
+            assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 1, "{name}: outside changed ({r:?})");
+        }
+    }
+
+    /// PEN: modes a hostile archive asks for. Another local user must not be able to
+    /// change what was extracted (no group/other write), and no setuid/setgid bit.
+    #[test]
+    fn extracted_files_are_never_writable_by_others_or_setuid() {
+        let t = TestTempDir::new("modes");
+        let archive = t.path().join("modes.tar");
+        write_tar_entries(
+            &archive,
+            &[
+                ("open.sh", b'0', "", 0o777, b"#!/bin/sh\n"),
+                ("suid", b'0', "", 0o4755, b"x"),
+                ("sgid-dir", b'5', "", 0o2777, b""),
+            ],
+        );
+        let dest = t.path().join("dest");
+        std::fs::create_dir(&dest).unwrap();
+        extract_archive(&archive, &dest, None).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        for n in ["open.sh", "suid", "sgid-dir"] {
+            let mode = std::fs::symlink_metadata(dest.join(n)).unwrap().permissions().mode() & 0o7777;
+            assert_eq!(mode & 0o022, 0, "{n}: writable by others ({mode:o})");
+            assert_eq!(mode & 0o6000, 0, "{n}: setuid/setgid kept ({mode:o})");
+        }
+        // Owner bits as the archive asked: an executable stays executable.
+        let mode = std::fs::metadata(dest.join("open.sh")).unwrap().permissions().mode();
+        assert_eq!(mode & 0o700, 0o700);
+    }
+
+    /// PEN: an archive password never appears on 7z's command line, where every local
+    /// user can read it (`/proc/<pid>/cmdline`, `ps`); 7z reads it from its stdin.
+    #[test]
+    fn the_archive_password_is_never_on_a_command_line() {
+        for format in [ArchiveFormat::SevenZip, ArchiveFormat::Zip] {
+            let opts = ArchiveOptions {
+                format: Some(format),
+                password: Some("Tr0ub4dor-secret".into()),
+                ..Default::default()
+            };
+            let cmd =
+                seven_zip_command(Path::new("/x/out.7z"), Path::new("/x"), &[PathBuf::from("/x/f")], &opts).unwrap();
+            let args: Vec<String> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+            assert!(!args.iter().any(|a| a.contains("Tr0ub4dor")), "{format:?}: {args:?}");
+            assert!(args.iter().any(|a| a == "-p"), "{format:?}: 7z must be told to read a password: {args:?}");
+        }
+    }
+
+    /// The password reaches 7z through its stdin: an encrypted archive opens with the
+    /// right password and refuses a wrong one (7z required: no silent pass without it).
+    /// A zip also round-trips through our own extractor. (Ours cannot open a 7z with
+    /// encrypted headers, which is what we make, so 7z itself checks that one.)
+    #[test]
+    fn an_encrypted_archive_opens_with_its_password_only() {
+        let seven_z_test = |archive: &Path, pass: &str| -> bool {
+            use std::io::Write;
+            let mut child = std::process::Command::new("7z")
+                .args(["t", "--"]) // no -p: 7z asks, and reads the password from stdin
+                .arg(archive)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .unwrap_or_else(|e| panic!("7z required: {e}"));
+            if let Some(mut i) = child.stdin.take() {
+                let _ = i.write_all(format!("{pass}\n").as_bytes());
+            }
+            child.wait().is_ok_and(|s| s.success())
+        };
+        for (format, ext) in [(ArchiveFormat::SevenZip, "7z"), (ArchiveFormat::Zip, "zip")] {
+            let t = TestTempDir::new(&format!("enc-{ext}"));
+            std::fs::write(t.path().join("secret.txt"), b"top secret bytes").unwrap();
+            let dest = t.path().join(format!("s.{ext}"));
+            let opts =
+                ArchiveOptions { format: Some(format), password: Some("Correct-Horse-9".into()), ..Default::default() };
+            compress_items(&dest, t.path(), &[PathBuf::from("secret.txt")], &opts)
+                .unwrap_or_else(|e| panic!("{ext}: encrypting failed (7z required): {e}"));
+            assert!(seven_z_test(&dest, "Correct-Horse-9"), "{ext}: the right password failed");
+            assert!(!seven_z_test(&dest, "wrong-password"), "{ext}: a wrong password opened it");
+            if format == ArchiveFormat::Zip {
+                let out = t.path().join("out");
+                extract_archive(&dest, &out, Some("Correct-Horse-9")).unwrap_or_else(|e| panic!("{ext}: {e}"));
+                assert_eq!(std::fs::read(out.join("secret.txt")).unwrap(), b"top secret bytes");
+            }
+        }
     }
 
     #[test]
