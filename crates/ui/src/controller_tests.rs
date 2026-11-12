@@ -2325,6 +2325,50 @@ fn remove_bookmark_command_updates_places() {
 }
 
 #[test]
+fn bookmarks_are_replaced_whole_never_rewritten_in_place() {
+    // They were truncated and rewritten in place: a crash or a full disk mid-write left
+    // an empty or cut-off file, and every bookmark was gone.
+    use std::os::unix::fs::MetadataExt;
+    let tmp = temp_dir("bookmark-atomic");
+    let bm_file = tmp.join("bookmarks");
+    std::fs::write(&bm_file, "file:///home/user/Old\n").unwrap();
+    let before = std::fs::metadata(&bm_file).unwrap().ino();
+    let h = start_configured(tmp.to_str().unwrap(), "gungnir://odin/asgard", MockConfig::instant(), true, |cfg| {
+        cfg.bookmarks_file = Some(bm_file.clone());
+    });
+    h.until(Duration::from_secs(5), |u| matches!(u, Update::Places(p) if p.iter().any(|i| i.label == "Old")));
+    h.send(Command::Run("bookmark".into()));
+    let here = VfsUri::from_local_path(&tmp).unwrap().to_uri_string();
+    let want = format!("file:///home/user/Old\n{here}\n");
+    let t0 = Instant::now();
+    while std::fs::read_to_string(&bm_file).unwrap_or_default() != want {
+        assert!(t0.elapsed() < Duration::from_secs(5), "{:?}", std::fs::read_to_string(&bm_file));
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_ne!(std::fs::metadata(&bm_file).unwrap().ino(), before, "rewritten in place");
+    let leftovers: Vec<_> = std::fs::read_dir(&tmp).unwrap().flatten().map(|e| e.file_name()).collect();
+    assert_eq!(leftovers, [std::ffi::OsString::from("bookmarks")], "temporary files left");
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[test]
+fn a_bookmark_save_that_fails_is_reported() {
+    // A failed save was silent: the bookmark showed in Places but was gone next start.
+    let tmp = temp_dir("bookmark-fail");
+    std::fs::write(tmp.join("not-a-dir"), b"").unwrap();
+    let h = start_configured(tmp.to_str().unwrap(), "gungnir://odin/asgard", MockConfig::instant(), true, |cfg| {
+        cfg.bookmarks_file = Some(tmp.join("not-a-dir/bookmarks"));
+    });
+    h.until(Duration::from_secs(5), |u| full_rows(u, 0, 1));
+    h.send(Command::Run("bookmark".into()));
+    h.until(
+        Duration::from_secs(5),
+        |u| matches!(u, Update::Status(s) if s.message.starts_with("Could not save bookmarks")),
+    );
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[test]
 fn open_containing_folder_on_regular_file() {
     let tmp = temp_dir("containing-folder");
     let sub = tmp.join("subfolder");

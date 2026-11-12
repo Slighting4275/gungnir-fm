@@ -391,7 +391,8 @@ export component AppWindow inherits Window {
     key-handler := FocusScope {
         key-pressed(e) => {
             if root.dialog-kind != DialogKind.none {
-                if e.text == Key.Escape { root.dialog-cancel(); return accept; }
+                // Space closes the Quick Preview it opened (as in Nemo); Escape closes any dialog.
+                if e.text == Key.Escape || (e.text == " " && root.dialog-kind == DialogKind.preview) { root.dialog-cancel(); return accept; }
                 return reject;
             }
             let p = root.active-pane;
@@ -474,7 +475,8 @@ export component AppWindow inherits Window {
             if e.text == Key.PageDown { root.move-cursor(p, 20, e.modifiers.shift); return accept; }
             if e.text == Key.Home { root.move-cursor(p, -1000000000, e.modifiers.shift); return accept; }
             if e.text == Key.End { root.move-cursor(p, 1000000000, e.modifiers.shift); return accept; }
-            if e.text == " " { root.command("toggle-select"); return accept; }
+            // Space is Quick Preview (as the View menu and the README say); Ctrl+Space toggles.
+            if e.text == " " { root.command(e.modifiers.control ? "toggle-select" : "quick-preview"); return accept; }
             // Clipboard keys live here, not in the MenuBar, so text fields keep their own.
             if e.modifiers.control && !e.modifiers.shift && (e.text == "l" || e.text == "L") { root.focus-path-bar(); return accept; }
             if e.modifiers.control && !e.modifiers.shift && (e.text == "d" || e.text == "D") { root.command("bookmark"); return accept; }

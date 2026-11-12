@@ -694,7 +694,8 @@ Gungnir FM includes an enterprise-grade, multi-format lossless compression subsy
 | `Ctrl++` / `Ctrl+=` | Zoom in previews / icons (up to 350%) |
 | `Ctrl+-` / `Ctrl+_` | Zoom out previews / icons (down to 50%) |
 | `Ctrl+0` | Reset preview zoom to 100% |
-| `Space` | Quick Preview overlay (image/video/text) |
+| `Space` | Quick Preview overlay (image/video/text); `Space` again closes it |
+| `Ctrl+Space` | Toggle selection of the item under the cursor |
 | `F2` | Rename selected file or directory (opens Batch Renamer when 2+ files selected) |
 | `F5` / `F6` | Copy / Move selection to other pane |
 | `Ctrl+Shift+N` / `F7` | Create new folder |

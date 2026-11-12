@@ -301,7 +301,11 @@ fn normalize(p: &str) -> VfsResult<String> {
     Ok(format!("/{}", parts.join("/")))
 }
 
-fn percent_decode(s: &str) -> VfsResult<String> {
+/// Decodes `%XX` escapes; the result must be UTF-8 (the model's names are).
+///
+/// # Errors
+/// A malformed escape, or bytes that are not UTF-8.
+pub fn percent_decode(s: &str) -> VfsResult<String> {
     if !s.contains('%') {
         return Ok(s.to_owned());
     }
