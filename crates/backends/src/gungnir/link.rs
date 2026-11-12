@@ -62,6 +62,8 @@ enum Cmd {
         payload: Vec<u8>,
         deadline: Instant,
         reply: oneshot::Sender<VfsResult<Vec<u8>>>,
+        /// Hand back the whole reply (`status | body`) for the caller to read.
+        raw: bool,
     },
     StartOp {
         payload: Vec<u8>,
@@ -75,6 +77,7 @@ enum Pending {
     Call {
         reply: oneshot::Sender<VfsResult<Vec<u8>>>,
         deadline: Instant,
+        raw: bool,
     },
     /// Before the start reply: `started` is Some. After: waits for MSG_OP_DONE.
     Op {
@@ -150,7 +153,19 @@ impl Link {
     /// The daemon's status, `Timeout`, or `DaemonUnavailable`.
     pub async fn call(&self, kind: u32, payload: Vec<u8>, timeout: Duration) -> VfsResult<Vec<u8>> {
         let (reply, rx) = oneshot::channel();
-        self.send(Cmd::Call { kind, payload, deadline: Instant::now() + timeout, reply })?;
+        self.send(Cmd::Call { kind, payload, deadline: Instant::now() + timeout, reply, raw: false })?;
+        rx.await.map_err(|_| VfsError::DaemonUnavailable("link dropped the request".into()))?
+    }
+
+    /// [`call`](Self::call), but the whole reply payload (`status | body`) comes back
+    /// unread, for a reply whose body has its own layout whatever the status (the
+    /// trash empty).
+    ///
+    /// # Errors
+    /// `Timeout` or `DaemonUnavailable`.
+    pub async fn call_raw(&self, kind: u32, payload: Vec<u8>, timeout: Duration) -> VfsResult<Vec<u8>> {
+        let (reply, rx) = oneshot::channel();
+        self.send(Cmd::Call { kind, payload, deadline: Instant::now() + timeout, reply, raw: true })?;
         rx.await.map_err(|_| VfsError::DaemonUnavailable("link dropped the request".into()))?
     }
 
@@ -238,7 +253,7 @@ impl Driver {
         // Subscribe to mount-health events first; the reply carries the epoch.
         let s = self.next_seq();
         let (reply, _ignored) = oneshot::channel();
-        self.pending.insert(s, Pending::Call { reply, deadline: Instant::now() + Duration::from_secs(5) });
+        self.pending.insert(s, Pending::Call { reply, deadline: Instant::now() + Duration::from_secs(5), raw: false });
         self.queue.push_back((s, proto::MSG_HEALTH_SUBSCRIBE, Vec::new()));
         let mut last_liveness = Instant::now();
         let err = loop {
@@ -279,8 +294,8 @@ impl Driver {
     fn accept(&mut self, cmd: Cmd) {
         let s = self.next_seq();
         match cmd {
-            Cmd::Call { kind, payload, deadline, reply } => {
-                self.pending.insert(s, Pending::Call { reply, deadline });
+            Cmd::Call { kind, payload, deadline, reply, raw } => {
+                self.pending.insert(s, Pending::Call { reply, deadline, raw });
                 self.queue.push_back((s, kind, payload));
             }
             Cmd::StartOp { payload, deadline, started, events } => {
@@ -317,9 +332,9 @@ impl Driver {
                 self.sent.remove(&m.seq);
                 let Some(p) = self.pending.remove(&m.seq) else { return }; // late reply
                 match p {
-                    Pending::Call { reply, .. } => {
+                    Pending::Call { reply, raw, .. } => {
                         // A pong echoes the ping payload; everything else is `status | body`.
-                        let body = if m.kind == proto::MSG_PONG {
+                        let body = if m.kind == proto::MSG_PONG || raw {
                             Ok(m.payload)
                         } else {
                             proto::reply_body(&m.payload, "request")

@@ -705,6 +705,26 @@ impl GungnirVfsBackend {
         }
     }
 
+    /// The daemon's trash empty, its reply read as the empty's own layout
+    /// ([`proto::parse_empty`]), retried while busy like [`Self::trash_call`].
+    async fn empty_call(&self) -> VfsResult<()> {
+        let link = self.link().await?;
+        let mut tries = 0;
+        loop {
+            let r = link
+                .call_raw(proto::MSG_TRASH_EMPTY, Vec::new(), OP_SILENCE)
+                .await
+                .and_then(|p| proto::parse_empty(&p));
+            match r {
+                Err(VfsError::Busy) if tries < BUSY_RETRIES => {
+                    tries += 1;
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                r => return r,
+            }
+        }
+    }
+
     /// Every row of the trash or recent, or of a folder inside it, and whether that may not be all.
     async fn trash_or_recent_rows(&self, dir: &VfsUri) -> VfsResult<(Vec<proto::VfsRow>, bool)> {
         let _one_at_a_time = self.trash_listing.lock().await;
@@ -964,9 +984,9 @@ impl VfsProvider for GungnirVfsBackend {
     }
 
     async fn empty_trash(&self) -> VfsResult<()> {
-        match self.trash_call(proto::MSG_TRASH_EMPTY, Vec::new(), OP_SILENCE).await {
+        match self.empty_call().await {
             Err(e) if falls_back(&e) => self.local.empty_trash().await,
-            r => r.map(drop),
+            r => r,
         }
     }
 
