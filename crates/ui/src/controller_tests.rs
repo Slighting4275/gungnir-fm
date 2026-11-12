@@ -56,6 +56,7 @@ fn start_configured(
     include_local: bool,
     configure: impl FnOnce(&mut Config),
 ) -> Harness {
+    data_home();
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
@@ -178,6 +179,17 @@ fn navigating_away_cancels_the_inflight_listing() {
             assert!(rows.iter().all(|r| !r.name.starts_with("rune-")), "stale stress-100k rows after navigation");
         }
     }
+}
+
+/// The data directory (trash, recent list) of every controller in this test process: a
+/// sandbox, pinned once before any backend exists. Without it the local backend used the
+/// user's own `~/.local/share`, and the clear-recent test emptied the real Recent list.
+fn data_home() -> &'static std::path::Path {
+    static DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    let dir = DIR.get_or_init(|| temp_dir("data-home"));
+    let pinned = backends::local::pin_data_home(dir.clone());
+    assert_eq!(pinned, dir.as_path(), "the data home was pinned elsewhere first");
+    pinned
 }
 
 fn temp_dir(name: &str) -> std::path::PathBuf {
@@ -2189,6 +2201,13 @@ fn recent_navigation_sets_is_recent_flag() {
 #[test]
 fn clear_recent_history_dialog_and_execution() {
     let tmp = temp_dir("clear-recent");
+    // The list this clears is the sandbox's, never the user's own.
+    let xbel = data_home().join("recently-used.xbel");
+    std::fs::write(
+        &xbel,
+        "<?xml version=\"1.0\"?>\n<xbel version=\"1.0\">\n<bookmark href=\"file:///etc/hostname\" added=\"x\"/>\n</xbel>\n",
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
     let h = start(tmp.to_str().unwrap(), "gungnir://odin/asgard", MockConfig::instant());
     h.until(Duration::from_secs(5), |u| full_rows(u, 0, 0));
     h.send(Command::SidebarOpen("recent:///".into()));
@@ -2197,6 +2216,8 @@ fn clear_recent_history_dialog_and_execution() {
     h.until(Duration::from_secs(5), |u| matches!(u, Update::Dialog(d) if d.title.contains("Clear Recent")));
     h.send(Command::DialogAccept(String::new()));
     h.until(Duration::from_secs(5), |u| matches!(u, Update::Status(s) if s.message.contains("Recent history cleared")));
+    let left = std::fs::read_to_string(&xbel).unwrap_or_default();
+    assert!(!left.contains("<bookmark"), "the sandbox recent list was not the one cleared");
     let _ = std::fs::remove_dir_all(tmp);
 }
 

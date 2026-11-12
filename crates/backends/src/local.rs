@@ -617,24 +617,38 @@ fn empty_trash_dir(trash: &Path) -> VfsResult<()> {
     Ok(())
 }
 
-/// Home trash (`$XDG_DATA_HOME/Trash`, else `~/.local/share/Trash`).
-pub fn home_trash() -> VfsResult<PathBuf> {
-    let base = std::env::var_os("XDG_DATA_HOME")
+/// The data directory pinned for this process (see [`pin_data_home`]).
+static DATA_HOME: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// Pin the user data directory (`$XDG_DATA_HOME`) of this process to `dir`; the first
+/// call wins, and the pinned directory is returned. For tests: the trash and the recent
+/// list then live in a sandbox, never the user's own, without changing the process
+/// environment (which other test threads read at the same time). The app never pins.
+pub fn pin_data_home(dir: PathBuf) -> &'static Path {
+    DATA_HOME.get_or_init(|| dir)
+}
+
+/// The user data directory: the pinned one, else `$XDG_DATA_HOME` (absolute), else
+/// `~/.local/share`.
+fn data_home(what: &str) -> VfsResult<PathBuf> {
+    if let Some(p) = DATA_HOME.get() {
+        return Ok(p.clone());
+    }
+    std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
-        .ok_or_else(|| VfsError::Unsupported("no HOME for the trash".into()))?;
-    Ok(base.join("Trash"))
+        .ok_or_else(|| VfsError::Unsupported(format!("no HOME for {what}")))
+}
+
+/// Home trash (`$XDG_DATA_HOME/Trash`, else `~/.local/share/Trash`).
+pub fn home_trash() -> VfsResult<PathBuf> {
+    Ok(data_home("the trash")?.join("Trash"))
 }
 
 /// Home recent xbel (`$XDG_DATA_HOME/recently-used.xbel`, else `~/.local/share/recently-used.xbel`).
 pub fn home_recent_xbel() -> VfsResult<PathBuf> {
-    let base = std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
-        .ok_or_else(|| VfsError::Unsupported("no HOME for recent files".into()))?;
-    Ok(base.join("recently-used.xbel"))
+    Ok(data_home("recent files")?.join("recently-used.xbel"))
 }
 
 fn list_recent_blocking(opts: ListOptions, sink: &EntrySink, cancel: &CancellationToken) -> VfsResult<ListSummary> {
