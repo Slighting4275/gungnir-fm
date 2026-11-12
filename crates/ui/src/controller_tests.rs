@@ -189,6 +189,9 @@ fn data_home() -> &'static std::path::Path {
     let dir = DIR.get_or_init(|| temp_dir("data-home"));
     let pinned = backends::local::pin_data_home(dir.clone());
     assert_eq!(pinned, dir.as_path(), "the data home was pinned elsewhere first");
+    // Thumbnails of the images a test lists went to the real ~/.cache before.
+    let thumbs = crate::thumbnails::pin_cache_dir(dir.join("thumbnails"));
+    assert_eq!(thumbs, dir.join("thumbnails"), "the thumbnail cache was pinned elsewhere first");
     pinned
 }
 
@@ -1320,6 +1323,78 @@ fn properties_of_special_file_does_not_block_controller_or_hash_it() {
     assert!(!view.perms_editable);
     h.send(Command::SetDarkMode(false));
     h.until(Duration::from_secs(1), |u| matches!(u, Update::Flags(f) if !f.dark_mode));
+    h.send(Command::DialogCancel);
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+/// A FIFO in `dir` named `name` (an image or video name, so the thumbnailer wants it).
+fn image_named_fifo(dir: &std::path::Path, name: &str) {
+    use std::os::unix::ffi::OsStrExt;
+    let c_path = std::ffi::CString::new(dir.join(name).as_os_str().as_bytes()).unwrap();
+    // SAFETY: valid path in an isolated test directory.
+    assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
+}
+
+#[test]
+fn quick_preview_of_a_fifo_with_an_image_name_never_blocks_the_controller() {
+    // Opening a FIFO for reading waits for a writer: the thumbnailer did, on the
+    // controller task itself, so the whole window froze for good.
+    let tmp = temp_dir("fifo-quick-preview");
+    image_named_fifo(&tmp, "pipe.png");
+    let h = start(tmp.to_str().unwrap(), "gungnir://odin/asgard", MockConfig::instant());
+    h.until(Duration::from_secs(5), |u| full_rows(u, 0, 1));
+    h.send(Command::Run("quick-preview".into()));
+    h.send(Command::SetDarkMode(false));
+    let ups = h.until(Duration::from_secs(3), |u| matches!(u, Update::Preview { .. }));
+    assert!(ups.iter().any(|u| matches!(u, Update::Flags(f) if !f.dark_mode)), "controller answered meanwhile");
+    // No image for it: the window would load the FIFO itself on the UI thread.
+    assert!(matches!(ups.last(), Some(Update::Preview { image_path: None, .. })), "{:?}", ups.last());
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[test]
+fn quick_preview_shows_a_thumbnail_or_a_text_snippet() {
+    let tmp = temp_dir("quick-preview");
+    image::RgbImage::from_pixel(64, 48, image::Rgb([200, 30, 30])).save(tmp.join("a.png")).unwrap();
+    std::fs::write(tmp.join("b.txt"), "first line\nsecond line\n").unwrap();
+    let h = start(tmp.to_str().unwrap(), "gungnir://odin/asgard", MockConfig::instant());
+    let thumbs = crate::thumbnails::thumbnail_cache_dir(); // pinned to the sandbox by start()
+    h.until(Duration::from_secs(5), |u| full_rows(u, 0, 2));
+    h.send(Command::Run("quick-preview".into()));
+    let ups = h.until(Duration::from_secs(10), |u| matches!(u, Update::Preview { .. }));
+    let Some(Update::Preview { title, image_path: Some(img), .. }) = ups.last() else { panic!("{:?}", ups.last()) };
+    assert_eq!(title, "a.png");
+    assert!(img.starts_with(&thumbs) && img.is_file(), "{img:?}");
+    h.send(Command::DialogCancel); // how the window closes it
+    h.until(Duration::from_secs(2), |u| matches!(u, Update::CloseDialog));
+    h.send(Command::RowClicked { pane: 0, index: 1, ctrl: false, shift: false });
+    h.send(Command::Run("quick-preview".into()));
+    let ups = h.until(Duration::from_secs(10), |u| matches!(u, Update::Preview { .. }));
+    let Some(Update::Preview { title, detail, image_path: None }) = ups.last() else { panic!("{:?}", ups.last()) };
+    assert_eq!(title, "b.txt");
+    assert!(detail.ends_with("---\nfirst line\nsecond line"), "{detail}");
+    h.send(Command::DialogCancel);
+    // Cancelled while it was being prepared: its late result must not pop up.
+    h.send(Command::Run("quick-preview".into()));
+    h.send(Command::DialogCancel);
+    let late = h.drain_for(Duration::from_millis(800));
+    assert!(!late.iter().any(|u| matches!(u, Update::Preview { .. })), "a cancelled preview opened");
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[test]
+fn properties_of_a_fifo_with_a_video_name_still_load() {
+    // The details load on the blocking pool; a thumbnail of the FIFO kept that job
+    // waiting for a writer, so the dialog stayed at "Loading file details…".
+    let tmp = temp_dir("fifo-properties-video");
+    image_named_fifo(&tmp, "pipe.mp4");
+    let h = start(tmp.to_str().unwrap(), "gungnir://odin/asgard", MockConfig::instant());
+    h.until(Duration::from_secs(5), |u| full_rows(u, 0, 1));
+    h.send(Command::Run("properties".into()));
+    h.until(
+        Duration::from_secs(5),
+        |u| matches!(u, Update::Dialog(d) if d.title == "pipe.mp4 Properties" && !d.rows.is_empty()),
+    );
     h.send(Command::DialogCancel);
     let _ = std::fs::remove_dir_all(tmp);
 }

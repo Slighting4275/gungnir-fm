@@ -8,9 +8,21 @@ use std::process::{Command, Stdio};
 
 use core_vfs::format::Category;
 
+static PINNED_CACHE_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// Fixes the thumbnail cache for the rest of the process (the first call wins; returns
+/// the directory in force). Tests pin a sandbox so they never write to `~/.cache`.
+#[cfg(test)]
+pub fn pin_cache_dir(dir: PathBuf) -> &'static Path {
+    PINNED_CACHE_DIR.get_or_init(|| dir)
+}
+
 /// Directory where thumbnails are cached on disk.
 #[must_use]
 pub fn thumbnail_cache_dir() -> PathBuf {
+    if let Some(dir) = PINNED_CACHE_DIR.get() {
+        return dir.clone();
+    }
     if let Ok(dir) = std::env::var("GUNGNIR_THUMBNAIL_CACHE_DIR")
         && !dir.is_empty()
     {
@@ -331,6 +343,14 @@ pub fn is_video_ext(ext: Option<&str>) -> bool {
     )
 }
 
+/// True for a regular file (links followed). Only those are thumbnailed or shown as
+/// their own preview: the UI loads a preview image on its own thread, and a FIFO there
+/// would wait for a writer forever.
+#[must_use]
+pub fn is_regular_file(path: &Path) -> bool {
+    std::fs::metadata(path).is_ok_and(|m| m.is_file())
+}
+
 /// Checks if a cached thumbnail exists in `cache_dir` and is valid on disk.
 #[must_use]
 pub fn lookup_cached_in(cache_dir: &Path, uri: &str, mtime_secs: i64) -> Option<PathBuf> {
@@ -356,8 +376,13 @@ pub fn generate_thumbnail_in(
     mtime_secs: i64,
     is_video: bool,
 ) -> Result<PathBuf, String> {
-    if !source_path.exists() {
-        return Err(format!("source file does not exist: {}", source_path.display()));
+    // Regular files only (following links). A FIFO named like an image blocked the
+    // decoder's open() for a writer that never comes, forever: on Quick Preview that was
+    // the controller task, so the window froze. Devices and sockets are no images either.
+    match std::fs::metadata(source_path) {
+        Ok(m) if m.is_file() => {}
+        Ok(_) => return Err(format!("not a regular file: {}", source_path.display())),
+        Err(e) => return Err(format!("cannot read {}: {e}", source_path.display())),
     }
 
     use std::os::unix::fs::DirBuilderExt;
@@ -425,12 +450,28 @@ pub fn generate_thumbnail(source_path: &Path, uri: &str, mtime_secs: i64, is_vid
     generate_thumbnail_in(&thumbnail_cache_dir(), source_path, uri, mtime_secs, is_video)
 }
 
+/// The image decoder's reader for `source`: opened non-blocking and used only if it is
+/// still a regular file, so a file swapped for a FIFO after the check cannot block it.
+fn open_image(source: &Path) -> Option<image::ImageReader<std::io::BufReader<std::fs::File>>> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let file = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK).open(source).ok()?;
+    if !file.metadata().ok()?.is_file() {
+        return None;
+    }
+    let mut reader = image::ImageReader::new(std::io::BufReader::new(file));
+    match image::ImageFormat::from_path(source) {
+        Ok(format) => reader.set_format(format),
+        Err(_) => reader = reader.with_guessed_format().ok()?,
+    }
+    Some(reader)
+}
+
 fn generate_image_thumbnail(source: &Path, target: &Path) -> Result<(), String> {
     let target_str = target.to_str().unwrap_or("");
     let target_png = format!("png:{target_str}");
 
     // Inspect image dimensions first without decoding full pixel buffer into memory.
-    let is_huge = if let Ok(reader) = image::ImageReader::open(source) {
+    let is_huge = if let Some(reader) = open_image(source) {
         match reader.into_dimensions() {
             Ok((w, h)) => w > 4096 || h > 4096 || (w as u64 * h as u64) > 16_000_000,
             Err(_) => false,
@@ -442,7 +483,7 @@ fn generate_image_thumbnail(source: &Path, target: &Path) -> Result<(), String> 
     if !is_huge {
         let mut limits = image::Limits::default();
         limits.max_alloc = Some(64 * 1024 * 1024);
-        if let Ok(mut reader) = image::ImageReader::open(source) {
+        if let Some(mut reader) = open_image(source) {
             reader.limits(limits);
             if let Ok(img) = reader.decode() {
                 let thumb = img.thumbnail(512, 512);
