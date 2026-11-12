@@ -536,6 +536,26 @@ fn text_snippet(path: &std::path::Path) -> Option<String> {
     Some(out)
 }
 
+/// Largest file content search reads.
+const SEARCH_TEXT_MAX: u64 = 5 * 1024 * 1024;
+
+/// The text content search looks through: a regular file of at most
+/// [`SEARCH_TEXT_MAX`] bytes, UTF-8. Opened non-blocking and checked on the open file, not
+/// on the name seen earlier: a file swapped for a FIFO between the two waited for a
+/// writer forever and stalled that search's thread.
+pub(crate) fn search_text(path: &std::path::Path) -> Option<String> {
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+    let file = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK).open(path).ok()?;
+    let md = file.metadata().ok()?;
+    if !md.is_file() || md.len() > SEARCH_TEXT_MAX {
+        return None;
+    }
+    let mut text = String::new();
+    file.take(SEARCH_TEXT_MAX).read_to_string(&mut text).ok()?;
+    Some(text)
+}
+
 fn build_open_with_items(
     idx: &crate::desktop::DesktopIndex,
     mime: &str,
@@ -4743,10 +4763,7 @@ impl Controller {
                     } else if ft.is_file() || (ft.is_symlink() && path.is_file()) {
                         files_checked += 1;
                         if grep_content {
-                            if let Ok(meta) = entry.metadata()
-                                && meta.len() <= 5 * 1024 * 1024
-                                && let Ok(contents) = std::fs::read_to_string(&path)
-                            {
+                            if let Some(contents) = search_text(&path) {
                                 for (idx, line) in contents.lines().enumerate() {
                                     let matches = if case_sensitive {
                                         line.contains(&query_norm)

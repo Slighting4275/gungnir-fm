@@ -718,6 +718,32 @@ fn test_deep_recursive_search_and_grep() {
 }
 
 #[test]
+fn content_search_reads_only_regular_files_and_never_waits() {
+    // Checked by name, then read_to_string: a file swapped for a FIFO in between made the
+    // read wait for a writer forever. The check is on the opened file now.
+    let tmp = temp_dir("search-text");
+    image_named_fifo(&tmp, "pipe.txt");
+    std::os::unix::fs::symlink(tmp.join("pipe.txt"), tmp.join("link-to-pipe.txt")).unwrap();
+    std::fs::write(tmp.join("plain.txt"), "find me\n").unwrap();
+    std::fs::write(tmp.join("big.txt"), vec![b'a'; 5 * 1024 * 1024 + 1]).unwrap();
+    std::fs::write(tmp.join("latin1.txt"), b"caf\xe9\n").unwrap();
+    std::fs::create_dir(tmp.join("dir.txt")).unwrap();
+    let (done_tx, done_rx) = std_mpsc::channel();
+    let dir = tmp.clone();
+    std::thread::spawn(move || {
+        let got: Vec<(&str, bool)> = ["pipe.txt", "link-to-pipe.txt", "big.txt", "latin1.txt", "dir.txt"]
+            .into_iter()
+            .map(|n| (n, crate::controller::search_text(&dir.join(n)).is_some()))
+            .collect();
+        let _ = done_tx.send(got);
+    });
+    let got = done_rx.recv_timeout(Duration::from_secs(5)).unwrap_or_else(|_| panic!("search_text waited on a FIFO"));
+    assert!(got.iter().all(|(_, read)| !read), "{got:?}");
+    assert_eq!(crate::controller::search_text(&tmp.join("plain.txt")).as_deref(), Some("find me\n"));
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[test]
 fn search_never_follows_folder_links() {
     // Folders were entered with path.is_dir(), which follows links: two links to their
     // own folder (no files to hit the 15,000-file cap) made 2^40 paths, so the search
