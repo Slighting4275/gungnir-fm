@@ -229,6 +229,14 @@ fn with_lock<R>(path: &Path, f: impl FnOnce() -> Result<R, ForgetError>) -> Resu
 }
 
 fn write_atomic(path: &Path, out: &[u8]) -> io::Result<()> {
+    // A link (a dotfiles manager's) is followed and its target replaced, beside it: the
+    // rename used to replace the link with a plain file, and the real list stopped
+    // changing. A dangling link is an error, never turned into a file.
+    let target = match fs::symlink_metadata(path) {
+        Ok(m) if m.file_type().is_symlink() => fs::canonicalize(path)?,
+        _ => path.to_path_buf(),
+    };
+    let path = target.as_path();
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(format!(".gungnir-{}", std::process::id()));
     let _ = fs::remove_file(&tmp);
@@ -281,4 +289,50 @@ pub fn clear(path: &Path) -> Result<(), ForgetError> {
         out.extend_from_slice(&text[at..]);
         Ok(write_atomic(path, &out)?)
     })
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    const XBEL: &str = "<?xml version=\"1.0\"?>\n<xbel version=\"1.0\">\n<bookmark href=\"file:///home/u/a.txt\" added=\"x\"/>\n<bookmark href=\"file:///home/u/b.txt\" added=\"y\"></bookmark>\n</xbel>\n";
+
+    fn sandbox(name: &str) -> std::path::PathBuf {
+        let p = std::env::temp_dir().join("gungnir-test-sandbox").join(format!("recent-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&p);
+        fs::create_dir_all(p.join("real")).unwrap();
+        p
+    }
+
+    #[test]
+    fn forgetting_and_clearing_edit_only_the_bookmarks() {
+        let d = sandbox("plain");
+        let p = d.join("recently-used.xbel");
+        fs::write(&p, XBEL).unwrap();
+        forget(&p, b"file:///home/u/a.txt").unwrap();
+        let left = fs::read(&p).unwrap();
+        assert_eq!(parse(&left).iter().map(|e| e.uri.clone()).collect::<Vec<_>>(), [b"file:///home/u/b.txt".to_vec()]);
+        clear(&p).unwrap();
+        let left = fs::read_to_string(&p).unwrap();
+        assert!(parse(left.as_bytes()).is_empty() && left.contains("<xbel version") && left.contains("</xbel>"));
+        let _ = fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn a_symlinked_list_stays_a_link_and_its_target_is_rewritten() {
+        // The temp was renamed over the path: a linked recently-used.xbel (a dotfiles
+        // manager's) became a plain file, and the real list never changed again.
+        let d = sandbox("link");
+        let (link, real) = (d.join("recently-used.xbel"), d.join("real/recently-used.xbel"));
+        fs::write(&real, XBEL).unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        forget(&link, b"file:///home/u/a.txt").unwrap();
+        assert!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink(), "the link was replaced");
+        assert_eq!(parse(&fs::read(&real).unwrap()).len(), 1, "the real list did not change");
+        clear(&link).unwrap();
+        assert!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+        assert!(parse(&fs::read(&real).unwrap()).is_empty());
+        let _ = fs::remove_dir_all(d);
+    }
 }
