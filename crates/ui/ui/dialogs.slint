@@ -27,6 +27,8 @@ export enum DialogKind {
     batch-rename,
     compare-panes,
     compress,
+    // The password of an encrypted archive being extracted (masked input).
+    archive-password,
 }
 
 component DialogButton inherits Rectangle {
@@ -225,10 +227,11 @@ export component DialogOverlay inherits Rectangle {
                 wrap: word-wrap;
             }
             field := LineEdit {
-                visible: root.kind == DialogKind.new-folder || root.kind == DialogKind.new-file || root.kind == DialogKind.select-pattern || root.kind == DialogKind.connect-server || root.kind == DialogKind.hash;
-                height: (root.kind == DialogKind.new-folder || root.kind == DialogKind.new-file || root.kind == DialogKind.select-pattern || root.kind == DialogKind.connect-server || root.kind == DialogKind.hash) ? 32px : 0px;
+                visible: root.kind == DialogKind.new-folder || root.kind == DialogKind.new-file || root.kind == DialogKind.select-pattern || root.kind == DialogKind.connect-server || root.kind == DialogKind.hash || root.kind == DialogKind.archive-password;
+                height: (root.kind == DialogKind.new-folder || root.kind == DialogKind.new-file || root.kind == DialogKind.select-pattern || root.kind == DialogKind.connect-server || root.kind == DialogKind.hash || root.kind == DialogKind.archive-password) ? 32px : 0px;
                 text <=> root.input;
-                placeholder-text: root.kind == DialogKind.new-folder ? "Folder name" : root.kind == DialogKind.new-file ? "Document name" : root.kind == DialogKind.select-pattern ? "For example: *.txt" : root.kind == DialogKind.connect-server ? "sftp://user@host/path or smb://host/share" : "Paste expected hash to verify…";
+                input-type: root.kind == DialogKind.archive-password ? InputType.password : InputType.text;
+                placeholder-text: root.kind == DialogKind.archive-password ? "Password" : root.kind == DialogKind.new-folder ? "Folder name" : root.kind == DialogKind.new-file ? "Document name" : root.kind == DialogKind.select-pattern ? "For example: *.txt" : root.kind == DialogKind.connect-server ? "sftp://user@host/path or smb://host/share" : "Paste expected hash to verify…";
                 accepted(t) => { root.accept(t); }
                 key-pressed(e) => {
                     if e.text == Key.Escape {
@@ -889,16 +892,16 @@ export component DialogOverlay inherits Rectangle {
                 }
                 if root.kind != DialogKind.conflict && root.kind != DialogKind.search && root.kind != DialogKind.batch-rename && root.kind != DialogKind.compare-panes && root.kind != DialogKind.compress: HorizontalLayout {
                     spacing: 8px;
-                    if root.kind == DialogKind.new-folder || root.kind == DialogKind.new-file || root.kind == DialogKind.select-pattern || root.kind == DialogKind.confirm-delete || root.kind == DialogKind.confirm-open || root.kind == DialogKind.connect-server: DialogButton {
+                    if root.kind == DialogKind.new-folder || root.kind == DialogKind.new-file || root.kind == DialogKind.select-pattern || root.kind == DialogKind.confirm-delete || root.kind == DialogKind.confirm-open || root.kind == DialogKind.connect-server || root.kind == DialogKind.archive-password: DialogButton {
                         label: "Cancel";
                         clicked => { root.cancel(); }
                     }
                     DialogButton {
-                        label: root.kind == DialogKind.new-folder || root.kind == DialogKind.new-file ? "Create" : root.kind == DialogKind.select-pattern ? "Select" : root.kind == DialogKind.connect-server ? "Connect" : root.kind == DialogKind.confirm-delete ? (root.title == "Empty Trash permanently?" ? "Empty Trash" : "Delete") : root.kind == DialogKind.confirm-open ? "Open" : "Close";
+                        label: root.kind == DialogKind.archive-password ? "Extract" : root.kind == DialogKind.new-folder || root.kind == DialogKind.new-file ? "Create" : root.kind == DialogKind.select-pattern ? "Select" : root.kind == DialogKind.connect-server ? "Connect" : root.kind == DialogKind.confirm-delete ? (root.title == "Empty Trash permanently?" ? "Empty Trash" : "Delete") : root.kind == DialogKind.confirm-open ? "Open" : "Close";
                         primary: true;
                         danger: root.kind == DialogKind.confirm-delete;
                         clicked => {
-                            if root.kind == DialogKind.new-folder || root.kind == DialogKind.new-file || root.kind == DialogKind.select-pattern || root.kind == DialogKind.confirm-delete || root.kind == DialogKind.confirm-open || root.kind == DialogKind.connect-server {
+                            if root.kind == DialogKind.new-folder || root.kind == DialogKind.new-file || root.kind == DialogKind.select-pattern || root.kind == DialogKind.confirm-delete || root.kind == DialogKind.confirm-open || root.kind == DialogKind.connect-server || root.kind == DialogKind.archive-password {
                                 root.accept(root.input);
                             } else {
                                 root.cancel();

@@ -585,6 +585,16 @@ fn test_open_terminal_here_command_and_action() {
     let handled3 = updates3.iter().any(|u| matches!(u, Update::Status(..) | Update::Terminal { .. }));
     assert!(handled3, "custom-action terminal alias should be handled");
 
+    // Each of the three asked for a terminal in this folder (and none was opened on the
+    // desktop: test builds only record it).
+    let opened = crate::controller::TERMINALS_OPENED
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .iter()
+        .filter(|d| d.starts_with(&tmp))
+        .count();
+    assert_eq!(opened, 3, "three terminals asked for in {}", tmp.display());
+
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
@@ -2703,4 +2713,49 @@ fn test_tab_bounds_safety() {
     h.until(Duration::from_secs(5), |u| matches!(u, Update::Rows { pane: 0, .. }));
 
     let _ = std::fs::remove_dir_all(tmp);
+}
+
+/// "Extract To" on an encrypted archive asks for its password (it passed none, so it
+/// could never extract one); a wrong one asks again, the right one extracts. Cancelling
+/// leaves no empty folder behind.
+#[test]
+fn extracting_an_encrypted_archive_asks_for_its_password() {
+    let tmp = temp_dir("extract-password");
+    std::fs::write(tmp.join("secret.txt"), b"locked contents").unwrap_or_else(|e| panic!("{e}"));
+    let opts = backends::archive::ArchiveOptions {
+        format: Some(backends::archive::ArchiveFormat::Zip),
+        password: Some("Open-Sesame-4".into()),
+        ..Default::default()
+    };
+    backends::archive::compress_items(&tmp.join("locked.zip"), &tmp, &[std::path::PathBuf::from("secret.txt")], &opts)
+        .unwrap_or_else(|e| panic!("7z required: {e}"));
+    std::fs::remove_file(tmp.join("secret.txt")).unwrap_or_else(|e| panic!("{e}"));
+    let dir = tmp.to_str().unwrap_or("");
+    let h = start(dir, dir, MockConfig::default());
+    let _ = h.until(Duration::from_secs(5), |u| full_rows(u, 0, 1));
+    h.send(Command::Run("select-all".into()));
+    let _ = h.drain_for(Duration::from_millis(50));
+    let asked = |h: &Harness, what: &str| {
+        let got = h.until(Duration::from_secs(5), |u| {
+            matches!(u, Update::Dialog(d) if d.kind == crate::DialogKind::ArchivePassword && d.message.contains(what))
+        });
+        assert!(!got.is_empty(), "no password dialog saying {what:?}");
+    };
+    // Cancel: nothing extracted, no empty folder left.
+    h.send(Command::Run("extract-to".into()));
+    asked(&h, "is encrypted");
+    h.send(Command::DialogCancel);
+    let _ = h.drain_for(Duration::from_millis(100));
+    assert!(!tmp.join("locked").exists(), "an empty folder was left after cancelling");
+    // Wrong, then right.
+    h.send(Command::Run("extract-to".into()));
+    asked(&h, "is encrypted");
+    h.send(Command::DialogAccept("wrong-one".into()));
+    asked(&h, "does not open");
+    h.send(Command::DialogAccept("Open-Sesame-4".into()));
+    let _ = h.until(Duration::from_secs(5), |u| matches!(u, Update::Status(s) if s.message.contains("Extracted")));
+    assert_eq!(
+        std::fs::read(tmp.join("locked").join("secret.txt")).unwrap_or_else(|e| panic!("{e}")),
+        b"locked contents"
+    );
 }
