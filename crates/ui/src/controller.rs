@@ -2075,6 +2075,20 @@ impl Controller {
         });
     }
 
+    /// [`Self::spawn_op`] for blocking work (libarchive, file walks), run on the blocking
+    /// pool. On the async workers a long compress or extract held one of the 4 runtime
+    /// threads the controller itself runs on; four at once froze the window.
+    fn spawn_blocking_op<F>(&self, reload: Vec<VfsUri>, select: Option<(VfsUri, String)>, f: F)
+    where
+        F: FnOnce() -> VfsResult<String> + Send + 'static,
+    {
+        self.spawn_op(reload, select, async move {
+            tokio::task::spawn_blocking(f)
+                .await
+                .map_err(|e| core_vfs::error::VfsError::Transport(format!("archive task failed: {e}")))?
+        });
+    }
+
     fn transfer(&mut self, kind: TransferKind) {
         if !self.dual {
             self.say("Open the second pane (F3) to copy or move between panes", true);
@@ -3113,7 +3127,7 @@ impl Controller {
                 let select_name = archive_name.clone();
                 let rel_items: Vec<PathBuf> =
                     local_targets.iter().map(|p| p.strip_prefix(&base_dir).unwrap_or(p).to_path_buf()).collect();
-                self.spawn_op(vec![loc.clone()], Some((loc, select_name)), async move {
+                self.spawn_blocking_op(vec![loc.clone()], Some((loc, select_name)), move || {
                     backends::archive::compress_items(
                         &archive_path,
                         &base_dir,
@@ -3166,7 +3180,7 @@ impl Controller {
                 let select_name = archive_name.clone();
                 let rel_items: Vec<PathBuf> =
                     local_targets.iter().map(|p| p.strip_prefix(&base_dir).unwrap_or(p).to_path_buf()).collect();
-                self.spawn_op(vec![loc.clone()], Some((loc, select_name)), async move {
+                self.spawn_blocking_op(vec![loc.clone()], Some((loc, select_name)), move || {
                     backends::archive::compress_items(
                         &archive_path,
                         &base_dir,
@@ -3202,7 +3216,7 @@ impl Controller {
                 };
                 let loc = t.location.clone();
                 let name = e.name.clone();
-                self.spawn_op(vec![loc.clone()], None, async move {
+                self.spawn_blocking_op(vec![loc.clone()], None, move || {
                     let stats = backends::archive::extract_archive(&archive_path, &target_dir, None)
                         .map_err(|e| core_vfs::error::VfsError::Io { op: "extract", errno: 0, msg: format!("{e}") })?;
                     Ok(format!("Extracted {} file(s) from {name} in {}ms", stats.files_extracted, stats.elapsed_ms))
@@ -3241,7 +3255,7 @@ impl Controller {
                 let loc = t.location.clone();
                 let select_folder = stem.clone();
                 let name = e.name.clone();
-                self.spawn_op(vec![loc.clone()], Some((loc, select_folder)), async move {
+                self.spawn_blocking_op(vec![loc.clone()], Some((loc, select_folder)), move || {
                     let stats = backends::archive::extract_archive(&archive_path, &target_dir, None)
                         .map_err(|e| core_vfs::error::VfsError::Io { op: "extract", errno: 0, msg: format!("{e}") })?;
                     Ok(format!(
@@ -5271,7 +5285,7 @@ impl Controller {
                 let format = backends::archive::ArchiveFormat::from_path(&archive_path)
                     .unwrap_or(backends::archive::ArchiveFormat::TarZstd);
 
-                self.spawn_op(vec![loc.clone()], Some((loc, select_name)), async move {
+                self.spawn_blocking_op(vec![loc.clone()], Some((loc, select_name)), move || {
                     backends::archive::compress_items(
                         &archive_path,
                         &base_dir,

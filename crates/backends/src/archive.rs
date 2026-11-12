@@ -496,10 +496,17 @@ fn compress_items_libarchive(
             return Err(ArchiveError::Libarchive(get_archive_error(a)));
         }
 
-        // Recursively add items
+        // A work list, not recursion: a frame per level (64 KiB each, with the read
+        // buffer) overflowed the 2 MiB stack about 30 folders deep and aborted the app.
+        let mut buf = vec![0u8; 65536];
         for item in items {
             let abs_item = if item.is_absolute() { item.clone() } else { base_dir.join(item) };
-            add_item_recursive(a, &abs_item, base_dir, &mut stats)?;
+            let mut todo = vec![abs_item];
+            while let Some(path) = todo.pop() {
+                let mut children = Vec::new();
+                add_item(a, &path, base_dir, &mut stats, &mut children, &mut buf)?;
+                todo.extend(children.into_iter().rev()); // each folder before its contents, as before
+            }
         }
         _guard.finish()?;
     }
@@ -511,11 +518,14 @@ fn compress_items_libarchive(
     Ok(stats)
 }
 
-fn add_item_recursive(
+/// Writes the entry for `path`; a folder's contents are pushed onto `children`.
+fn add_item(
     a: *mut c_void,
     path: &Path,
     base_dir: &Path,
     stats: &mut ArchiveStats,
+    children: &mut Vec<PathBuf>,
+    buf: &mut [u8],
 ) -> Result<(), ArchiveError> {
     let rel_path = path.strip_prefix(base_dir).unwrap_or(path);
     let rel_name = if rel_path.as_os_str().is_empty() {
@@ -568,7 +578,7 @@ fn add_item_recursive(
             stats.directories_count += 1;
 
             for de in std::fs::read_dir(path)? {
-                add_item_recursive(a, &de?.path(), base_dir, stats)?;
+                children.push(de?.path());
             }
         } else if meta.is_file() {
             archive_entry_set_filetype(entry, AE_IFREG);
@@ -578,10 +588,9 @@ fn add_item_recursive(
             }
 
             let mut file = std::fs::File::open(path)?;
-            let mut buf = [0u8; 65536];
             use std::io::Read;
             loop {
-                let n = file.read(&mut buf)?;
+                let n = file.read(buf)?;
                 if n == 0 {
                     break;
                 }
@@ -1723,6 +1732,41 @@ mod tests {
 
         verify_bit_perfect(&file1, &out_dir.join("a/b/c/leaf.txt")).expect("bit-perfect leaf");
         verify_bit_perfect(&root_file, &out_dir.join("root.txt")).expect("bit-perfect root");
+    }
+
+    #[test]
+    fn compressing_a_deep_folder_does_not_overflow_the_stack() {
+        // add_item_recursive took a frame per level holding a 64 KiB read buffer: on the
+        // 2 MiB stack the app compresses on, about 30 levels aborted the whole app.
+        let dir = TestTempDir::new("deep");
+        let mut leaf = dir.path().join("top");
+        for i in 0..60 {
+            leaf.push(format!("level{i}"));
+        }
+        std::fs::create_dir_all(&leaf).expect("create deep tree");
+        std::fs::write(leaf.join("leaf.txt"), b"at the bottom").expect("write leaf");
+        let (archive_file, base) = (dir.path().join("deep.tar.zst"), dir.path().to_path_buf());
+        let a2 = archive_file.clone();
+        let stats = std::thread::Builder::new()
+            .stack_size(2 << 20)
+            .spawn(move || {
+                compress_items(
+                    &a2,
+                    &base,
+                    &[PathBuf::from("top")],
+                    &ArchiveOptions { format: Some(ArchiveFormat::TarZstd), ..Default::default() },
+                )
+                .map(|s| (s.directories_count, s.files_count))
+                .map_err(|e| e.to_string())
+            })
+            .expect("spawn")
+            .join()
+            .expect("join");
+        assert_eq!(stats, Ok((61, 1)));
+        let out_dir = dir.path().join("out");
+        extract_archive(&archive_file, &out_dir, None).expect("extract deep tree");
+        let rel = leaf.strip_prefix(dir.path()).expect("inside");
+        assert_eq!(std::fs::read(out_dir.join(rel).join("leaf.txt")).expect("leaf"), b"at the bottom");
     }
 
     #[test]

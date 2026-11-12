@@ -528,3 +528,125 @@ async fn private_template_documents_keep_private_permissions_without_executable_
     assert_eq!(std::fs::read(t.path().join("document")).unwrap_or_default(), b"private fixture");
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn replacing_a_folder_never_destroys_the_source_inside_it() -> VfsResult<()> {
+    // Copying x/A/A into x with Replace swapped x/A out and deleted it, and the source
+    // inside it went too: a copy that destroyed what it copied.
+    let t = TempDir::new("replace-ancestor");
+    std::fs::create_dir_all(t.path().join("A/A")).ok();
+    write(&t.path().join("A/A/inner.txt"), 5);
+    write(&t.path().join("A/sibling.txt"), 7);
+    let b = LocalPosixBackend::new();
+    for kind in [TransferKind::Copy, TransferKind::Move] {
+        let (ctl, _prx, _p, _c) = control();
+        let req = TransferRequest { id: 1, kind, sources: vec![t.uri("A/A")], dest_dir: t.uri(""), overwrite: true };
+        assert_eq!(b.transfer(req, ctl).await, Err(VfsError::WouldRecurse), "{kind:?}");
+        assert_eq!(std::fs::read(t.path().join("A/A/inner.txt")).ok(), Some(b"xxxxx".to_vec()), "{kind:?}");
+        assert!(t.path().join("A/sibling.txt").exists(), "{kind:?}");
+    }
+    Ok(())
+}
+
+/// A chain of `depth` directories named `d` below `root`, made with directory fds (the
+/// full path can be longer than one path call allows).
+fn deep_chain(root: &std::path::Path, depth: usize) {
+    use std::os::unix::ffi::OsStrExt;
+    let c = std::ffi::CString::new(root.as_os_str().as_bytes()).unwrap_or_else(|e| panic!("{e}"));
+    // SAFETY: plain directory syscalls on fds this function owns and closes.
+    unsafe {
+        let mut fd = libc::open(c.as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY);
+        assert!(fd >= 0);
+        for _ in 0..depth {
+            assert_eq!(libc::mkdirat(fd, c"d".as_ptr(), 0o755), 0);
+            let next = libc::openat(fd, c"d".as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY);
+            libc::close(fd);
+            assert!(next >= 0);
+            fd = next;
+        }
+        libc::close(fd);
+    }
+}
+
+/// How many directories named `d` are chained below `root` (walked with fds).
+fn chain_depth(root: &std::path::Path) -> usize {
+    use std::os::unix::ffi::OsStrExt;
+    let c = std::ffi::CString::new(root.as_os_str().as_bytes()).unwrap_or_else(|e| panic!("{e}"));
+    // SAFETY: plain directory syscalls on fds this function owns and closes.
+    unsafe {
+        let mut fd = libc::open(c.as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY);
+        let mut n = 0;
+        while fd >= 0 {
+            let next = libc::openat(fd, c"d".as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY);
+            libc::close(fd);
+            if next >= 0 {
+                n += 1;
+            }
+            fd = next;
+        }
+        n
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn deep_folders_are_copied_and_deleted_without_crashing() -> VfsResult<()> {
+    // One stack frame per level on a blocking-pool thread: deep enough trees overflowed
+    // the stack and aborted the whole file manager.
+    let t = TempDir::new("deep-copy");
+    std::fs::create_dir_all(t.path().join("src")).ok();
+    std::fs::create_dir_all(t.path().join("dst")).ok();
+    deep_chain(&t.path().join("src"), 2020);
+    let b = LocalPosixBackend::new();
+    let (ctl, _prx, _p, _c) = control();
+    let req = TransferRequest {
+        id: 2,
+        kind: TransferKind::Copy,
+        sources: vec![t.uri("src")],
+        dest_dir: t.uri("dst"),
+        overwrite: false,
+    };
+    b.transfer(req, ctl).await?;
+    assert_eq!(chain_depth(&t.path().join("dst/src")), 2020, "the whole chain is copied");
+    b.delete(&[t.uri("src"), t.uri("dst/src")], CancellationToken::new()).await?;
+    assert!(!t.path().join("src").exists() && !t.path().join("dst/src").exists());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sparse_files_stay_sparse_and_identical() -> VfsResult<()> {
+    // Every byte was copied: a sparse 2 GiB image with nothing allocated became 2 GiB of
+    // zeros on disk (a 100 GB VM disk could fill the drive).
+    use std::io::{Seek, SeekFrom, Write};
+    use std::os::unix::fs::MetadataExt;
+    let t = TempDir::new("sparse");
+    let src = t.path().join("disk.img");
+    let mut f = std::fs::File::create(&src).unwrap_or_else(|e| panic!("{e}"));
+    f.write_all(&[b'a'; 4096]).ok();
+    f.seek(SeekFrom::Start(32 << 20)).ok();
+    f.write_all(&[b'b'; 4096]).ok();
+    f.set_len(64 << 20).ok(); // a trailing hole too
+    drop(f);
+    std::fs::create_dir(t.path().join("dst")).ok();
+    let b = LocalPosixBackend::new();
+    let (ctl, mut prx, _p, _c) = control();
+    let req = TransferRequest {
+        id: 3,
+        kind: TransferKind::Copy,
+        sources: vec![t.uri("disk.img")],
+        dest_dir: t.uri("dst"),
+        overwrite: false,
+    };
+    b.transfer(req, ctl).await?;
+    let copy = t.path().join("dst/disk.img");
+    assert!(std::fs::read(&src).ok() == std::fs::read(&copy).ok(), "contents differ");
+    let (s, d) = (std::fs::metadata(&src).map(|m| m.blocks()).ok(), std::fs::metadata(&copy).map(|m| m.blocks()).ok());
+    assert_eq!(std::fs::metadata(&copy).map(|m| m.len()).ok(), Some(64 << 20));
+    assert!(s.is_some_and(|s| s < 2048), "the source is sparse here: {s:?} blocks");
+    assert!(d.is_some_and(|d| d < 2048), "the copy filled its holes: {d:?} blocks of 512 B");
+    let mut last = None;
+    while let Ok(p) = prx.try_recv() {
+        last = Some(p);
+    }
+    assert_eq!(last.map(|p| (p.bytes_done, p.state)), Some((64 << 20, TransferState::Done)), "holes count as done");
+    Ok(())
+}
