@@ -156,7 +156,7 @@ impl DesktopIndex {
                 if !seen.insert(id.clone()) {
                     continue; // a higher-priority dir already defined (or deleted) this ID
                 }
-                let Ok(text) = std::fs::read_to_string(&path) else { continue };
+                let Ok(text) = crate::session::read_text_file(&path) else { continue };
                 let ini = parse_ini(&text);
                 let Some(e) = ini.get("Desktop Entry") else { continue };
                 let truthy = |k: &str| e.get(k).is_some_and(|v| v == "true");
@@ -187,7 +187,7 @@ impl DesktopIndex {
         lists.extend(dirs.data.iter().map(|d| d.join("applications/mimeapps.list")));
         lists.extend(dirs.data.iter().map(|d| d.join("applications/defaults.list")));
         for path in lists {
-            let Ok(text) = std::fs::read_to_string(&path) else { continue };
+            let Ok(text) = crate::session::read_text_file(&path) else { continue };
             let ini = parse_ini(&text);
             if let Some(g) = ini.get("Default Applications") {
                 for (mime, ids) in g {
@@ -207,10 +207,10 @@ impl DesktopIndex {
         }
         // shared-mime-info: later (lower-priority) dirs first, so higher ones override.
         for d in dirs.data.iter().rev() {
-            if let Ok(text) = std::fs::read_to_string(d.join("mime/globs2")) {
+            if let Ok(text) = crate::session::read_text_file(&d.join("mime/globs2")) {
                 idx.globs.add_globs2(&text);
             }
-            if let Ok(text) = std::fs::read_to_string(d.join("mime/subclasses")) {
+            if let Ok(text) = crate::session::read_text_file(&d.join("mime/subclasses")) {
                 for line in text.lines() {
                     if let Some((child, parent)) = line.split_once(' ') {
                         idx.parents.entry(child.to_owned()).or_default().push(parent.trim().to_owned());
@@ -696,7 +696,7 @@ pub fn open_default_with(program: &std::ffi::OsStr, target: &std::ffi::OsStr) ->
 /// `mimeapps.list`, or "" when there is none. Any other failure is an error: an
 /// unreadable or non-UTF-8 file once read as "" and the rewrite dropped every association.
 fn read_mimeapps(path: &Path) -> std::io::Result<String> {
-    match std::fs::read_to_string(path) {
+    match crate::session::read_text_file(path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
         r => r,
     }
@@ -1266,5 +1266,29 @@ mod tests {
         let text = std::fs::read_to_string(desktop_file).unwrap();
         assert!(text.contains("Name=My Player"));
         assert!(text.contains(r#"Exec="/usr/local/bin/my-player" %f"#));
+    }
+
+    #[test]
+    fn fifos_among_desktop_files_and_mime_tables_are_skipped_not_waited_on() {
+        // Open With builds this index on the controller: a FIFO named *.desktop (or a FIFO
+        // mimeapps.list or globs2) froze the window for good.
+        let t = Tree::new("desktop-fifo");
+        t.write(
+            "data/applications/real.desktop",
+            "[Desktop Entry]\nType=Application\nName=Real\nExec=real %f\nMimeType=text/plain;\n",
+        );
+        std::fs::create_dir_all(t.0.join("data/mime")).unwrap();
+        std::fs::create_dir_all(t.0.join("config")).unwrap();
+        crate::session::tests::fifo(&t.0.join("data/applications/fifo.desktop"));
+        crate::session::tests::fifo(&t.0.join("data/mime/globs2"));
+        crate::session::tests::fifo(&t.0.join("config/mimeapps.list"));
+        let dirs = Dirs { config: vec![t.0.join("config")], data: vec![t.0.join("data")] };
+        let idx = crate::session::tests::bounded("DesktopIndex::load", move || DesktopIndex::load(&dirs));
+        assert!(idx.apps.contains_key("real.desktop"), "the real entry still loads");
+        let cfg = t.0.join("config");
+        let r = crate::session::tests::bounded("set_default_app_in", move || {
+            set_default_app_in(&cfg, "text/plain", "real.desktop")
+        });
+        assert!(r.is_err(), "a FIFO mimeapps.list is no list to rewrite");
     }
 }
