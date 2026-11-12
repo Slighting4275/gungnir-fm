@@ -64,7 +64,8 @@ check:
 	$(CARGO) check --workspace $(CARGO_FLAGS)
 
 # Run full workspace test suite
-test:
+# The live tests need the companion daemon: build it first (they fail without it).
+test: gungnird
 	@echo "==> Running test suite across all workspace crates..."
 	$(CARGO) test --workspace $(CARGO_FLAGS)
 

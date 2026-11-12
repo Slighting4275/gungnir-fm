@@ -1,6 +1,7 @@
 //! GungnirVfsBackend against a real gungnird built from ../gungnir-vfs
-//! (`scripts/build-gungnird.sh`, or `GUNGNIRD_BIN=<path>`). Without a binary the
-//! tests print why and pass vacuously; CI should build it first.
+//! (`scripts/build-gungnird.sh` or `make gungnird`, or `GUNGNIRD_BIN=<path>`). Without a
+//! binary the tests FAIL: a live test that passes without the daemon proves nothing.
+//! `GUNGNIR_LIVE_SKIP=1` skips them on purpose, and each says so.
 
 mod common;
 
@@ -33,9 +34,16 @@ struct Daemon {
 impl Daemon {
     fn start(dir: &Path) -> Option<Self> {
         let Some(bin) = gungnird() else {
-            eprintln!("SKIP: no gungnird (run scripts/build-gungnird.sh or set GUNGNIRD_BIN)");
+            let skip = std::env::var_os("GUNGNIR_LIVE_SKIP").is_some_and(|v| v == "1");
+            assert!(
+                skip,
+                "no gungnird to test against: run scripts/build-gungnird.sh (or make gungnird), \
+                 set GUNGNIRD_BIN=<path>, or set GUNGNIR_LIVE_SKIP=1 to skip the live tests on purpose"
+            );
+            eprintln!("SKIP (GUNGNIR_LIVE_SKIP=1): no gungnird; this live test did not run");
             return None;
         };
+        assert!(bin.is_file(), "GUNGNIRD_BIN={} is not a file", bin.display());
         let sock = dir.join("g.sock");
         let log = std::fs::File::create(dir.join("gungnird.log")).ok()?;
         let child = Command::new(bin)
