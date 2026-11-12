@@ -7,7 +7,7 @@
 
 use std::ffi::CString;
 use std::fs::{self, DirEntry};
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -24,6 +24,8 @@ use core_vfs::{
 use notify::{RecursiveMode, Watcher};
 use tokio::sync::mpsc;
 
+/// Longest file name (bytes) Linux filesystems take.
+const NAME_MAX: usize = 255;
 /// Threads that stat entries in parallel during a listing.
 const STAT_WORKERS: usize = 4;
 /// Copy buffer.
@@ -292,34 +294,53 @@ impl Copier<'_> {
         Ok(())
     }
 
+    /// Copies `src` to `dst`, depth first in name order. A work list, not recursion: one
+    /// stack frame per level overflowed the 2 MiB pool stack on deep trees (abort). A
+    /// folder gets its mode and times once its contents are in (it may be read-only).
     fn copy_tree(&mut self, src: &Path, dst: &Path) -> VfsResult<()> {
-        self.checkpoint()?;
-        let md = fs::symlink_metadata(src).map_err(io_err("lstat", src))?;
-        self.progress.current = src.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let ft = md.file_type();
-        if ft.is_symlink() {
-            let target = fs::read_link(src).map_err(io_err("readlink", src))?;
-            std::os::unix::fs::symlink(&target, dst).map_err(io_err("symlink", dst))?;
-            self.progress.files_done += 1;
-        } else if ft.is_dir() {
-            fs::create_dir(dst).map_err(io_err("mkdir", dst))?;
-            let mut children: Vec<_> = fs::read_dir(src)
-                .map_err(io_err("opendir", src))?
-                .collect::<Result<_, _>>()
-                .map_err(io_err("readdir", src))?;
-            children.sort_by_key(DirEntry::file_name);
-            for c in children {
-                self.copy_tree(&c.path(), &dst.join(c.file_name()))?;
-            }
-            fs::set_permissions(dst, fs::Permissions::from_mode(md.mode() & 0o7777)).map_err(io_err("chmod", dst))?;
-            set_times(dst, &md);
-        } else if ft.is_file() {
-            self.copy_file(src, dst, &md)?;
-            self.progress.files_done += 1;
-        } else {
-            return Err(VfsError::Unsupported(format!("{}: special files are not copied", src.display())));
+        enum Step {
+            Copy(PathBuf, PathBuf),
+            Seal(PathBuf, fs::Metadata),
         }
-        self.report(false);
+        let mut todo = vec![Step::Copy(src.to_path_buf(), dst.to_path_buf())];
+        while let Some(step) = todo.pop() {
+            let (src, dst) = match step {
+                Step::Copy(src, dst) => (src, dst),
+                Step::Seal(dst, md) => {
+                    fs::set_permissions(&dst, fs::Permissions::from_mode(md.mode() & 0o7777))
+                        .map_err(io_err("chmod", &dst))?;
+                    set_times(&dst, &md);
+                    self.report(false);
+                    continue;
+                }
+            };
+            self.checkpoint()?;
+            let md = fs::symlink_metadata(&src).map_err(io_err("lstat", &src))?;
+            self.progress.current = src.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let ft = md.file_type();
+            if ft.is_symlink() {
+                let target = fs::read_link(&src).map_err(io_err("readlink", &src))?;
+                std::os::unix::fs::symlink(&target, &dst).map_err(io_err("symlink", &dst))?;
+                self.progress.files_done += 1;
+            } else if ft.is_dir() {
+                fs::create_dir(&dst).map_err(io_err("mkdir", &dst))?;
+                let mut children: Vec<_> = fs::read_dir(&src)
+                    .map_err(io_err("opendir", &src))?
+                    .collect::<Result<_, _>>()
+                    .map_err(io_err("readdir", &src))?;
+                children.sort_by_key(DirEntry::file_name);
+                todo.push(Step::Seal(dst.clone(), md));
+                // Reversed, so the first name is copied first.
+                todo.extend(children.iter().rev().map(|c| Step::Copy(c.path(), dst.join(c.file_name()))));
+                continue;
+            } else if ft.is_file() {
+                self.copy_file(&src, &dst, &md)?;
+                self.progress.files_done += 1;
+            } else {
+                return Err(VfsError::Unsupported(format!("{}: special files are not copied", src.display())));
+            }
+            self.report(false);
+        }
         Ok(())
     }
 
@@ -332,6 +353,45 @@ impl Copier<'_> {
             .open(dst)
             .map_err(io_err("create", dst))?;
         let res = (|| -> VfsResult<()> {
+            // Data regions only (SEEK_DATA/SEEK_HOLE): holes stay holes. Every byte was
+            // copied before, so a sparse 100 GB disk image wrote 100 GB and could fill the
+            // disk. Skipped holes count as done. Where the filesystem cannot tell, all of
+            // it is data, as before.
+            let len = md.len();
+            let mut pos = 0;
+            while pos < len {
+                self.checkpoint()?;
+                let data = match seek_data(&input, pos, libc::SEEK_DATA) {
+                    Ok(d) => d.min(len),
+                    Err(e) if e.raw_os_error() == Some(libc::ENXIO) => len, // only a hole is left
+                    Err(_) => pos,
+                };
+                let hole =
+                    if data < len { seek_data(&input, data, libc::SEEK_HOLE).map_or(len, |h| h.min(len)) } else { len };
+                self.progress.bytes_done += data - pos;
+                input.seek(SeekFrom::Start(data)).map_err(io_err("seek", src))?;
+                out.seek(SeekFrom::Start(data)).map_err(io_err("seek", dst))?;
+                let mut left = hole - data;
+                while left > 0 {
+                    self.checkpoint()?;
+                    let want = self.buf.len().min(usize::try_from(left).unwrap_or(usize::MAX));
+                    let n = input.read(&mut self.buf[..want]).map_err(io_err("read", src))?;
+                    if n == 0 {
+                        break; // it shrank meanwhile: copy what there is
+                    }
+                    out.write_all(&self.buf[..n]).map_err(io_err("write", dst))?;
+                    self.progress.bytes_done += n as u64;
+                    left -= n as u64;
+                    self.report(false);
+                }
+                if left > 0 {
+                    break;
+                }
+                pos = hole;
+            }
+            // Anything appended after it was measured is copied too, as before.
+            input.seek(SeekFrom::Start(pos)).map_err(io_err("seek", src))?;
+            out.seek(SeekFrom::Start(pos)).map_err(io_err("seek", dst))?;
             loop {
                 self.checkpoint()?;
                 let n = input.read(&mut self.buf).map_err(io_err("read", src))?;
@@ -342,6 +402,9 @@ impl Copier<'_> {
                 self.progress.bytes_done += n as u64;
                 self.report(false);
             }
+            // A trailing hole has no data to write: the length makes it.
+            let end = out.stream_position().map_err(io_err("seek", dst))?;
+            out.set_len(end.max(pos)).map_err(io_err("truncate", dst))?;
             out.sync_data().map_err(io_err("fsync", dst))?;
             set_times(dst, md);
             Ok(())
@@ -354,6 +417,16 @@ impl Copier<'_> {
     }
 }
 
+/// `lseek(fd, from, whence)` for `SEEK_DATA` / `SEEK_HOLE`: where the next data or hole
+/// starts. `ENXIO`: no data after `from`.
+fn seek_data(f: &fs::File, from: u64, whence: libc::c_int) -> std::io::Result<u64> {
+    use std::os::fd::AsRawFd;
+    let from = libc::off_t::try_from(from).map_err(|_| std::io::Error::from_raw_os_error(libc::EOVERFLOW))?;
+    // SAFETY: lseek on an fd we own; it only moves the file offset.
+    let r = unsafe { libc::lseek(f.as_raw_fd(), from, whence) };
+    u64::try_from(r).map_err(|_| std::io::Error::last_os_error())
+}
+
 /// Keep the source's access and modification times (best effort).
 fn set_times(dst: &Path, md: &fs::Metadata) {
     let ts = |s: i64, ns: i64| libc::timespec { tv_sec: s as libc::time_t, tv_nsec: ns as libc::c_long };
@@ -364,23 +437,25 @@ fn set_times(dst: &Path, md: &fs::Metadata) {
     }
 }
 
-/// Bytes and files below `p` (symlinks not followed).
+/// Bytes and files below `p` (symlinks not followed). A work list, not recursion: one
+/// stack frame per level overflowed the 2 MiB pool stack on deep trees (abort).
 fn measure(p: &Path, cancel: &CancellationToken) -> VfsResult<(u64, u64)> {
-    if cancel.is_cancelled() {
-        return Err(VfsError::Cancelled);
-    }
-    let md = fs::symlink_metadata(p).map_err(io_err("lstat", p))?;
-    if md.is_dir() {
-        let mut acc = (0, 0);
-        for c in fs::read_dir(p).map_err(io_err("opendir", p))? {
-            let c = c.map_err(io_err("readdir", p))?;
-            let (b, f) = measure(&c.path(), cancel)?;
-            acc = (acc.0 + b, acc.1 + f);
+    let mut acc = (0, 0);
+    let mut todo = vec![p.to_path_buf()];
+    while let Some(p) = todo.pop() {
+        if cancel.is_cancelled() {
+            return Err(VfsError::Cancelled);
         }
-        Ok(acc)
-    } else {
-        Ok((if md.is_file() { md.len() } else { 0 }, 1))
+        let md = fs::symlink_metadata(&p).map_err(io_err("lstat", &p))?;
+        if md.is_dir() {
+            for c in fs::read_dir(&p).map_err(io_err("opendir", &p))? {
+                todo.push(c.map_err(io_err("readdir", &p))?.path());
+            }
+        } else {
+            acc = (acc.0 + if md.is_file() { md.len() } else { 0 }, acc.1 + 1);
+        }
     }
+    Ok(acc)
 }
 
 fn create_transfer_stage(dir: &Path, id: u64) -> VfsResult<PathBuf> {
@@ -484,6 +559,14 @@ fn transfer_blocking(req: &TransferRequest, ctl: &TransferControl) -> VfsResult<
             let dst_md = fs::symlink_metadata(&dst).map_err(io_err("lstat", &dst))?;
             if src_md.dev() == dst_md.dev() && src_md.ino() == dst_md.ino() {
                 return Err(VfsError::BadRequest);
+            }
+            // The replaced item is swapped out and deleted: a source inside it (x/A/A
+            // over x/A) would be deleted with it, a copy destroying what it copied.
+            let src_real = fs::canonicalize(src.parent().unwrap_or(Path::new("/")))
+                .map_err(io_err("realpath", src))?
+                .join(src.file_name().unwrap_or_default());
+            if src_real.starts_with(canonical_dest.join(&target_name)) {
+                return Err(VfsError::WouldRecurse);
             }
             let stage = create_transfer_stage(&dest_dir, req.id)?;
             let staged = stage.join("item");
@@ -759,7 +842,14 @@ fn trash_one(trash: &Path, src: &Path) -> VfsResult<()> {
     let name = src.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     // Reserve the name by creating the .trashinfo exclusively (Trash spec 1.0).
     for n in 1u32..10_000 {
-        let cand = if n == 1 { name.clone() } else { format!("{name}.{n}") };
+        // The entry name only has to be unique (Path= keeps the real one), and with
+        // ".trashinfo" it must still fit in a file name: long names are shortened.
+        let suffix = if n == 1 { String::new() } else { format!(".{n}") };
+        let mut keep = name.len().min(NAME_MAX - ".trashinfo".len() - suffix.len());
+        while !name.is_char_boundary(keep) {
+            keep -= 1;
+        }
+        let cand = format!("{}{suffix}", &name[..keep]);
         let info_path = info.join(format!("{cand}.trashinfo"));
         let mut f = match fs::OpenOptions::new().write(true).create_new(true).open(&info_path) {
             Ok(f) => f,
@@ -1210,6 +1300,33 @@ mod trash_tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn files_with_names_near_the_limit_can_be_trashed_and_restored() {
+        // The info file is "<name>.trashinfo": a name over 245 bytes made it longer than
+        // a name may be (ENAMETOOLONG), so such a file could not be trashed at all.
+        let t = Sandbox::new("long-name");
+        let trash = t.0.join("Trash");
+        let name = format!("{}ü.txt", "n".repeat(249)); // 255 bytes, a 2-byte char near the cut
+        assert_eq!(name.len(), 255);
+        for round in 0..2 {
+            let source = t.0.join(&name);
+            fs::write(&source, format!("round {round}")).unwrap();
+            trash_one(&trash, &source).unwrap();
+            assert!(!source.exists());
+        }
+        let mut entries: Vec<String> =
+            fs::read_dir(trash.join("files")).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
+        entries.sort();
+        assert_eq!(entries.len(), 2);
+        for e in &entries {
+            assert!(e.len() + ".trashinfo".len() <= 255, "{}", e.len());
+            assert!(trash.join("info").join(format!("{e}.trashinfo")).is_file());
+        }
+        // Each restores to the original, full name: the first, then the second beside it fails.
+        assert_eq!(restore_one(&trash, &entries[0]).unwrap(), t.0.join(&name));
+        assert!(restore_one(&trash, &entries[1]).is_err(), "never overwrites the restored one");
     }
 
     #[test]

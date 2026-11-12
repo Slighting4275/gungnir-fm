@@ -469,22 +469,25 @@ struct Plan {
 }
 
 fn plan_tree(sources: &[PathBuf], dest_dir: &Path, overwrite: bool) -> VfsResult<Plan> {
+    /// Depth first in name order, folders before their contents. A work list, not
+    /// recursion: one stack frame per level overflowed the 2 MiB pool stack (abort).
     fn walk(src: &Path, dst: &Path, plan: &mut Plan) -> VfsResult<()> {
-        let md =
-            std::fs::symlink_metadata(src).map_err(|e| VfsError::from_io("lstat", &e, &src.display().to_string()))?;
-        if md.is_dir() {
-            plan.dirs.push(dst.to_owned());
-            let mut kids: Vec<_> = std::fs::read_dir(src)
-                .map_err(|e| VfsError::from_io("opendir", &e, &src.display().to_string()))?
-                .collect::<Result<_, _>>()
-                .map_err(|e| VfsError::from_io("readdir", &e, &src.display().to_string()))?;
-            kids.sort_by_key(std::fs::DirEntry::file_name);
-            for k in kids {
-                walk(&k.path(), &dst.join(k.file_name()), plan)?;
+        let mut todo = vec![(src.to_path_buf(), dst.to_path_buf())];
+        while let Some((src, dst)) = todo.pop() {
+            let md = std::fs::symlink_metadata(&src)
+                .map_err(|e| VfsError::from_io("lstat", &e, &src.display().to_string()))?;
+            if md.is_dir() {
+                let mut kids: Vec<_> = std::fs::read_dir(&src)
+                    .map_err(|e| VfsError::from_io("opendir", &e, &src.display().to_string()))?
+                    .collect::<Result<_, _>>()
+                    .map_err(|e| VfsError::from_io("readdir", &e, &src.display().to_string()))?;
+                kids.sort_by_key(std::fs::DirEntry::file_name);
+                todo.extend(kids.iter().rev().map(|k| (k.path(), dst.join(k.file_name()))));
+                plan.dirs.push(dst);
+            } else {
+                plan.bytes += md.len();
+                plan.files.push((src, dst, md.len()));
             }
-        } else {
-            plan.bytes += md.len();
-            plan.files.push((src.to_owned(), dst.to_owned(), md.len()));
         }
         Ok(())
     }
@@ -1108,5 +1111,74 @@ impl VfsProvider for GungnirVfsBackend {
         let p = local_path(dir)?;
         self.gate(&p)?;
         self.local.watch(&file_uri(&p)?)
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    fn sandbox(name: &str) -> PathBuf {
+        let p = std::env::temp_dir().join("gungnir-test-sandbox").join(format!("{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&p);
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    #[test]
+    fn plan_lists_folders_before_their_contents_in_name_order() {
+        let t = sandbox("plan-order");
+        std::fs::create_dir_all(t.join("src/b/x")).unwrap();
+        std::fs::create_dir_all(t.join("src/a")).unwrap();
+        std::fs::write(t.join("src/b/x/f"), b"123").unwrap();
+        std::fs::write(t.join("src/c"), b"12").unwrap();
+        std::fs::create_dir(t.join("dst")).unwrap();
+        let plan = plan_tree(&[t.join("src")], &t.join("dst"), false).unwrap();
+        let rel = |p: &Path| p.strip_prefix(&t).unwrap().to_owned();
+        let dirs: Vec<_> = plan.dirs.iter().map(|d| rel(d)).collect();
+        assert_eq!(dirs, ["dst/src", "dst/src/a", "dst/src/b", "dst/src/b/x"].map(PathBuf::from));
+        let files: Vec<_> = plan.files.iter().map(|(s, d, n)| (rel(s), rel(d), *n)).collect();
+        assert_eq!(
+            files,
+            [("src/b/x/f", "dst/src/b/x/f", 3), ("src/c", "dst/src/c", 2)].map(|(s, d, n)| (
+                PathBuf::from(s),
+                PathBuf::from(d),
+                n
+            ))
+        );
+        assert_eq!(plan.bytes, 5);
+        let _ = std::fs::remove_dir_all(t);
+    }
+
+    #[test]
+    fn planning_a_deep_folder_does_not_overflow_the_stack() {
+        // One frame per level on a 2 MiB blocking-pool thread: deep trees aborted the app.
+        let t = sandbox("plan-deep");
+        std::fs::create_dir(t.join("dst")).unwrap();
+        let src = t.join("src");
+        std::fs::create_dir(&src).unwrap();
+        // Too long for one path call: made a level at a time with directory fds.
+        let c = std::ffi::CString::new(src.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: plain directory syscalls on fds this test owns and closes.
+        unsafe {
+            let mut fd = libc::open(c.as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY);
+            for _ in 0..2020 {
+                assert!(fd >= 0 && libc::mkdirat(fd, c"d".as_ptr(), 0o755) == 0);
+                let next = libc::openat(fd, c"d".as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY);
+                libc::close(fd);
+                fd = next;
+            }
+            libc::close(fd);
+        }
+        let (dst, src2) = (t.join("dst"), src.clone());
+        let plan = std::thread::Builder::new()
+            .stack_size(2 << 20)
+            .spawn(move || plan_tree(&[src2], &dst, false).map(|p| p.dirs.len()))
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(plan, Ok(2021));
+        let _ = std::process::Command::new("rm").arg("-rf").arg(&t).status();
     }
 }
