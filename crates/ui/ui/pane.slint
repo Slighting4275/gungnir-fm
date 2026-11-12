@@ -294,9 +294,19 @@ export component Pane inherits Rectangle {
     // source from drag-start).
     pure callback drag-data(index: int) -> data-transfer;
 
-    property <length> list-thumb-size: root.view-mode == 0 ? 18px : Math.max(20px, Math.min(80px, 24px * root.zoom-level));
-    property <length> list-icon-size: root.view-mode == 0 ? 16px : Math.max(16px, Math.min(48px, 18px * root.zoom-level));
-    property <length> row-h: root.view-mode == 0 ? Theme.compact-row-height : Math.max(Theme.row-height, root.list-thumb-size + 6px);
+    // Zoom scales icons and thumbnails in every view (text stays as it is). Compact List
+    // used fixed sizes and Detailed had floors that 100% was already near, so in Compact
+    // zoom did nothing at all and in Detailed zooming out stopped at about 85%. At 100%
+    // the sizes are what they were.
+    property <length> list-thumb-size: root.view-mode == 0
+        ? Math.max(12px, Math.min(64px, 18px * root.zoom-level))
+        : Math.max(12px, Math.min(80px, 24px * root.zoom-level));
+    property <length> list-icon-size: root.view-mode == 0
+        ? Math.max(12px, Math.min(48px, 16px * root.zoom-level))
+        : Math.max(12px, Math.min(48px, 18px * root.zoom-level));
+    property <length> row-h: root.view-mode == 0
+        ? Math.max(Theme.compact-row-height, root.list-thumb-size + 3px)
+        : Math.max(Theme.row-height, root.list-thumb-size + 6px);
     property <bool> show-type: list-area.width > 640px;
     property <bool> show-perms: list-area.width > 780px;
     property <bool> show-modified: list-area.width > 500px;
