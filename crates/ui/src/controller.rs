@@ -746,6 +746,9 @@ pub struct Controller {
     /// The Quick Preview being prepared, if any. Not a dialog: nothing is shown yet and
     /// nothing is held back meanwhile (a slow or stuck thumbnail must not lock the menus).
     preview_wait: Option<u64>,
+    /// Bookmark saves started, and the newest one on disk (writes may run out of order).
+    bookmark_saves: std::sync::atomic::AtomicU64,
+    bookmarks_written: Arc<std::sync::Mutex<u64>>,
     renaming: Option<RenameEdit>,
     rename_history: crate::rename::History,
     rename_busy: bool,
@@ -921,6 +924,8 @@ impl Controller {
             dialog: None,
             preview_seq: 0,
             preview_wait: None,
+            bookmark_saves: std::sync::atomic::AtomicU64::new(0),
+            bookmarks_written: Arc::new(std::sync::Mutex::new(0)),
             renaming: None,
             rename_history: crate::rename::History::default(),
             rename_busy: false,
@@ -3541,7 +3546,8 @@ impl Controller {
                     ("Alt+Left / Alt+Right", "Back / forward"),
                     ("Enter", "Open"),
                     ("Delete / Shift+Delete", "Trash / delete permanently"),
-                    ("Space", "Toggle selection"),
+                    ("Space", "Quick Preview (Space again closes it)"),
+                    ("Ctrl+Space", "Toggle selection"),
                     ("Ctrl+A", "Select all"),
                     ("Escape", "Clear selection"),
                 ];
@@ -4009,11 +4015,25 @@ impl Controller {
     fn save_bookmarks(&self) {
         let Some(path) = self.cfg.bookmarks_file.clone() else { return };
         let body: String = self.bookmarks.iter().map(|b| format!("{}\n", b.to_uri_string())).collect();
+        // Each change used to rewrite the file in place on its own blocking task: a crash
+        // or a full disk mid-write emptied it, a failure went unseen, and two quick changes
+        // could land in either order. Now the file is replaced whole, a list older than
+        // the one already written is skipped, and a failure is shown.
+        let seq = self.bookmark_saves.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        let written = Arc::clone(&self.bookmarks_written);
+        let tx = self.tx.clone();
         tokio::task::spawn_blocking(move || {
-            if let Some(dir) = path.parent() {
-                let _ = std::fs::create_dir_all(dir);
+            let mut last = written.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if *last > seq {
+                return; // a newer list is on disk already
             }
-            let _ = std::fs::write(&path, body);
+            match crate::session::write_atomic(&path, body.as_bytes()) {
+                Ok(()) => *last = seq,
+                Err(e) => {
+                    let result = Err(format!("Could not save bookmarks to {}: {e}", path.display()));
+                    let _ = tx.blocking_send(Msg::Ev(Event::Op { result, reload: Vec::new(), select: None }));
+                }
+            }
         });
     }
 

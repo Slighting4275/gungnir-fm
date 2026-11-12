@@ -156,15 +156,22 @@ fn default_zoom() -> f32 {
 
 /// Atomically write state to a JSON file via a temporary sibling file.
 pub fn save_atomic(path: &Path, state: &SessionState) -> std::io::Result<()> {
+    let json_bytes =
+        serde_json::to_vec_pretty(state).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    write_atomic(path, &json_bytes)
+}
+
+/// Replaces `path` with `bytes` all at once: an exclusive temporary sibling, written and
+/// synced, renamed over it, the directory synced. A crash or a full disk leaves the old
+/// file or the new one, never a truncated mix.
+pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
     use std::sync::atomic::{AtomicU64, Ordering};
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
     std::fs::create_dir_all(parent)?;
-    let name = path.file_name().ok_or_else(|| std::io::Error::other("session path has no filename"))?;
-    let json_bytes =
-        serde_json::to_vec_pretty(state).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    let name = path.file_name().ok_or_else(|| std::io::Error::other("path has no filename"))?;
     let (tmp_path, mut file) = loop {
         let mut tmp_name = name.to_os_string();
         tmp_name.push(format!(".tmp-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
@@ -176,7 +183,7 @@ pub fn save_atomic(path: &Path, state: &SessionState) -> std::io::Result<()> {
         }
     };
     let result = (|| {
-        file.write_all(&json_bytes)?;
+        file.write_all(bytes)?;
         file.sync_all()?;
         std::fs::rename(&tmp_path, path)?;
         std::fs::File::open(parent)?.sync_all()
