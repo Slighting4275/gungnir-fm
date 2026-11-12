@@ -436,3 +436,31 @@ async fn recent_goes_through_the_daemon() -> VfsResult<()> {
 
     Ok(())
 }
+
+/// SEC-F-001 in gungnir-fm: an empty that cannot remove every item fails and says so,
+/// with the counts. The daemon's empty reply is `status | deleted u32 | failed u32 |
+/// names`, never errno-first: read errno-first, "5 deleted" showed as EIO (errno 5).
+#[tokio::test(flavor = "multi_thread")]
+async fn an_incomplete_empty_reports_what_was_left() -> VfsResult<()> {
+    let t = TempDir::new("live-empty-left");
+    let dir = t.0.clone();
+    let trash = dir.join("data/Trash");
+    let (files, info) = (trash.join("files"), trash.join("info"));
+    std::fs::create_dir_all(&info).unwrap_or_else(|e| panic!("{e}"));
+    std::fs::create_dir_all(files.join("stuck")).unwrap_or_else(|e| panic!("{e}"));
+    for n in ["a.txt", "b.txt"] {
+        std::fs::write(files.join(n), b"data").unwrap_or_else(|e| panic!("{e}"));
+        std::fs::write(info.join(format!("{n}.trashinfo")), format!("[Trash Info]\nPath={}/{n}\n", dir.display()))
+            .unwrap_or_else(|e| panic!("{e}"));
+    }
+    // An info entry that is a non-empty directory: that item can never be removed.
+    std::fs::create_dir_all(info.join("stuck.trashinfo")).unwrap_or_else(|e| panic!("{e}"));
+    std::fs::write(info.join("stuck.trashinfo/x"), b"x").unwrap_or_else(|e| panic!("{e}"));
+    let Some(d) = Daemon::start(&dir) else { return Ok(()) };
+    let b = GungnirVfsBackend::connect(d.sock.clone()).await?;
+    let r = b.empty_trash().await;
+    assert_eq!(r, Err(VfsError::NotEmpty("1 trash item could not be removed (2 deleted)".into())));
+    assert!(!files.join("a.txt").exists() && !files.join("b.txt").exists());
+    assert!(files.join("stuck").exists() && info.join("stuck.trashinfo/x").exists());
+    Ok(())
+}

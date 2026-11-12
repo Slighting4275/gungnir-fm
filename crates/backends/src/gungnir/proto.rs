@@ -905,6 +905,41 @@ pub fn reply_body(payload: &[u8], what: &str) -> VfsResult<Vec<u8>> {
     }
 }
 
+/// The reply to a trash empty (`MSG_TRASH_EMPTY`): `status u32 | deleted u32 | failed u32 |
+/// len u16 | names` whatever the status (gungnird `vfssvc.rs` `empty`), never errno-first.
+/// Items left, an item that would not go or an OS error come back as `NotEmpty` with the
+/// counts; hung volumes skipped stay `SuspectMount`; a reply without counts (busy,
+/// cancelled, an older daemon) is mapped from its status alone.
+///
+/// # Errors
+/// What the empty left undone, or a transport error for a malformed reply.
+pub fn parse_empty(payload: &[u8]) -> VfsResult<()> {
+    use core_vfs::error::gungnir_status as s;
+    let mut r = Reader(payload);
+    let st = r.u32()?;
+    if st == s::OK {
+        return Ok(());
+    }
+    let counts = (|| Some((r.u32().ok()?, r.u32().ok()?)))();
+    let Some((deleted, failed)) = counts else {
+        return Err(VfsError::from_gungnir_status(st, 0, "trash")
+            .unwrap_or(VfsError::Transport(format!("gungnird status {st}"))));
+    };
+    match st {
+        s::SUSPECT_MOUNT if failed == 0 => Err(VfsError::SuspectMount),
+        s::NOT_EMPTY | s::OS_ERROR | s::IO_ERROR | s::MOUNT_INSIDE | s::SUSPECT_MOUNT => {
+            let what = match failed {
+                0 => "some trash items could not be removed".to_owned(),
+                1 => "1 trash item could not be removed".to_owned(),
+                n => format!("{n} trash items could not be removed"),
+            };
+            Err(VfsError::NotEmpty(format!("{what} ({deleted} deleted)")))
+        }
+        other => Err(VfsError::from_gungnir_status(other, 0, "trash")
+            .unwrap_or(VfsError::Transport(format!("gungnird status {other}")))),
+    }
+}
+
 /// One trash item from gungnird (`vfssvc.rs`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VfsRow {
@@ -1140,6 +1175,36 @@ mod tests {
         assert_eq!(b, [3, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, b'/', b'a', 0, 0]);
         assert!(req::op_start(OP_COPY, 0, 0, Path::new("rel"), None).is_err());
         Ok(())
+    }
+
+    #[test]
+    fn empty_replies_are_read_as_counts_not_errno() {
+        let reply = |st: u32, deleted: u32, failed: u32, names: &[u8]| {
+            let mut v = st.to_le_bytes().to_vec();
+            v.extend_from_slice(&deleted.to_le_bytes());
+            v.extend_from_slice(&failed.to_le_bytes());
+            v.extend_from_slice(&u16::try_from(names.len()).unwrap_or(0).to_le_bytes());
+            v.extend_from_slice(names);
+            v
+        };
+        assert_eq!(parse_empty(&reply(0, 3, 0, b"")), Ok(()));
+        // OS error (15) with 5 deleted: once misread as errno 5, EIO.
+        assert_eq!(
+            parse_empty(&reply(15, 5, 1, b"")),
+            Err(VfsError::NotEmpty("1 trash item could not be removed (5 deleted)".into()))
+        );
+        assert_eq!(
+            parse_empty(&reply(18, 0, 2, b"")),
+            Err(VfsError::NotEmpty("2 trash items could not be removed (0 deleted)".into()))
+        );
+        assert_eq!(
+            parse_empty(&reply(18, 4, 0, b"")),
+            Err(VfsError::NotEmpty("some trash items could not be removed (4 deleted)".into()))
+        );
+        assert_eq!(parse_empty(&reply(4, 7, 0, b"/mnt/nfs")), Err(VfsError::SuspectMount));
+        // No counts: the status alone (busy is retried by the caller).
+        assert_eq!(parse_empty(&2u32.to_le_bytes()), Err(VfsError::Busy));
+        assert!(parse_empty(&[1, 0]).is_err());
     }
 
     #[test]
