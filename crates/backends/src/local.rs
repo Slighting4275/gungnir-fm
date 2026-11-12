@@ -650,13 +650,26 @@ fn trash_decode(encoded: &str) -> Option<PathBuf> {
     Some(PathBuf::from(std::ffi::OsString::from_vec(bytes)))
 }
 
+/// A `.trashinfo`, opened non-blocking and read only if it is a regular file of at most
+/// 64 KiB (it holds two lines): a FIFO under that name made a restore wait forever.
+fn read_info(path: &Path) -> std::io::Result<String> {
+    let f = fs::OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW).open(path)?;
+    let md = f.metadata()?;
+    if !md.is_file() || md.len() > 64 << 10 {
+        return Err(std::io::Error::from_raw_os_error(libc::EINVAL));
+    }
+    let mut text = String::new();
+    f.take(64 << 10).read_to_string(&mut text)?;
+    Ok(text)
+}
+
 fn restore_one(trash: &Path, name: &str) -> VfsResult<PathBuf> {
     let files = trash.join("files").join(name);
     let info = trash.join("info").join(format!("{name}.trashinfo"));
     if !files.exists() && fs::symlink_metadata(&files).is_err() {
         return Err(VfsError::NotFound(format!("trash item {name}")));
     }
-    let info_content = fs::read_to_string(&info).map_err(io_err("read", &info))?;
+    let info_content = read_info(&info).map_err(io_err("read", &info))?;
     let mut orig_path: Option<PathBuf> = None;
     for line in info_content.lines() {
         if let Some(rest) = line.strip_prefix("Path=") {
@@ -1356,6 +1369,28 @@ mod trash_tests {
         assert_eq!(restore_one(&trash, "item"), Err(VfsError::BadRequest));
         assert!(trash.join("files/item").exists());
         assert!(trash.join("info/item.trashinfo").exists());
+    }
+
+    #[test]
+    fn a_fifo_for_trash_info_fails_the_restore_without_waiting() {
+        // The .trashinfo was read_to_string by name: a FIFO there made a restore wait for
+        // a writer forever.
+        use std::os::unix::ffi::OsStrExt;
+        let t = Sandbox::new("info-fifo");
+        let trash = t.0.join("Trash");
+        fs::create_dir_all(trash.join("files")).unwrap();
+        fs::create_dir_all(trash.join("info")).unwrap();
+        fs::write(trash.join("files/item"), b"payload").unwrap();
+        let c = std::ffi::CString::new(trash.join("info/item.trashinfo").as_os_str().as_bytes()).unwrap();
+        // SAFETY: a valid path in the test sandbox.
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let tr = trash.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(restore_one(&tr, "item").is_err());
+        });
+        assert_eq!(rx.recv_timeout(Duration::from_secs(5)).ok(), Some(true), "restore waited on a FIFO");
+        assert_eq!(fs::read(trash.join("files/item")).unwrap(), b"payload", "the item stays in the trash");
     }
 
     #[test]

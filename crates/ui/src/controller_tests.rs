@@ -2463,6 +2463,20 @@ fn compressing_never_holds_up_the_controller() {
 }
 
 #[test]
+fn a_fifo_for_the_bookmarks_file_still_shows_places() {
+    // The bookmarks file was read_to_string by name on the start-up job that builds
+    // Places: a FIFO there waited forever, so Places never appeared.
+    let tmp = temp_dir("bookmarks-fifo");
+    let bm = tmp.join("bookmarks");
+    image_named_fifo(&tmp, "bookmarks");
+    let h = start_configured(tmp.to_str().unwrap(), "gungnir://odin/asgard", MockConfig::instant(), true, |cfg| {
+        cfg.bookmarks_file = Some(bm.clone());
+    });
+    h.until(Duration::from_secs(5), |u| matches!(u, Update::Places(p) if !p.is_empty()));
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[test]
 fn open_containing_folder_on_regular_file() {
     let tmp = temp_dir("containing-folder");
     let sub = tmp.join("subfolder");

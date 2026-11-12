@@ -226,7 +226,7 @@ impl ActionRegistry {
                 .collect();
             paths.sort();
             for path in paths {
-                if let Ok(content) = std::fs::read_to_string(&path)
+                if let Ok(content) = crate::session::read_text_file(&path)
                     && let Ok(cfg) = toml::from_str::<ActionConfigFile>(&content)
                 {
                     match cfg {
@@ -494,5 +494,21 @@ command = "alacritty --working-directory %d"
             }
             _ => panic!("Expected table"),
         }
+    }
+
+    #[test]
+    fn a_fifo_among_the_action_files_is_skipped_not_waited_on() {
+        // Loaded in Controller::new: a FIFO named *.toml there kept the app from starting.
+        let dir =
+            std::env::temp_dir().join("gungnir-test-sandbox").join(format!("actions-fifo-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("{e}"));
+        crate::session::tests::fifo(&dir.join("a.toml"));
+        std::fs::write(dir.join("b.toml"), "id = \"real\"\nname = \"Real\"\ncommand = \"true %f\"\n")
+            .unwrap_or_else(|e| panic!("{e}"));
+        let d2 = dir.clone();
+        let reg = crate::session::tests::bounded("actions", move || ActionRegistry::load_or_default(Some(&d2)));
+        assert!(reg.get_action("real").is_some(), "the real action file still loads");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

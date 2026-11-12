@@ -194,9 +194,37 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     result
 }
 
+/// Largest config text read (session, actions, desktop entries, MIME tables).
+pub const CONFIG_TEXT_MAX: u64 = 16 << 20;
+
+/// A text file the app reads its config from: opened non-blocking, used only if it is a
+/// regular file (links followed), at most [`CONFIG_TEXT_MAX`] bytes, UTF-8. These were
+/// `read_to_string` by name: a FIFO named like one waited for a writer forever (at start
+/// for the session and action files, so the app never came up; on the controller for
+/// Open With, so the window froze), and a huge file was read whole. `NotFound` comes back
+/// as it is.
+pub fn read_text_file(path: &Path) -> std::io::Result<String> {
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+    let file = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY).open(path)?;
+    let md = file.metadata()?;
+    if !md.is_file() {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a regular file"));
+    }
+    if md.len() > CONFIG_TEXT_MAX {
+        return Err(std::io::Error::from_raw_os_error(libc::EFBIG));
+    }
+    let mut text = String::new();
+    file.take(CONFIG_TEXT_MAX + 1).read_to_string(&mut text)?;
+    if text.len() as u64 > CONFIG_TEXT_MAX {
+        return Err(std::io::Error::from_raw_os_error(libc::EFBIG));
+    }
+    Ok(text)
+}
+
 /// Load and parse session state from file.
 pub fn load(path: &Path) -> std::io::Result<SessionState> {
-    let data = std::fs::read_to_string(path)?;
+    let data = read_text_file(path)?;
     serde_json::from_str(&data).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
 }
 
@@ -308,7 +336,7 @@ impl SessionSaver {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -548,5 +576,31 @@ mod tests {
         assert!(session_file.exists());
         let loaded = load(&session_file).unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(state, loaded);
+    }
+
+    /// A FIFO at `p` (a name a loader would read).
+    pub(crate) fn fifo(p: &Path) {
+        use std::os::unix::ffi::OsStrExt;
+        let c = std::ffi::CString::new(p.as_os_str().as_bytes()).unwrap_or_else(|e| panic!("{e}"));
+        // SAFETY: a valid path in a test sandbox.
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0, "mkfifo {}", p.display());
+    }
+
+    /// `f` on its own thread; panics if it takes 5 s (it was waiting on a FIFO).
+    pub(crate) fn bounded<T: Send + 'static>(what: &str, f: impl FnOnce() -> T + Send + 'static) -> T {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(f());
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap_or_else(|_| panic!("{what} waited on a FIFO"))
+    }
+
+    #[test]
+    fn a_fifo_for_a_session_file_is_an_error_not_a_hang() {
+        // Read at start-up in main: a FIFO there kept Gungnir FM from ever starting.
+        let sandbox = TestSandbox::new("session-fifo");
+        let path = sandbox.0.join("session.json");
+        fifo(&path);
+        assert!(bounded("session::load", move || load(&path)).is_err());
     }
 }

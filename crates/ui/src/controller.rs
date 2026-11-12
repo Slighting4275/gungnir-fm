@@ -5724,7 +5724,7 @@ fn build_places(home: &VfsUri, bookmarks: Option<&std::path::Path>) -> (Vec<Plac
         }
     }
     let marks = bookmarks
-        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|p| crate::session::read_text_file(p).ok())
         .map(|s| s.lines().filter_map(|l| VfsUri::parse(l).ok()).collect())
         .unwrap_or_default();
     (out, marks)
