@@ -351,6 +351,68 @@ pub fn is_regular_file(path: &Path) -> bool {
     std::fs::metadata(path).is_ok_and(|m| m.is_file())
 }
 
+/// Most the thumbnail cache may hold; past it the oldest thumbnails go, down to 80%.
+pub const CACHE_MAX_BYTES: u64 = 512 << 20;
+/// A temporary thumbnail this old belongs to a run that crashed or was killed.
+const STALE_TEMP: std::time::Duration = std::time::Duration::from_secs(3600);
+
+/// Keeps `cache_dir` bounded. Nothing ever removed a thumbnail before: every image edit
+/// (a new mtime, so a new name) and every file seen once stayed for good, and the
+/// temporaries of a killed run were never cleared. Removes temporaries older than an
+/// hour, then, while the cache is over `max_bytes`, the oldest thumbnails (they are made
+/// again when needed) down to 80% of it. Only our own names are touched (16 hex digits
+/// `.png`, or one of their temporaries), only regular files, nothing below. Returns how
+/// many files went.
+pub fn prune_cache_in(cache_dir: &Path, max_bytes: u64) -> usize {
+    let Ok(entries) = std::fs::read_dir(cache_dir) else { return 0 };
+    let now = std::time::SystemTime::now();
+    let mut removed = 0;
+    let mut kept = Vec::new();
+    let mut total = 0u64;
+    for e in entries.flatten() {
+        let name = e.file_name();
+        let Some(name) = name.to_str() else { continue };
+        let Some(hex) = name.get(..16).filter(|h| h.bytes().all(|b| b.is_ascii_hexdigit())) else { continue };
+        let rest = &name[hex.len()..];
+        let temp = rest.starts_with(".tmp-") && rest.ends_with(".png");
+        if !(rest == ".png" || temp) {
+            continue;
+        }
+        let Ok(md) = e.metadata() else { continue }; // DirEntry::metadata does not follow links
+        if !md.is_file() {
+            continue;
+        }
+        let age = md.modified().ok().and_then(|m| now.duration_since(m).ok()).unwrap_or_default();
+        if temp {
+            if age >= STALE_TEMP && std::fs::remove_file(e.path()).is_ok() {
+                removed += 1;
+            }
+            continue;
+        }
+        total += md.len();
+        kept.push((md.modified().unwrap_or(std::time::UNIX_EPOCH), md.len(), e.path()));
+    }
+    if total > max_bytes {
+        kept.sort_by_key(|(modified, _, _)| *modified);
+        let goal = max_bytes / 10 * 8;
+        for (_, len, path) in kept {
+            if total <= goal {
+                break;
+            }
+            if std::fs::remove_file(&path).is_ok() {
+                total -= len;
+                removed += 1;
+            }
+        }
+    }
+    removed
+}
+
+/// [`prune_cache_in`] on the thumbnail cache, with [`CACHE_MAX_BYTES`].
+pub fn prune_cache() -> usize {
+    prune_cache_in(&thumbnail_cache_dir(), CACHE_MAX_BYTES)
+}
+
 /// Checks if a cached thumbnail exists in `cache_dir` and is valid on disk.
 #[must_use]
 pub fn lookup_cached_in(cache_dir: &Path, uri: &str, mtime_secs: i64) -> Option<PathBuf> {
@@ -862,5 +924,40 @@ mod tests {
         }
 
         let _ = fs::remove_dir_all(&sandbox);
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn the_cache_is_pruned_oldest_first_and_only_our_own_files() {
+        use std::time::{Duration, SystemTime};
+        let dir = std::env::temp_dir().join("gungnir-test-sandbox").join(format!("prune-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let aged = |name: &str, len: usize, ago_secs: u64| {
+            let p = dir.join(name);
+            fs::write(&p, vec![7u8; len]).unwrap();
+            let f = fs::File::options().write(true).open(&p).unwrap();
+            f.set_modified(SystemTime::now() - Duration::from_secs(ago_secs)).unwrap();
+            p
+        };
+        // Five thumbnails of 1000 bytes, oldest first.
+        let thumbs: Vec<_> = (0..5).map(|i| aged(&format!("{i:016x}.png"), 1000, 5000 - i * 100)).collect();
+        let stale_tmp = aged("aaaaaaaaaaaaaaaa.tmp-1-0.png", 10, 7200);
+        let fresh_tmp = aged("bbbbbbbbbbbbbbbb.tmp-2-0.png", 10, 10);
+        let foreign = aged("notes.txt", 50_000, 9000);
+        let outside = aged("outside.bin", 10, 9000);
+        std::os::unix::fs::symlink(&outside, dir.join("cccccccccccccccc.png")).unwrap();
+        fs::create_dir(dir.join("dddddddddddddddd.png")).unwrap();
+
+        // 5000 bytes over a 3000 cap: down to 80% (2400), so the 3 oldest go, plus the stale temp.
+        assert_eq!(prune_cache_in(&dir, 3000), 4);
+        assert!(thumbs[..3].iter().all(|p| !p.exists()));
+        assert!(thumbs[3..].iter().all(|p| p.exists()));
+        assert!(!stale_tmp.exists() && fresh_tmp.exists());
+        assert!(foreign.exists() && outside.exists(), "only our own files are touched");
+        assert!(dir.join("cccccccccccccccc.png").is_symlink() && dir.join("dddddddddddddddd.png").is_dir());
+        // Under the cap: nothing more goes.
+        assert_eq!(prune_cache_in(&dir, 3000), 0);
+        let _ = fs::remove_dir_all(&dir);
     }
 }

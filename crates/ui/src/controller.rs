@@ -1020,6 +1020,8 @@ impl Controller {
             let (places, bookmarks) = build_places(&home, bm.as_deref());
             let _ = tx.blocking_send(Msg::Ev(Event::Places(places, bookmarks)));
         });
+        // Keep the thumbnail cache bounded (it only ever grew), once per start.
+        tokio::task::spawn_blocking(crate::thumbnails::prune_cache);
         // Mount status poller.
         let (reg, tx) = (self.registry.clone(), self.tx.clone());
         tokio::spawn(async move {
