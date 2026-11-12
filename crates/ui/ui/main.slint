@@ -413,9 +413,9 @@ export component AppWindow inherits Window {
             if e.modifiers.control && (e.text == "r" || e.text == "R") { root.nav(p, "refresh"); return accept; }
             if e.modifiers.control && (e.text == "h" || e.text == "H") { root.command("toggle-hidden"); return accept; }
             if e.modifiers.control && !e.modifiers.shift && (e.text == "f" || e.text == "F") { root.focus-filter(); return accept; }
-            if e.modifiers.control && !e.modifiers.shift && e.text == "1" { root.view-mode = 2; root.view-mode-changed(2); return accept; }
+            if e.modifiers.control && !e.modifiers.shift && e.text == "1" { root.view-mode = 0; root.view-mode-changed(0); return accept; }
             if e.modifiers.control && !e.modifiers.shift && e.text == "2" { root.view-mode = 1; root.view-mode-changed(1); return accept; }
-            if e.modifiers.control && !e.modifiers.shift && e.text == "3" { root.view-mode = 0; root.view-mode-changed(0); return accept; }
+            if e.modifiers.control && !e.modifiers.shift && e.text == "3" { root.view-mode = 2; root.view-mode-changed(2); return accept; }
             if e.modifiers.control && e.modifiers.shift && (e.text == "n" || e.text == "N") { root.command("new-folder-inline"); return accept; }
             if e.modifiers.control && e.modifiers.shift && (e.text == "f" || e.text == "F") { root.command("deep-search"); return accept; }
             if e.modifiers.control && e.modifiers.shift && (e.text == "d" || e.text == "D") { root.command("compare-panes"); return accept; }
@@ -788,7 +788,7 @@ export component AppWindow inherits Window {
                 drawer-open: root.transfers-open;
                 sidebar-mode: root.sidebar-mode;
                 sidebar-visible: root.sidebar-visible;
-                zoom-level: root.zoom-level;
+                zoom-level <=> root.zoom-level; // two-way: its zoom control sets it
                 toggle-drawer => { root.transfers-open = !root.transfers-open; }
                 sidebar-mode-changed(m) => {
                     root.sidebar-mode = m;
@@ -798,10 +798,7 @@ export component AppWindow inherits Window {
                     root.sidebar-visible = !root.sidebar-visible;
                     root.command("toggle-sidebar");
                 }
-                zoom-changed(z) => {
-                    root.zoom-level = z;
-                    root.zoom-changed(z);
-                }
+                zoom-changed(z) => { root.zoom-changed(z); } // the binding already carried z
             }
         }
 

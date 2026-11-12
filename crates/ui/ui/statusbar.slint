@@ -133,11 +133,11 @@ export component StatusBar inherits Rectangle {
         }
         ZoomControl {
             y: (parent.height - self.height) / 2;
-            value: root.zoom-level;
-            changed(v) => {
-                root.zoom-level = v;
-                root.zoom-changed(v);
-            }
+            // Two-way: the control sets its value on a click or drag, and a one-way binding
+            // was then gone for good, so Ctrl+/Ctrl-/the menu no longer reached it (and the
+            // next click stepped from the stale value).
+            value <=> root.zoom-level;
+            changed(v) => { root.zoom-changed(v); }
         }
     }
 }
