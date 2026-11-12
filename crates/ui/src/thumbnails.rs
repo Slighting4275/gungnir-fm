@@ -974,20 +974,20 @@ mod tests {
             .stderr(Stdio::null())
             .status();
 
-        if let Ok(st) = status
-            && st.success()
-            && vid_path.is_file()
-        {
-            let uri = "file:///tmp/sample.mp4";
-            let res = generate_thumbnail_in(&cache_dir, &vid_path, uri, 54321, true);
-            assert!(res.is_ok(), "video thumbnail generation must succeed: {:?}", res.err());
+        // No silent pass: without ffmpeg this test fails instead of checking nothing.
+        assert!(
+            status.as_ref().is_ok_and(std::process::ExitStatus::success) && vid_path.is_file(),
+            "ffmpeg could not make the sample video ({status:?}); video thumbnails need ffmpeg"
+        );
+        let uri = "file:///tmp/sample.mp4";
+        let res = generate_thumbnail_in(&cache_dir, &vid_path, uri, 54321, true);
+        assert!(res.is_ok(), "video thumbnail generation must succeed: {:?}", res.err());
 
-            let thumb = res.unwrap_or_else(|e| panic!("{e}"));
-            assert!(thumb.is_file(), "thumbnail file must exist");
+        let thumb = res.unwrap_or_else(|e| panic!("{e}"));
+        assert!(thumb.is_file(), "thumbnail file must exist");
 
-            let slint_img = slint::Image::load_from_path(&thumb);
-            assert!(slint_img.is_ok(), "slint must be able to load video thumbnail: {:?}", slint_img.err());
-        }
+        let slint_img = slint::Image::load_from_path(&thumb);
+        assert!(slint_img.is_ok(), "slint must be able to load video thumbnail: {:?}", slint_img.err());
 
         let _ = fs::remove_dir_all(&sandbox);
     }
@@ -1000,16 +1000,14 @@ mod tests {
 
         let svg_path = sandbox.join("vector.svg");
         let svg_content = r#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><circle cx="50" cy="50" r="40" fill="purple"/></svg>"#;
-        if fs::write(&svg_path, svg_content).is_ok() {
-            let uri = "file:///tmp/vector.svg";
-            let res = generate_thumbnail_in(&cache_dir, &svg_path, uri, 99999, false);
-            if res.is_ok() {
-                let thumb = res.unwrap_or_else(|e| panic!("{e}"));
-                assert!(thumb.is_file(), "svg thumbnail file must exist");
-                let slint_img = slint::Image::load_from_path(&thumb);
-                assert!(slint_img.is_ok(), "slint must load svg rendered png");
-            }
-        }
+        fs::write(&svg_path, svg_content).unwrap_or_else(|e| panic!("{e}"));
+        let uri = "file:///tmp/vector.svg";
+        // No silent pass: a failed render fails the test.
+        let thumb = generate_thumbnail_in(&cache_dir, &svg_path, uri, 99999, false)
+            .unwrap_or_else(|e| panic!("svg thumbnail generation must succeed: {e}"));
+        assert!(thumb.is_file(), "svg thumbnail file must exist");
+        let slint_img = slint::Image::load_from_path(&thumb);
+        assert!(slint_img.is_ok(), "slint must load svg rendered png");
 
         let _ = fs::remove_dir_all(&sandbox);
     }

@@ -1519,11 +1519,14 @@ mod tests {
             password: Some("test-pass".into()),
             ..Default::default()
         };
-        if compress_items(&dest, t.path(), &[PathBuf::from("secret.txt")], &opts).is_ok() {
-            assert!(
+        // Both outcomes are checked: encrypted and unreadable without the password, or an
+        // error that leaves no archive behind (never a plaintext one).
+        match compress_items(&dest, t.path(), &[PathBuf::from("secret.txt")], &opts) {
+            Ok(_) => assert!(
                 test_archive_integrity(&dest).is_err(),
                 "password-protected data must not be readable without the password"
-            );
+            ),
+            Err(e) => assert!(!dest.exists(), "a failed encryption left {} behind ({e})", dest.display()),
         }
     }
 
@@ -1771,47 +1774,48 @@ mod tests {
 
     #[test]
     fn test_lossless_audio_transcode() {
-        let check_ffmpeg = std::process::Command::new("ffmpeg").arg("-version").output();
-        if check_ffmpeg.is_err() {
-            eprintln!("ffmpeg not found; skipping audio transcode test");
-            return;
-        }
+        // No silent pass: lossless transcoding needs ffmpeg, so without it this fails.
+        let ok = |out: std::io::Result<std::process::Output>, what: &str| match out {
+            Ok(o) if o.status.success() => {}
+            Ok(o) => panic!("ffmpeg {what} failed: {}", String::from_utf8_lossy(&o.stderr)),
+            Err(e) => panic!("ffmpeg {what}: {e} (lossless audio needs ffmpeg)"),
+        };
 
         let dir = TestTempDir::new("lossless-audio");
         let wav_src = dir.path().join("orig.wav");
 
-        // Generate 1-second 44.1kHz 16-bit stereo sine wave WAV using ffmpeg
-        let cmd_gen = std::process::Command::new("ffmpeg")
-            .args(["-f", "lavfi", "-i", "sine=frequency=440:duration=0.5", "-c:a", "pcm_s16le", "-y"])
-            .arg(&wav_src)
-            .output();
+        // Generate a 0.5 s 440 Hz 16-bit WAV using ffmpeg
+        ok(
+            std::process::Command::new("ffmpeg")
+                .args(["-f", "lavfi", "-i", "sine=frequency=440:duration=0.5", "-c:a", "pcm_s16le", "-y"])
+                .arg(&wav_src)
+                .output(),
+            "generating the sample",
+        );
 
-        if let Ok(out) = cmd_gen
-            && out.status.success()
-        {
-            // FLAC
-            let flac_file = dir.path().join("test.flac");
-            transcode_lossless_audio(&wav_src, &flac_file, LosslessAudioFormat::Flac).expect("flac transcode");
-            assert!(flac_file.exists());
+        // FLAC
+        let flac_file = dir.path().join("test.flac");
+        transcode_lossless_audio(&wav_src, &flac_file, LosslessAudioFormat::Flac).expect("flac transcode");
+        assert!(flac_file.exists());
 
-            // ALAC
-            let alac_file = dir.path().join("test.m4a");
-            transcode_lossless_audio(&wav_src, &alac_file, LosslessAudioFormat::Alac).expect("alac transcode");
-            assert!(alac_file.exists());
+        // ALAC
+        let alac_file = dir.path().join("test.m4a");
+        transcode_lossless_audio(&wav_src, &alac_file, LosslessAudioFormat::Alac).expect("alac transcode");
+        assert!(alac_file.exists());
 
-            // Decode FLAC back to WAV and verify PCM data
-            let flac_decoded = dir.path().join("flac_decoded.wav");
-            let dec = std::process::Command::new("ffmpeg")
-                .args(["-i"])
-                .arg(&flac_file)
-                .args(["-c:a", "pcm_s16le", "-y"])
-                .arg(&flac_decoded)
-                .output();
-            if let Ok(dec_out) = dec
-                && dec_out.status.success()
-            {
-                verify_bit_perfect(&wav_src, &flac_decoded).expect("flac bit-perfect roundtrip");
-            }
+        // Decode both back to WAV and verify the PCM data is bit-perfect
+        for (encoded, name) in [(&flac_file, "flac"), (&alac_file, "alac")] {
+            let decoded = dir.path().join(format!("{name}_decoded.wav"));
+            ok(
+                std::process::Command::new("ffmpeg")
+                    .args(["-i"])
+                    .arg(encoded)
+                    .args(["-c:a", "pcm_s16le", "-y"])
+                    .arg(&decoded)
+                    .output(),
+                "decoding",
+            );
+            verify_bit_perfect(&wav_src, &decoded).unwrap_or_else(|e| panic!("{name} bit-perfect roundtrip: {e}"));
         }
     }
 }
