@@ -718,6 +718,41 @@ fn test_deep_recursive_search_and_grep() {
 }
 
 #[test]
+fn search_never_follows_folder_links() {
+    // Folders were entered with path.is_dir(), which follows links: two links to their
+    // own folder (no files to hit the 15,000-file cap) made 2^40 paths, so the search
+    // never ended; and a link took it outside the folder being searched.
+    let tmp = temp_dir("search-links");
+    let (root, outside) = (tmp.join("root"), tmp.join("outside"));
+    std::fs::create_dir_all(root.join("loops")).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(root.join("needle.txt"), b"x").unwrap();
+    std::fs::write(outside.join("needle-outside.txt"), b"x").unwrap();
+    std::os::unix::fs::symlink(".", root.join("loops/a")).unwrap();
+    std::os::unix::fs::symlink(".", root.join("loops/b")).unwrap();
+    std::os::unix::fs::symlink(&outside, root.join("escape")).unwrap();
+    let h = start(root.to_str().unwrap(), "gungnir://odin/asgard", MockConfig::instant());
+    h.until(Duration::from_secs(5), |u| full_rows(u, 0, 3));
+    h.send(Command::Run("deep-search".into()));
+    h.until(Duration::from_secs(2), |u| matches!(u, Update::Dialog(d) if matches!(d.kind, crate::DialogKind::Search)));
+    h.send(Command::DialogCustomAction {
+        action: "search".into(),
+        opt1: false,
+        opt2: false,
+        extra1: "needle".into(),
+        extra2: String::new(),
+    });
+    let ups = h.until(
+        Duration::from_secs(5),
+        |u| matches!(u, Update::Dialog(d) if d.rows.iter().any(|(name, _)| name == "needle.txt")),
+    );
+    let Some(Update::Dialog(d)) = ups.last() else { panic!("no results") };
+    let names: Vec<&str> = d.rows.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names, ["needle.txt"], "{:?}", d.rows);
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[test]
 fn test_batch_rename_preview_and_apply() {
     let tmp = std::env::temp_dir().join(format!("gungnir_test_rename_{}", std::process::id()));
     let _ = std::fs::create_dir_all(&tmp);

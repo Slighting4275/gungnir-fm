@@ -693,9 +693,33 @@ pub fn open_default_with(program: &std::ffi::OsStr, target: &std::ffi::OsStr) ->
 ///
 /// # Errors
 /// Standard I/O errors when writing `mimeapps.list`.
+/// `mimeapps.list`, or "" when there is none. Any other failure is an error: an
+/// unreadable or non-UTF-8 file once read as "" and the rewrite dropped every association.
+fn read_mimeapps(path: &Path) -> std::io::Result<String> {
+    match std::fs::read_to_string(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        r => r,
+    }
+}
+
+/// Replaces `mimeapps.list` whole (temp, fsync, rename), keeping its mode. A symlink (a
+/// dotfiles manager's, say) is followed and its target replaced, never the link itself.
+fn write_mimeapps(path: &Path, content: &str) -> std::io::Result<()> {
+    let target = match std::fs::symlink_metadata(path) {
+        Ok(m) if m.file_type().is_symlink() => std::fs::canonicalize(path)?,
+        _ => path.to_path_buf(),
+    };
+    let mode = std::fs::metadata(&target).ok().map(|m| m.permissions());
+    crate::session::write_atomic(&target, content.as_bytes())?;
+    if let Some(mode) = mode {
+        std::fs::set_permissions(&target, mode)?;
+    }
+    Ok(())
+}
+
 pub fn set_default_app_in(config_dir: &Path, mime: &str, desktop_id: &str) -> std::io::Result<()> {
     let path = config_dir.join("mimeapps.list");
-    let content = std::fs::read_to_string(&path).unwrap_or_default();
+    let content = read_mimeapps(&path)?;
     let mut lines: Vec<String> = content.lines().map(String::from).collect();
 
     let id_val = if desktop_id.ends_with(';') { desktop_id.to_string() } else { format!("{desktop_id};") };
@@ -770,21 +794,16 @@ pub fn set_default_app_in(config_dir: &Path, mime: &str, desktop_id: &str) -> st
         out.push('\n');
     }
 
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let temp = config_dir.join(format!(".mimeapps.tmp.{}", std::process::id()));
-    std::fs::write(&temp, out)?;
-    std::fs::rename(&temp, &path)?;
-    Ok(())
+    write_mimeapps(&path, &out)
 }
 
 /// Reset any user default application override for `mime` in `config_dir/mimeapps.list`.
 pub fn reset_default_app_in(config_dir: &Path, mime: &str) -> std::io::Result<()> {
     let path = config_dir.join("mimeapps.list");
-    let Ok(content) = std::fs::read_to_string(&path) else {
-        return Ok(());
-    };
+    let content = read_mimeapps(&path)?;
+    if content.is_empty() {
+        return Ok(()); // nothing to reset
+    }
     let mut lines = Vec::new();
     let mut in_target_sec = false;
     for line in content.lines() {
@@ -807,10 +826,7 @@ pub fn reset_default_app_in(config_dir: &Path, mime: &str) -> std::io::Result<()
     if !out.ends_with('\n') {
         out.push('\n');
     }
-    let temp = config_dir.join(format!(".mimeapps.tmp.{}", std::process::id()));
-    std::fs::write(&temp, out)?;
-    std::fs::rename(&temp, &path)?;
-    Ok(())
+    write_mimeapps(&path, &out)
 }
 
 /// Convenience function updating standard user config (`$XDG_CONFIG_HOME/mimeapps.list`).
@@ -1197,6 +1213,46 @@ mod tests {
         assert!(reset_default_app_in(&cfg_dir, "video/mp4").is_ok());
         let content3 = std::fs::read_to_string(cfg_dir.join("mimeapps.list")).unwrap();
         assert!(!content3.contains("video/mp4=vlc.desktop;"));
+    }
+
+    const MIMEAPPS: &[u8] = b"[Default Applications]\ntext/plain=gedit.desktop;\nimage/png=eog.desktop;\n\n[Added Associations]\ntext/plain=gedit.desktop;\n";
+
+    #[test]
+    fn an_unreadable_mimeapps_list_is_never_wiped() {
+        // read_to_string(..).unwrap_or_default(): a file that could not be read as UTF-8
+        // (or at all) counted as empty, and the rewrite dropped every other default app.
+        let t = Tree::new("mimeapps-unreadable");
+        let cfg = t.0.join("config");
+        std::fs::create_dir_all(&cfg).unwrap();
+        let path = cfg.join("mimeapps.list");
+        let mut latin1 = MIMEAPPS.to_vec();
+        latin1.extend_from_slice(b"x-scheme-handler/caf\xe9=old.desktop;\n"); // not UTF-8
+        std::fs::write(&path, &latin1).unwrap();
+        assert!(set_default_app_in(&cfg, "video/mp4", "mpv.desktop").is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), latin1, "the user's associations were rewritten");
+        assert!(reset_default_app_in(&cfg, "text/plain").is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), latin1);
+    }
+
+    #[test]
+    fn a_symlinked_mimeapps_list_stays_a_link_and_its_target_is_updated() {
+        // The rename replaced the link (a dotfiles manager's, say) with a plain file, so
+        // the real file stopped getting changes and the link was gone.
+        let t = Tree::new("mimeapps-link");
+        let (cfg, dotfiles) = (t.0.join("config"), t.0.join("dotfiles"));
+        std::fs::create_dir_all(&cfg).unwrap();
+        std::fs::create_dir_all(&dotfiles).unwrap();
+        std::fs::write(dotfiles.join("mimeapps.list"), MIMEAPPS).unwrap();
+        std::os::unix::fs::symlink(dotfiles.join("mimeapps.list"), cfg.join("mimeapps.list")).unwrap();
+        set_default_app_in(&cfg, "video/mp4", "mpv.desktop").unwrap();
+        assert!(cfg.join("mimeapps.list").is_symlink(), "the link was replaced");
+        let real = std::fs::read_to_string(dotfiles.join("mimeapps.list")).unwrap();
+        assert!(real.contains("video/mp4=mpv.desktop;") && real.contains("image/png=eog.desktop;"), "{real}");
+        reset_default_app_in(&cfg, "video/mp4").unwrap();
+        assert!(cfg.join("mimeapps.list").is_symlink());
+        assert!(!std::fs::read_to_string(dotfiles.join("mimeapps.list")).unwrap().contains("video/mp4"));
+        let strays: Vec<_> = std::fs::read_dir(&cfg).unwrap().flatten().map(|e| e.file_name()).collect();
+        assert_eq!(strays, [std::ffi::OsString::from("mimeapps.list")], "temporary files left");
     }
 
     #[test]

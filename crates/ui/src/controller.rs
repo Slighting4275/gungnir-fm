@@ -4733,9 +4733,14 @@ impl Controller {
                     if filename.starts_with('.') || filename == "target" || filename == "node_modules" {
                         continue;
                     }
-                    if path.is_dir() {
+                    // The entry's own type: path.is_dir() followed links, so two links to
+                    // their own folder made the walk endless (2^40 paths) and a link took
+                    // it outside the folder searched. Links are never entered; a link to
+                    // a file still counts as that file.
+                    let Ok(ft) = entry.file_type() else { continue };
+                    if ft.is_dir() {
                         stack.push(path);
-                    } else if path.is_file() {
+                    } else if ft.is_file() || (ft.is_symlink() && path.is_file()) {
                         files_checked += 1;
                         if grep_content {
                             if let Ok(meta) = entry.metadata()
