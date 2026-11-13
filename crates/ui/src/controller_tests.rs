@@ -1445,11 +1445,16 @@ fn quick_preview_shows_a_thumbnail_or_a_text_snippet() {
     assert_eq!(title, "b.txt");
     assert!(detail.ends_with("---\nfirst line\nsecond line"), "{detail}");
     h.send(Command::DialogCancel);
-    // Cancelled while it was being prepared: its late result must not pop up.
+    // Cancelled while it was being prepared: its late result must not pop up. (A text
+    // snippet can be ready before the cancel is handled; it then opens and the cancel
+    // closes it. What must never happen is a preview after the cancel's close.)
     h.send(Command::Run("quick-preview".into()));
     h.send(Command::DialogCancel);
     let late = h.drain_for(Duration::from_millis(800));
-    assert!(!late.iter().any(|u| matches!(u, Update::Preview { .. })), "a cancelled preview opened");
+    let closed = late.iter().rposition(|u| matches!(u, Update::CloseDialog));
+    let opened = late.iter().rposition(|u| matches!(u, Update::Preview { .. }));
+    assert!(closed.is_some(), "the cancel did not close the dialog: {late:?}");
+    assert!(opened.is_none_or(|o| o < closed.unwrap_or(0)), "a cancelled preview opened after the cancel");
     let _ = std::fs::remove_dir_all(tmp);
 }
 

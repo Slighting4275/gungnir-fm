@@ -16,7 +16,7 @@ use std::ffi::{CStr, CString, OsStr};
 use std::os::raw::{c_char, c_int, c_long, c_uint, c_void};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -112,6 +112,7 @@ unsafe extern "C" {
     fn archive_entry_size(entry: *mut c_void) -> i64;
     fn archive_entry_set_size(entry: *mut c_void, size: i64);
     fn archive_entry_filetype(entry: *mut c_void) -> c_uint;
+    fn archive_read_data_skip(a: *mut c_void) -> c_int;
     fn archive_entry_set_filetype(entry: *mut c_void, filetype: c_uint);
     fn archive_entry_perm(entry: *mut c_void) -> c_uint;
     fn archive_entry_set_perm(entry: *mut c_void, perm: c_uint);
@@ -303,6 +304,9 @@ pub struct ExtractStats {
     pub files_extracted: usize,
     pub directories_extracted: usize,
     pub symlinks_extracted: usize,
+    /// Device, FIFO and socket entries, never created: a FIFO named like a document
+    /// would hang most programs that open it.
+    pub special_skipped: usize,
     pub total_bytes_written: u64,
     pub elapsed_ms: u64,
 }
@@ -659,6 +663,7 @@ struct Staging(PathBuf);
 impl Staging {
     fn new(target_dir: &Path) -> std::io::Result<Self> {
         use std::os::unix::fs::DirBuilderExt;
+        remove_stale_staging(target_dir);
         static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let p = target_dir.join(format!(".gungnir-extract-{}-{n}", std::process::id()));
@@ -667,10 +672,63 @@ impl Staging {
     }
 }
 
+/// How long a staging directory of a process that is gone must be untouched to be removed.
+const STALE_STAGING: Duration = Duration::from_secs(3600);
+
+/// Staging directories in `target_dir` left by a gungnir-fm that was killed mid-extraction
+/// (the drop never ran): removed if, and only if, the name is exactly
+/// `.gungnir-extract-<pid>-<n>`, it is a real directory of ours (never a link), no process
+/// `<pid>` exists, and it was not touched for an hour (a gungnir-fm in another pid
+/// namespace, e.g. a Flatpak, has pids we cannot see). Best effort: anything doubtful
+/// stays.
+fn remove_stale_staging(target_dir: &Path) {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(entries) = std::fs::read_dir(target_dir) else { return };
+    // SAFETY: geteuid has no preconditions.
+    let me = unsafe { libc::geteuid() };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(rest) = name.to_str().and_then(|n| n.strip_prefix(".gungnir-extract-")) else { continue };
+        let Some((pid, n)) = rest.split_once('-') else { continue };
+        let (Ok(pid), Ok(_)) = (pid.parse::<u32>(), n.parse::<u64>()) else { continue };
+        if pid == std::process::id() || Path::new("/proc").join(pid.to_string()).exists() {
+            continue;
+        }
+        let path = entry.path();
+        let stale = |m: &std::fs::Metadata| {
+            m.modified().ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age >= STALE_STAGING)
+        };
+        if std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_dir() && m.uid() == me && stale(&m)) {
+            remove_tree(&path); // never follows a link
+        }
+    }
+}
+
 impl Drop for Staging {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+        remove_tree(&self.0);
     }
+}
+
+/// Remove `path` and everything below, without following a link. A directory the
+/// archive left without owner access (no read or execute) made `remove_dir_all` fail and
+/// the staging stay: such directories are given 0700 first, then it is tried again.
+fn remove_tree(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    if std::fs::remove_dir_all(path).is_ok() {
+        return;
+    }
+    let mut todo = vec![path.to_path_buf()];
+    while let Some(dir) = todo.pop() {
+        if !std::fs::symlink_metadata(&dir).is_ok_and(|m| m.is_dir()) {
+            continue;
+        }
+        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+        for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            todo.push(e.path());
+        }
+    }
+    let _ = std::fs::remove_dir_all(path);
 }
 
 /// Move what was extracted into `staging` into `target_dir`: a directory that is already
@@ -777,10 +835,9 @@ fn extract_7z_into(archive_path: &Path, staging: &Path, password: &str) -> Resul
                 stats.files_extracted += 1;
                 stats.total_bytes_written += md.len();
             } else {
-                return Err(ArchiveError::UnsupportedFormat(format!(
-                    "{} is not a file, directory or link",
-                    path.strip_prefix(staging).unwrap_or(&path).display()
-                )));
+                // A device, FIFO or socket: never kept (as on the libarchive path).
+                std::fs::remove_file(&path)?;
+                stats.special_skipped += 1;
             }
         }
     }
@@ -877,6 +934,18 @@ fn extract_archive_libarchive(
             }
             let raw_path = Path::new(OsStr::from_bytes(CStr::from_ptr(current_path_c).to_bytes()));
             let sanitized = safe_archive_path(raw_path)?;
+            // "." or "./" names the destination itself: a directory entry for it (tar -C
+            // dir . writes one) is skipped, so its mode never lands on the staging root
+            // (one of 0451 locked it); any other kind of entry there is refused.
+            if !sanitized.components().any(|c| matches!(c, std::path::Component::Normal(_))) {
+                if archive_entry_filetype(entry) != AE_IFDIR {
+                    return Err(ArchiveError::PathTraversal(raw_path.display().to_string()));
+                }
+                if archive_read_data_skip(a) != ARCHIVE_OK {
+                    return Err(ArchiveError::Libarchive(get_archive_error(a)));
+                }
+                continue;
+            }
             let full_out = target_dir.join(sanitized);
             // Validate links before archive_write_header can create them.
             let symlink = archive_entry_symlink(entry);
@@ -892,6 +961,16 @@ fn extract_archive_libarchive(
                 archive_entry_set_hardlink(entry, target.as_ptr());
             }
 
+            // Only files, directories and links are created (a hardlink is a file).
+            let kind = archive_entry_filetype(entry);
+            if !matches!(kind, AE_IFREG | AE_IFDIR | AE_IFLNK) && hardlink.is_null() {
+                if archive_read_data_skip(a) != ARCHIVE_OK {
+                    return Err(ArchiveError::Libarchive(get_archive_error(a)));
+                }
+                stats.special_skipped += 1;
+                continue;
+            }
+
             let c_full_out = CString::new(full_out.as_os_str().as_bytes())
                 .map_err(|_| ArchiveError::Libarchive("Invalid output path".into()))?;
             archive_entry_set_pathname(entry, c_full_out.as_ptr());
@@ -900,7 +979,11 @@ fn extract_archive_libarchive(
             // script before it runs) or setuid. Keep the owner's bits and read/execute
             // for others; never group/other write, setuid, setgid or sticky (what GNU tar
             // does for a normal user).
-            archive_entry_set_perm(entry, archive_entry_perm(entry) & EXTRACT_PERM_MASK);
+            // A directory is always the owner's to enter, list and change (0700 at least):
+            // one the archive made 0351 could not be opened, nor the staging removed.
+            let perm = archive_entry_perm(entry) & EXTRACT_PERM_MASK;
+            let perm = if archive_entry_filetype(entry) == AE_IFDIR { perm | 0o700 } else { perm };
+            archive_entry_set_perm(entry, perm);
 
             let write_header_res = archive_write_header(ext, entry);
             let ftype = archive_entry_filetype(entry);
@@ -2050,6 +2133,345 @@ mod tests {
         std::fs::create_dir(&out2).unwrap();
         assert!(extract_archive(&bad, &out2, None).is_err());
         assert_eq!(std::fs::read_dir(&out2).unwrap().count(), 0, "a corrupt archive left something");
+    }
+
+    /// A gungnir-fm killed mid-extraction left its hidden staging directory (perhaps
+    /// large) in the folder for good. The next extraction there removes such leftovers of
+    /// processes that are gone, and never one of a running process or anything else.
+    #[test]
+    fn a_stale_staging_directory_of_a_dead_process_is_removed() {
+        let t = TestTempDir::new("stale-staging");
+        std::fs::write(t.path().join("f.txt"), b"x").unwrap();
+        let tar = t.path().join("a.tar");
+        compress_items(
+            &tar,
+            t.path(),
+            &[PathBuf::from("f.txt")],
+            &ArchiveOptions { format: Some(ArchiveFormat::Tar), ..Default::default() },
+        )
+        .unwrap();
+        let out = t.path().join("out");
+        std::fs::create_dir(&out).unwrap();
+        // A pid that is certainly not running: past the kernel's pid_max.
+        let dead = out.join(".gungnir-extract-4194999-3");
+        std::fs::create_dir_all(dead.join("big/inner")).unwrap();
+        std::fs::write(dead.join("big/inner/blob"), vec![0u8; 4096]).unwrap();
+        let two_hours_ago = std::time::SystemTime::now() - Duration::from_secs(7200);
+        std::fs::File::open(&dead).unwrap().set_modified(two_hours_ago).unwrap();
+        // A recent one of a pid we cannot see (another pid namespace, e.g. a Flatpak): kept.
+        let recent = out.join(".gungnir-extract-4194997-0");
+        std::fs::create_dir(&recent).unwrap();
+        // One of a running process (this test) and two that only look alike.
+        let live = out.join(format!(".gungnir-extract-{}-999", std::process::id()));
+        std::fs::create_dir(&live).unwrap();
+        let mine = out.join(".gungnir-extract-notes");
+        std::fs::create_dir(&mine).unwrap();
+        let link = out.join(".gungnir-extract-4194998-1");
+        std::os::unix::fs::symlink(t.path(), &link).unwrap();
+        extract_archive(&tar, &out, None).unwrap();
+        assert!(!dead.exists(), "the dead process's staging is still there");
+        assert!(live.exists(), "a running process's staging was removed");
+        assert!(recent.exists(), "a recent staging directory was removed");
+        assert!(mine.exists(), "a directory that only looks alike was removed");
+        assert!(std::fs::symlink_metadata(&link).is_ok(), "a link was removed");
+        assert!(t.path().join("f.txt").exists(), "a link was followed");
+        assert_eq!(std::fs::read(out.join("f.txt")).unwrap(), b"x");
+    }
+
+    /// Fuzz (deterministic): 2500 corrupted tar, zip, encrypted zip, tar.zst and tar.xz
+    /// archives extracted next to a file of ours: it never changes, nothing is written
+    /// outside, no staging is left, no link leads out. (Found: a directory left 0351 kept
+    /// the staging behind.)
+    #[test]
+    fn corrupted_archives_never_break_the_extraction_rules() {
+        let t = TestTempDir::new("fuzz-extract");
+        let src = t.path().join("src");
+        std::fs::create_dir_all(src.join("dir/sub")).unwrap();
+        std::fs::write(src.join("mine.txt"), b"archive copy").unwrap();
+        std::fs::write(src.join("dir/sub/deep.bin"), vec![7u8; 20000]).unwrap();
+        std::os::unix::fs::symlink("dir/sub/deep.bin", src.join("link")).unwrap();
+        let mut seeds = Vec::new();
+        for (fmt, ext, pw) in [
+            (ArchiveFormat::Tar, "tar", None),
+            (ArchiveFormat::Zip, "zip", None),
+            (ArchiveFormat::Zip, "enc.zip", Some("pw-9")),
+            (ArchiveFormat::TarZstd, "tar.zst", None),
+            (ArchiveFormat::TarXz, "tar.xz", None),
+        ] {
+            let a = t.path().join(format!("seed.{ext}"));
+            let opts = ArchiveOptions { format: Some(fmt), password: pw.map(String::from), ..Default::default() };
+            compress_items(&a, &src, &[PathBuf::from("mine.txt"), PathBuf::from("dir"), PathBuf::from("link")], &opts)
+                .unwrap();
+            seeds.push((std::fs::read(&a).unwrap(), ext, pw));
+        }
+        let outside = t.path().join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        let mut rng: u64 = 0x2545_f491_4f6c_dd1d;
+        let mut next = || {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            rng
+        };
+        let (mut ok, mut err) = (0, 0);
+        let t0 = Instant::now();
+        for i in 0..2500u32 {
+            let (seed, ext, pw) = &seeds[i as usize % seeds.len()];
+            let mut b = seed.clone();
+            match next() % 4 {
+                0 => {
+                    let k = 1 + next() % 8;
+                    for _ in 0..k {
+                        let j = (next() as usize) % b.len();
+                        b[j] = next() as u8;
+                    }
+                }
+                1 => {
+                    let j = (next() as usize) % b.len();
+                    b.truncate(j.max(1));
+                }
+                2 => {
+                    let j = (next() as usize) % b.len();
+                    let n = 1 + (next() % 64) as usize;
+                    for x in 0..n {
+                        if j + x < b.len() {
+                            b[j + x] = 0;
+                        }
+                    }
+                }
+                _ => {
+                    let j = (next() as usize) % b.len();
+                    let v: Vec<u8> = (0..(next() % 300)).map(|_| next() as u8).collect();
+                    b.splice(j..j, v);
+                }
+            }
+            let a = t.path().join(format!("m.{ext}"));
+            std::fs::write(&a, &b).unwrap();
+            let dest = t.path().join("dest");
+            let _ = std::fs::remove_dir_all(&dest);
+            std::fs::create_dir(&dest).unwrap();
+            std::fs::write(dest.join("mine.txt"), b"MY FILE").unwrap();
+            let r = extract_archive(&a, &dest, *pw);
+            if r.is_ok() {
+                ok += 1
+            } else {
+                err += 1
+            }
+            assert_eq!(
+                std::fs::read(dest.join("mine.txt")).unwrap(),
+                b"MY FILE",
+                "case {i} {ext}: my file changed ({r:?})"
+            );
+            assert_eq!(staging_left(&dest), Vec::<String>::new(), "case {i} {ext}: staging left");
+            assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0, "case {i}: wrote outside");
+            for e in walk(&dest) {
+                if let Ok(target) = std::fs::read_link(&e) {
+                    assert!(safe_archive_path(&target).is_ok(), "case {i}: escaping link {e:?} -> {target:?}");
+                }
+            }
+        }
+        assert!(ok > 0 && err > 0, "{ok} extracted, {err} refused in {:?}", t0.elapsed());
+    }
+
+    /// Fuzz (deterministic): 5000 valid tars of hostile entries (traversal and absolute
+    /// names, clashes with what is there, links out, devices, FIFOs, odd modes, ".")
+    /// extracted next to a file, a folder and a link out: nothing of ours changes, only
+    /// files, folders and safe links arrive, modes are safe and folders ours to enter, no
+    /// staging is left. (Found: device/FIFO entries were created; a "." entry locked the
+    /// staging root.)
+    #[test]
+    fn hostile_tar_entries_never_break_the_extraction_rules() {
+        let t = TestTempDir::new("fuzz-tar");
+        let outside = t.path().join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(outside.join("victim"), b"V").unwrap();
+        let names = [
+            "a",
+            "b",
+            "dir",
+            "dir/x",
+            "dir/y/z",
+            "mine.txt",
+            "keep",
+            "keep/inner",
+            "../esc",
+            "/abs",
+            "a/../../up",
+            "deep/deep/deep/deep/deep/f",
+            ".",
+            "./a",
+            "lnk",
+            "lnk/through",
+            "outlink",
+            "outlink/pwn",
+            "fifo",
+            "dev",
+        ];
+        let links = ["a", "dir", "../outside", "/etc", "dir/x", "outside/victim", "lnk", "..", "keep", "deep"];
+        let kinds = *b"000552163";
+        let mut rng: u64 = 0x9e37_79b9_7f4a_7c15;
+        let mut next = || {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            rng
+        };
+        let (mut ok, mut err) = (0, 0);
+        let t0 = Instant::now();
+        for i in 0..5000u32 {
+            let n = 1 + (next() % 6) as usize;
+            let mut owned: Vec<(String, u8, String, u32, Vec<u8>)> = Vec::new();
+            for _ in 0..n {
+                let name = names[(next() as usize) % names.len()].to_string();
+                let kind = kinds[(next() as usize) % kinds.len()];
+                let link = if matches!(kind, b'1' | b'2') {
+                    links[(next() as usize) % links.len()].to_string()
+                } else {
+                    String::new()
+                };
+                let mode = (next() % 0o10000) as u32;
+                let body = if kind == b'0' { vec![b'D'; (next() % 40) as usize] } else { Vec::new() };
+                owned.push((name, kind, link, mode, body));
+            }
+            let refs: Vec<(&str, u8, &str, u32, &[u8])> =
+                owned.iter().map(|(a, k, l, m, b)| (a.as_str(), *k, l.as_str(), *m, b.as_slice())).collect();
+            let archive = t.path().join("f.tar");
+            write_tar_entries(&archive, &refs);
+            let dest = t.path().join("dest");
+            if dest.exists() {
+                remove_tree(&dest);
+            }
+            std::fs::create_dir(&dest).unwrap();
+            std::fs::write(dest.join("mine.txt"), b"MY FILE").unwrap();
+            std::fs::create_dir(dest.join("keep")).unwrap();
+            std::fs::write(dest.join("keep/old"), b"OLD").unwrap();
+            std::os::unix::fs::symlink(&outside, dest.join("outlink")).unwrap();
+            let r = extract_archive(&archive, &dest, None);
+            if r.is_ok() {
+                ok += 1
+            } else {
+                err += 1
+            }
+            let ctx = || format!("case {i}: {owned:?} -> {r:?}");
+            assert_eq!(std::fs::read(dest.join("mine.txt")).unwrap(), b"MY FILE", "{}", ctx());
+            assert_eq!(std::fs::read(dest.join("keep/old")).unwrap(), b"OLD", "{}", ctx());
+            assert_eq!(std::fs::read(outside.join("victim")).unwrap(), b"V", "{}", ctx());
+            assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 1, "{}", ctx());
+            assert!(!t.path().join("esc").exists() && !t.path().join("up").exists(), "{}", ctx());
+            assert_eq!(staging_left(&dest), Vec::<String>::new(), "{}", ctx());
+            for e in walk(&dest) {
+                let m = std::fs::symlink_metadata(&e).unwrap();
+                let ft = m.file_type();
+                assert!(ft.is_file() || ft.is_dir() || ft.is_symlink(), "special file {e:?}: {}", ctx());
+                use std::os::unix::fs::PermissionsExt;
+                if !ft.is_symlink() {
+                    assert_eq!(m.permissions().mode() & 0o7022, 0, "mode of {e:?}: {}", ctx());
+                }
+                if ft.is_dir() {
+                    assert_eq!(m.permissions().mode() & 0o700, 0o700, "dir mode {e:?}: {}", ctx());
+                }
+                if e != dest.join("outlink")
+                    && let Ok(target) = std::fs::read_link(&e)
+                {
+                    assert!(safe_archive_path(&target).is_ok(), "escaping link {e:?} -> {target:?}: {}", ctx());
+                }
+            }
+        }
+        assert!(ok > 500 && err > 500, "{ok} extracted, {err} refused in {:?}", t0.elapsed());
+    }
+
+    /// Device and FIFO entries are never created (a FIFO named like a document hangs the
+    /// programs that open it); they are counted, and the rest of the archive arrives.
+    #[test]
+    fn device_and_fifo_entries_are_never_created() {
+        let t = TestTempDir::new("special");
+        let archive = t.path().join("s.tar");
+        write_tar_entries(
+            &archive,
+            &[
+                ("invoice.pdf", b'6', "", 0o644, b""),
+                ("null", b'3', "", 0o644, b""),
+                ("ok.txt", b'0', "", 0o644, b"fine"),
+            ],
+        );
+        let out = t.path().join("out");
+        let stats = extract_archive(&archive, &out, None).unwrap();
+        assert!(std::fs::symlink_metadata(out.join("invoice.pdf")).is_err(), "a FIFO was created");
+        assert!(std::fs::symlink_metadata(out.join("null")).is_err(), "a device was created");
+        assert_eq!(std::fs::read(out.join("ok.txt")).unwrap(), b"fine");
+        assert_eq!(stats.special_skipped, 2);
+    }
+
+    /// Folders the archive makes are always the owner's to enter (a 0351 one could not
+    /// be listed, nor the staging removed when the extraction failed later).
+    #[test]
+    fn extracted_folders_are_always_the_owners_to_open() {
+        let t = TestTempDir::new("locked-dir");
+        let ok = t.path().join("ok.tar");
+        write_tar_entries(&ok, &[("d/", b'5', "", 0o351, b""), ("d/f", b'0', "", 0o644, b"x")]);
+        let out = t.path().join("out");
+        extract_archive(&ok, &out, None).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(out.join("d")).unwrap().permissions().mode() & 0o700, 0o700);
+        assert_eq!(std::fs::read(out.join("d/f")).unwrap(), b"x");
+        // Failing after such a folder: nothing left behind.
+        let bad = t.path().join("bad.tar");
+        write_tar_entries(
+            &bad,
+            &[("e/", b'5', "", 0o351, b""), ("e/g", b'0', "", 0o644, b"y"), ("../esc", b'0', "", 0o644, b"z")],
+        );
+        let out2 = t.path().join("out2");
+        assert!(extract_archive(&bad, &out2, None).is_err());
+        assert_eq!(std::fs::read_dir(&out2).unwrap().count(), 0, "a failed extraction left something");
+    }
+
+    /// "." names the destination: a folder entry for it is skipped (its mode of 0451
+    /// locked the staging root), any other kind is refused; nothing is left either way.
+    #[test]
+    fn an_entry_for_the_destination_itself_never_changes_it() {
+        let t = TestTempDir::new("dot");
+        let dir_dot = t.path().join("dir-dot.tar");
+        write_tar_entries(&dir_dot, &[("./", b'5', "", 0o451, b""), ("./a.txt", b'0', "", 0o644, b"a")]);
+        let out = t.path().join("out");
+        extract_archive(&dir_dot, &out, None).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(&out).unwrap().permissions().mode() & 0o700, 0o700);
+        assert_eq!(std::fs::read(out.join("a.txt")).unwrap(), b"a");
+        let file_dot = t.path().join("file-dot.tar");
+        write_tar_entries(&file_dot, &[(".", b'0', "", 0o451, b"D"), ("b.txt", b'0', "", 0o644, b"b")]);
+        let out2 = t.path().join("out2");
+        assert!(matches!(extract_archive(&file_dot, &out2, None), Err(ArchiveError::PathTraversal(_))));
+        assert_eq!(std::fs::read_dir(&out2).unwrap().count(), 0);
+    }
+
+    /// The cleanup removes a tree whose folders the owner cannot enter or list.
+    #[test]
+    fn a_tree_without_owner_access_is_still_removed() {
+        use std::os::unix::fs::PermissionsExt;
+        let t = TestTempDir::new("rm-locked");
+        let root = t.path().join(".gungnir-extract-1-0");
+        std::fs::create_dir_all(root.join("a/b")).unwrap();
+        std::fs::write(root.join("a/b/f"), b"x").unwrap();
+        std::fs::set_permissions(root.join("a/b"), std::fs::Permissions::from_mode(0o351)).unwrap();
+        std::fs::set_permissions(root.join("a"), std::fs::Permissions::from_mode(0o000)).unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o451)).unwrap();
+        remove_tree(&root);
+        assert!(std::fs::symlink_metadata(&root).is_err(), "still there");
+    }
+
+    fn walk(dir: &Path) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        let mut todo = vec![dir.to_path_buf()];
+        while let Some(d) = todo.pop() {
+            for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+                let p = e.path();
+                if std::fs::symlink_metadata(&p).is_ok_and(|m| m.is_dir()) {
+                    todo.push(p.clone());
+                }
+                out.push(p);
+            }
+        }
+        out
     }
 
     #[test]
