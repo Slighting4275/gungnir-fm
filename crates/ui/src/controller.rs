@@ -2121,15 +2121,22 @@ impl Controller {
                     let _ = tx.blocking_send(Msg::Ev(Event::ArchiveNeedsPassword { job: Box::new(job), wrong }));
                     return;
                 }
-                Ok(stats) => Ok(match &job.into {
-                    Some(stem) => format!(
-                        "Extracted {} file(s) from {name} into {stem}/ in {}ms",
-                        stats.files_extracted, stats.elapsed_ms
-                    ),
-                    None => {
-                        format!("Extracted {} file(s) from {name} in {}ms", stats.files_extracted, stats.elapsed_ms)
-                    }
-                }),
+                Ok(stats) => {
+                    let skipped = match stats.special_skipped {
+                        0 => String::new(),
+                        n => format!(" ({n} device/FIFO/socket entr{} not created)", if n == 1 { "y" } else { "ies" }),
+                    };
+                    Ok(match &job.into {
+                        Some(stem) => format!(
+                            "Extracted {} file(s) from {name} into {stem}/ in {}ms{skipped}",
+                            stats.files_extracted, stats.elapsed_ms
+                        ),
+                        None => format!(
+                            "Extracted {} file(s) from {name} in {}ms{skipped}",
+                            stats.files_extracted, stats.elapsed_ms
+                        ),
+                    })
+                }
                 Err(e) => Err(format!("Extract {name}: {e}")),
             };
             let select = job.into.clone().map(|stem| (loc.clone(), stem));
