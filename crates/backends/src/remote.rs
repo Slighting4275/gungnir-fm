@@ -6,6 +6,7 @@
 
 use std::io::Read;
 use std::process::{Command, Output, Stdio};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
@@ -42,11 +43,44 @@ fn run_gio(
     timeout: Option<Duration>,
     cancel: Option<&CancellationToken>,
 ) -> VfsResult<Output> {
-    fn drain(pipe: Option<impl Read + Send + 'static>) -> Option<std::thread::JoinHandle<Vec<u8>>> {
-        pipe.map(|mut r| {
+    run_gio_capped(gio, args, timeout, cancel, GIO_OUTPUT_MAX)
+}
+
+/// What one `gio` call may print before it is stopped: the whole output used to be read
+/// into memory, and a hostile server streaming a listing that never ends filled it with
+/// gigabytes before the time limit. Listings get [`GIO_LIST_OUTPUT_MAX`].
+const GIO_OUTPUT_MAX: usize = 4 << 20;
+/// A listing's bound (some 800,000 names), and the entries it may hold.
+const GIO_LIST_OUTPUT_MAX: usize = 64 << 20;
+const GIO_LIST_ENTRIES_MAX: usize = 500_000;
+/// gio's error output, shown in messages.
+const GIO_STDERR_MAX: usize = 64 << 10;
+
+/// [`run_gio`] with `max_stdout` bytes of output at most: past it gio is killed and the
+/// call fails ("too large").
+fn run_gio_capped(
+    gio: &std::ffi::OsStr,
+    args: &[&str],
+    timeout: Option<Duration>,
+    cancel: Option<&CancellationToken>,
+    max_stdout: usize,
+) -> VfsResult<Output> {
+    // Reads at most `max` bytes (then stops reading, which leaves gio blocked or failing
+    // on a full pipe) and flags it in `over`.
+    fn drain(
+        pipe: Option<impl Read + Send + 'static>,
+        max: usize,
+        over: Arc<AtomicBool>,
+    ) -> Option<std::thread::JoinHandle<Vec<u8>>> {
+        pipe.map(|r| {
             std::thread::spawn(move || {
                 let mut b = Vec::new();
-                let _ = r.read_to_end(&mut b);
+                let read = r.take(max as u64 + 1).read_to_end(&mut b);
+                // Out of memory before the bound counts as too large, not as gio failing.
+                if b.len() > max || read.is_err_and(|e| e.kind() == std::io::ErrorKind::OutOfMemory) {
+                    b.truncate(max);
+                    over.store(true, Ordering::Release);
+                }
                 b
             })
         })
@@ -59,13 +93,22 @@ fn run_gio(
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| VfsError::Transport(format!("gio {what} failed: {e}")))?;
-    let (out, err) = (drain(child.stdout.take()), drain(child.stderr.take()));
+    let over = Arc::new(AtomicBool::new(false));
+    let (out, err) = (
+        drain(child.stdout.take(), max_stdout, Arc::clone(&over)),
+        drain(child.stderr.take(), GIO_STDERR_MAX, Arc::new(AtomicBool::new(false))),
+    );
     let deadline = timeout.map(|t| Instant::now() + t);
     let status = loop {
         if let Some(status) = child.try_wait().map_err(|e| VfsError::Transport(format!("gio {what}: {e}")))? {
             break status;
         }
-        let stop = if cancel.is_some_and(CancellationToken::is_cancelled) {
+        let stop = if over.load(Ordering::Acquire) {
+            Some(VfsError::Transport(format!(
+                "gio {what}: the server's answer is too large (over {} MiB)",
+                max_stdout >> 20
+            )))
+        } else if cancel.is_some_and(CancellationToken::is_cancelled) {
             Some(VfsError::Cancelled)
         } else if deadline.is_some_and(|d| Instant::now() >= d) {
             Some(VfsError::Timeout)
@@ -80,7 +123,15 @@ fn run_gio(
         std::thread::sleep(Duration::from_millis(20));
     };
     let join = |t: Option<std::thread::JoinHandle<Vec<u8>>>| t.and_then(|t| t.join().ok()).unwrap_or_default();
-    Ok(Output { status, stdout: join(out), stderr: join(err) })
+    let (stdout, stderr) = (join(out), join(err));
+    // gio may have finished on its own right after the bound was passed.
+    if over.load(Ordering::Acquire) {
+        return Err(VfsError::Transport(format!(
+            "gio {what}: the server's answer is too large (over {} MiB)",
+            max_stdout >> 20
+        )));
+    }
+    Ok(Output { status, stdout, stderr })
 }
 
 /// One line of `gio list -l -u`: `<child URI>\t<size>\t(<type>)`. The URI is the
@@ -90,7 +141,9 @@ fn parse_list_line(line: &str) -> Option<(String, u64, bool)> {
     let mut parts = line.split('\t');
     let uri = parts.next()?;
     let name = core_vfs::uri::percent_decode(uri.rsplit('/').next()?).ok()?;
-    if name.is_empty() || name == "." || name == ".." || name.contains('/') {
+    // No NUL either: no file has one, and a server sending %00 made every local path
+    // built from the name invalid.
+    if name.is_empty() || name == "." || name == ".." || name.contains(['/', '\0']) {
         return None;
     }
     let size = parts.next().and_then(|s| s.trim().parse::<u64>().ok()).unwrap_or(0);
@@ -218,7 +271,8 @@ impl VfsProvider for RemoteVfsBackend {
 
         let (gio, timeout) = (self.gio.clone(), self.timeout);
         tokio::task::spawn_blocking(move || {
-            let output = match run_gio(&gio, &["list", "-l", "-u", "--", &uri_str], Some(timeout), Some(&cancel)) {
+            let args = ["list", "-l", "-u", "--", &uri_str];
+            let output = match run_gio_capped(&gio, &args, Some(timeout), Some(&cancel), GIO_LIST_OUTPUT_MAX) {
                 // Network discovery that never answers is shown like one that failed.
                 Err(VfsError::Timeout) if target_dir.scheme() == Scheme::Network => {
                     return Ok(ListSummary { entries: 0, skipped: 0 });
@@ -246,6 +300,11 @@ impl VfsProvider for RemoteVfsBackend {
                 let Some((name, size, is_dir)) = parse_list_line(trimmed) else {
                     continue;
                 };
+                if entries.len() >= GIO_LIST_ENTRIES_MAX {
+                    return Err(VfsError::Transport(format!(
+                        "{uri_str}: the server listed too large a folder (over {GIO_LIST_ENTRIES_MAX} entries)"
+                    )));
+                }
                 let kind = if is_dir { FileKind::Directory } else { FileKind::File };
                 let child_uri = match target_dir.join(&name) {
                     Ok(u) => u,
@@ -756,6 +815,46 @@ mod removal_tests {
             list(&backend, &VfsUri::parse("sftp://h/d").unwrap_or_else(|e| panic!("{e}")), CancellationToken::new());
         assert!(matches!(r, Err(VfsError::Timeout)), "{r:?}");
         assert!(t0.elapsed() < Duration::from_secs(5), "{:?}", t0.elapsed());
+        assert!(gone(&fixture), "gio must be killed and reaped");
+    }
+
+    /// Names a hostile server may send: none with a NUL (no file can have one, and every
+    /// local path built from it breaks), "/", "." or ".." gets in; ordinary odd names do.
+    #[test]
+    fn hostile_remote_names_never_become_entries() {
+        let long = "x".repeat(100_000);
+        let cases = [
+            ("sftp://h/d/a%00b\t1\t(regular)", None),
+            ("sftp://h/d/%00\t1\t(regular)", None),
+            ("sftp://h/d/..%2F..%2Fetc\t1\t(regular)", None),
+            ("sftp://h/d/%2E%2E\t1\t(directory)", None),
+            ("sftp://h/d/.\t1\t(directory)", None),
+            ("sftp://h/d/%2Fabs\t1\t(regular)", None),
+            ("sftp://h/d/ok%20name\t3\t(regular)", Some("ok name")),
+            ("sftp://h/d/new%0Aline\t3\t(regular)", Some("new\nline")),
+        ];
+        for (line, want) in cases {
+            let got = parse_list_line(&line.replace("\\t", "\t")).map(|(n, _, _)| n);
+            assert_eq!(got.as_deref(), want, "{line}");
+        }
+        let got = parse_list_line(&format!("sftp://h/d/{long}\t1\t(regular)")).map(|(n, _, _)| n.len());
+        assert_eq!(got, Some(100_000), "a long name is a name (the folder decides what it holds)");
+    }
+
+    /// A hostile server streams a listing that never ends (gio prints it as fast as it
+    /// arrives): the listing used to be read whole into memory first, gigabytes before
+    /// the time limit. It now stops at a bound, kills gio and says why.
+    #[test]
+    fn an_endless_remote_listing_is_cut_off_not_buffered() {
+        let fixture = Fixture::new(
+            "echo $$ > \"$(dirname \"$0\")/pid\"; exec yes \"$(printf 'sftp://h/d/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\t1\\t(regular)')\"",
+        );
+        let backend = RemoteVfsBackend::sftp().with_gio(&fixture.0, Duration::from_secs(60));
+        let t0 = Instant::now();
+        let r =
+            list(&backend, &VfsUri::parse("sftp://h/d").unwrap_or_else(|e| panic!("{e}")), CancellationToken::new());
+        assert!(matches!(&r, Err(VfsError::Transport(m)) if m.contains("too large")), "{:?}", r.as_ref().map(Vec::len));
+        assert!(t0.elapsed() < Duration::from_secs(20), "{:?}", t0.elapsed());
         assert!(gone(&fixture), "gio must be killed and reaped");
     }
 

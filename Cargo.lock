@@ -1912,7 +1912,9 @@ version = "0.1.6"
 dependencies = [
  "backends",
  "core-vfs",
+ "crc32fast",
  "dirs",
+ "flate2",
  "image",
  "libc",
  "md5",

@@ -62,6 +62,92 @@ fn cache_dir_is_private(dir: &Path) -> bool {
     md.mode() & 0o077 == 0 || std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).is_ok()
 }
 
+/// ffmpeg reads local files only (-protocol_whitelist file): no playlist or concat input
+/// may make a thumbnail reach the network.
+///
+/// How long one external thumbnail tool (magick, ffmpeg, dcraw, exiftool, rsvg-convert)
+/// may run: a hostile file can make a decoder hang, and it held its worker for good.
+const TOOL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// ImageMagick's own bounds, before the input: an image it cannot fit is refused, never
+/// cached on disk (its default cache, /tmp, is memory here) or worked on for minutes.
+/// (Its disk cache is /tmp, which may be memory: the three together are the ceiling.)
+const MAGICK_LIMITS: [&str; 18] = [
+    "-limit", "memory", "256MiB", "-limit", "map", "256MiB", "-limit", "disk", "256MiB", "-limit", "time", "30",
+    "-limit", "width", "20KP", "-limit", "height", "20KP",
+];
+
+/// Images larger than this get no thumbnail (no tool is started for them): a PNG of a
+/// few hundred kilobytes can say 12000x12000, and ImageMagick took over a gigabyte of
+/// memory for it.
+const MAX_THUMBNAIL_PIXELS: u64 = 100_000_000;
+const MAX_THUMBNAIL_SIDE: u32 = 20_000;
+
+/// Decode an image from memory within the thumbnail bounds (64 MiB, the size limits).
+fn decode_limited(bytes: &[u8]) -> Result<image::DynamicImage, String> {
+    let mut reader =
+        image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().map_err(|e| e.to_string())?;
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(64 * 1024 * 1024);
+    limits.max_image_width = Some(MAX_THUMBNAIL_SIDE);
+    limits.max_image_height = Some(MAX_THUMBNAIL_SIDE);
+    reader.limits(limits);
+    reader.decode().map_err(|e| e.to_string())
+}
+
+/// A [`Command`] run with a deadline: killed and reaped once it passes.
+trait TimedCommand {
+    fn timed_status_within(&mut self, limit: std::time::Duration) -> std::io::Result<std::process::ExitStatus>;
+    fn timed_status(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        self.timed_status_within(TOOL_TIMEOUT)
+    }
+}
+
+impl TimedCommand for Command {
+    fn timed_status_within(&mut self, limit: std::time::Duration) -> std::io::Result<std::process::ExitStatus> {
+        let mut child = self.spawn()?;
+        let deadline = std::time::Instant::now() + limit;
+        loop {
+            if let Some(status) = child.try_wait()? {
+                return Ok(status);
+            }
+            if std::time::Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "thumbnail tool timed out"));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+}
+
+/// [`TimedCommand`] for a tool whose output is the result (exiftool's embedded preview):
+/// at most `max` bytes are kept, and a longer output is a failure.
+fn timed_output(cmd: &mut Command, max: usize) -> Option<Vec<u8>> {
+    use std::io::Read;
+    let mut child = cmd.stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
+    let mut out = child.stdout.take()?;
+    let reader = std::thread::spawn(move || {
+        let mut b = Vec::new();
+        let _ = (&mut out).take(max as u64 + 1).read_to_end(&mut b);
+        b
+    });
+    let deadline = std::time::Instant::now() + TOOL_TIMEOUT;
+    let status = loop {
+        if let Ok(Some(status)) = child.try_wait() {
+            break Some(status);
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            break None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    let bytes = reader.join().ok()?;
+    (status?.success() && bytes.len() <= max).then_some(bytes)
+}
+
 /// Computes a deterministic cache filename based on URI and modified timestamp.
 #[must_use]
 pub fn cache_filename(uri: &str, mtime_secs: i64) -> String {
@@ -561,14 +647,13 @@ fn generate_image_thumbnail(source: &Path, target: &Path) -> Result<(), String> 
     let target_png = format!("png:{target_str}");
 
     // Inspect image dimensions first without decoding full pixel buffer into memory.
-    let is_huge = if let Some(reader) = open_image(source) {
-        match reader.into_dimensions() {
-            Ok((w, h)) => w > 4096 || h > 4096 || (w as u64 * h as u64) > 16_000_000,
-            Err(_) => false,
-        }
-    } else {
-        false
-    };
+    let dims = open_image(source).and_then(|r| r.into_dimensions().ok());
+    if let Some((w, h)) = dims
+        && (w > MAX_THUMBNAIL_SIDE || h > MAX_THUMBNAIL_SIDE || u64::from(w) * u64::from(h) > MAX_THUMBNAIL_PIXELS)
+    {
+        return Err(format!("{w}x{h} is too large for a thumbnail"));
+    }
+    let is_huge = dims.is_some_and(|(w, h)| w > 4096 || h > 4096 || (u64::from(w) * u64::from(h)) > 16_000_000);
 
     if !is_huge {
         let mut limits = image::Limits::default();
@@ -586,22 +671,24 @@ fn generate_image_thumbnail(source: &Path, target: &Path) -> Result<(), String> 
 
     // Fallback to ImageMagick if installed (efficient streaming and downsampling)
     if let Ok(status) = Command::new("magick")
+        .args(MAGICK_LIMITS)
         .arg(source)
         .args(["-thumbnail", "512x512", &target_png])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status()
+        .timed_status()
         && status.success()
         && target.exists()
     {
         return Ok(());
     }
     if let Ok(status) = Command::new("convert")
+        .args(MAGICK_LIMITS)
         .arg(source)
         .args(["-thumbnail", "512x512", &target_png])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status()
+        .timed_status()
         && status.success()
         && target.exists()
     {
@@ -610,7 +697,7 @@ fn generate_image_thumbnail(source: &Path, target: &Path) -> Result<(), String> 
 
     // Fallback to ffmpeg for specialized/video-like formats
     if let Ok(status) = Command::new("ffmpeg")
-        .args(["-nostdin", "-y", "-i"])
+        .args(["-nostdin", "-y", "-protocol_whitelist", "file", "-i"])
         .arg(source)
         .args([
             "-vf",
@@ -623,7 +710,7 @@ fn generate_image_thumbnail(source: &Path, target: &Path) -> Result<(), String> 
         ])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status()
+        .timed_status()
         && status.success()
         && target.is_file()
         && target.metadata().map(|m| m.len() > 0).unwrap_or(false)
@@ -640,10 +727,11 @@ fn generate_raw_thumbnail(source: &Path, target: &Path) -> Result<(), String> {
 
     // 1. Try exiftool to extract embedded JPEG preview (instant, handles CR2, CR3, NEF, ARW, DNG, RAF, etc.)
     for tag in ["-PreviewImage", "-JpgFromRaw", "-ThumbnailImage", "-OtherImage"] {
-        if let Ok(out) = Command::new("exiftool").arg("-b").arg(tag).arg("--").arg(source).output()
-            && out.status.success()
-            && !out.stdout.is_empty()
-            && let Ok(img) = image::load_from_memory(&out.stdout)
+        // The embedded preview is decoded under the same memory bound as any image: a
+        // hostile RAW can carry a "preview" that says it is gigapixels.
+        if let Some(bytes) = timed_output(Command::new("exiftool").arg("-b").arg(tag).arg("--").arg(source), 32 << 20)
+            && !bytes.is_empty()
+            && let Ok(img) = decode_limited(&bytes)
         {
             let thumb = img.thumbnail(512, 512);
             if thumb.save_with_format(target, image::ImageFormat::Png).is_ok() && target.exists() {
@@ -654,22 +742,24 @@ fn generate_raw_thumbnail(source: &Path, target: &Path) -> Result<(), String> {
 
     // 2. Try ImageMagick (which interfaces with libraw)
     if let Ok(status) = Command::new("magick")
+        .args(MAGICK_LIMITS)
         .arg(format!("{}[0]", source.display()))
         .args(["-resize", "512x512", &target_png])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status()
+        .timed_status()
         && status.success()
         && target.exists()
     {
         return Ok(());
     }
     if let Ok(status) = Command::new("convert")
+        .args(MAGICK_LIMITS)
         .arg(format!("{}[0]", source.display()))
         .args(["-resize", "512x512", &target_png])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status()
+        .timed_status()
         && status.success()
         && target.exists()
     {
@@ -678,7 +768,7 @@ fn generate_raw_thumbnail(source: &Path, target: &Path) -> Result<(), String> {
 
     // 3. Try ffmpeg as final fallback
     if let Ok(status) = Command::new("ffmpeg")
-        .args(["-nostdin", "-y", "-i"])
+        .args(["-nostdin", "-y", "-protocol_whitelist", "file", "-i"])
         .arg(source)
         .args([
             "-vf",
@@ -691,7 +781,7 @@ fn generate_raw_thumbnail(source: &Path, target: &Path) -> Result<(), String> {
         ])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status()
+        .timed_status()
         && status.success()
         && target.is_file()
         && target.metadata().map(|m| m.len() > 0).unwrap_or(false)
@@ -706,22 +796,24 @@ fn generate_svg_thumbnail(source: &Path, target: &Path) -> Result<(), String> {
     let target_str = target.to_str().unwrap_or("");
     let target_png = format!("png:{target_str}");
     if let Ok(status) = Command::new("magick")
+        .args(MAGICK_LIMITS)
         .arg(source)
         .args(["-background", "none", "-resize", "512x512", &target_png])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status()
+        .timed_status()
         && status.success()
         && target.exists()
     {
         return Ok(());
     }
     if let Ok(status) = Command::new("convert")
+        .args(MAGICK_LIMITS)
         .arg(source)
         .args(["-background", "none", "-resize", "512x512", &target_png])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status()
+        .timed_status()
         && status.success()
         && target.exists()
     {
@@ -729,7 +821,7 @@ fn generate_svg_thumbnail(source: &Path, target: &Path) -> Result<(), String> {
     }
     // As a fallback, try ffmpeg
     if let Ok(status) = Command::new("ffmpeg")
-        .args(["-nostdin", "-y", "-i"])
+        .args(["-nostdin", "-y", "-protocol_whitelist", "file", "-i"])
         .arg(source)
         .args([
             "-vf",
@@ -746,7 +838,7 @@ fn generate_svg_thumbnail(source: &Path, target: &Path) -> Result<(), String> {
         ])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status()
+        .timed_status()
         && status.success()
         && target.exists()
     {
@@ -773,7 +865,7 @@ fn generate_video_thumbnail(source: &Path, target: &Path) -> Result<(), String> 
         .args(["-s", "512", "-t", "10%"])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status()
+        .timed_status()
         && status.success()
         && target.is_file()
         && target.metadata().map(|m| m.len() > 0).unwrap_or(false)
@@ -784,7 +876,7 @@ fn generate_video_thumbnail(source: &Path, target: &Path) -> Result<(), String> 
 
     // Robust ffmpeg thumbnail extraction using the thumbnail filter
     if let Ok(status) = Command::new("ffmpeg")
-        .args(["-nostdin", "-y", "-i"])
+        .args(["-nostdin", "-y", "-protocol_whitelist", "file", "-i"])
         .arg(source)
         .args([
             "-vf",
@@ -797,7 +889,7 @@ fn generate_video_thumbnail(source: &Path, target: &Path) -> Result<(), String> 
         ])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status()
+        .timed_status()
         && status.success()
         && target.is_file()
         && target.metadata().map(|m| m.len() > 0).unwrap_or(false)
@@ -808,7 +900,7 @@ fn generate_video_thumbnail(source: &Path, target: &Path) -> Result<(), String> 
 
     // Single-frame seek fallback if thumbnail filter found no candidate
     if let Ok(status) = Command::new("ffmpeg")
-        .args(["-nostdin", "-y", "-i"])
+        .args(["-nostdin", "-y", "-protocol_whitelist", "file", "-i"])
         .arg(source)
         .args([
             "-vf",
@@ -821,7 +913,7 @@ fn generate_video_thumbnail(source: &Path, target: &Path) -> Result<(), String> 
         ])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status()
+        .timed_status()
         && status.success()
         && target.is_file()
         && target.metadata().map(|m| m.len() > 0).unwrap_or(false)
@@ -875,6 +967,63 @@ mod tests {
         let p = dir.join("sample.png");
         image::RgbImage::from_pixel(16, 16, image::Rgb([255, 0, 0])).save(&p).unwrap_or_else(|e| panic!("{e}"));
         p
+    }
+
+    /// A PNG of a few hundred kilobytes that says it is 12000x12000: it went straight to
+    /// ImageMagick (as "huge"), which took 1.15 GB of memory for it (about 8 bytes a
+    /// pixel, so a 1 MB file could ask for gigabytes) on every folder view. Images this
+    /// large get no thumbnail now, and no tool is started for them.
+    #[test]
+    fn a_decompression_bomb_gets_no_thumbnail_and_starts_no_tool() {
+        use std::io::Write;
+        let sandbox = std::env::temp_dir().join(format!("gungnir-thumb-bomb-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&sandbox);
+        fs::create_dir_all(&sandbox).unwrap_or_else(|e| panic!("{e}"));
+        let bomb = sandbox.join("bomb.png");
+        let (w, h) = (12_000u32, 12_000u32);
+        let chunk = |t: &[u8], d: &[u8]| {
+            let mut c = (d.len() as u32).to_be_bytes().to_vec();
+            c.extend_from_slice(t);
+            c.extend_from_slice(d);
+            let mut crc = crc32fast::Hasher::new();
+            crc.update(t);
+            crc.update(d);
+            c.extend_from_slice(&crc.finalize().to_be_bytes());
+            c
+        };
+        let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+        let row = vec![0u8; w as usize + 1];
+        for _ in 0..h {
+            z.write_all(&row).unwrap_or_else(|e| panic!("{e}"));
+        }
+        let idat = z.finish().unwrap_or_else(|e| panic!("{e}"));
+        let mut ihdr = w.to_be_bytes().to_vec();
+        ihdr.extend_from_slice(&h.to_be_bytes());
+        ihdr.extend_from_slice(&[8, 0, 0, 0, 0]);
+        let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+        png.extend(chunk(b"IHDR", &ihdr));
+        png.extend(chunk(b"IDAT", &idat));
+        png.extend(chunk(b"IEND", b""));
+        fs::write(&bomb, &png).unwrap_or_else(|e| panic!("{e}"));
+        assert!(png.len() < 1 << 20, "the bomb is small: {} bytes", png.len());
+        let cache = sandbox.join("cache");
+        let t0 = std::time::Instant::now();
+        let r = generate_thumbnail_in(&cache, &bomb, "file:///bomb.png", 1, false);
+        assert!(r.is_err(), "a thumbnail was made of a {w}x{h} image");
+        assert!(t0.elapsed() < std::time::Duration::from_secs(2), "{:?}", t0.elapsed());
+        let _ = fs::remove_dir_all(&sandbox);
+    }
+
+    /// A tool that never finishes (a hostile file can hang a decoder) is stopped at its
+    /// deadline and reaped, so it cannot hold a thumbnail worker forever.
+    #[test]
+    fn a_thumbnail_tool_that_hangs_is_stopped_at_its_deadline() {
+        let t0 = std::time::Instant::now();
+        let r = Command::new("sleep").arg("60").timed_status_within(std::time::Duration::from_millis(300));
+        assert!(r.is_err_and(|e| e.kind() == std::io::ErrorKind::TimedOut));
+        assert!(t0.elapsed() < std::time::Duration::from_secs(3), "{:?}", t0.elapsed());
+        let ok = Command::new("true").timed_status_within(std::time::Duration::from_secs(5));
+        assert!(ok.is_ok_and(|s| s.success()));
     }
 
     /// The fallback cache is a fixed name in /tmp: one planted there, a link to a
