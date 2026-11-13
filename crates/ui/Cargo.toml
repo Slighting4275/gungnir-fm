@@ -30,3 +30,8 @@ slint-build.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+# Test fixtures only (a crafted PNG); both already in Cargo.lock through image.
+crc32fast = "1.5"
+flate2 = "1.1"
