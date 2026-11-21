@@ -30,7 +30,12 @@ case "${1:-}:$#" in
         exit 1
     fi
     if ! git -C "$source" cat-file -e "$revision^{commit}" 2>/dev/null; then
-        git -C "$source" fetch --quiet --depth 1 "$remote" "$revision"
+        # The GitHub CI fallback must also be able to fetch the same companion
+        # revision if GitLab is unreachable.
+        if ! git -C "$source" fetch --quiet --depth 1 "$remote" "$revision"; then
+            git -C "$source" fetch --quiet --depth 1 \
+                https://github.com/Slighting4275/gungnir-vfs.git "$revision"
+        fi
     fi
     git -C "$source" checkout --quiet --detach "$revision"
     sibling="$source"

@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  route:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    outputs:
+      provider: ${{ steps.provider.outputs.provider }}
+    steps:
+      - id: provider
+        env:
+          GITLAB_PROJECT_ID: '88036348'
+        run: |
+          pipeline=$(curl -fsS --connect-timeout 5 --max-time 15 \
+            "https://gitlab.com/api/v4/projects/$GITLAB_PROJECT_ID/pipelines?sha=$GITHUB_SHA&per_page=20" |
+            jq -r --arg sha "$GITHUB_SHA" --arg ref "$GITHUB_REF_NAME" '
+              first(.[] | select(.sha == $sha and
+                ((.source == "push" and .ref == $ref) or .source == "merge_request_event"))) |
+              select(.status == "success") | .web_url') || pipeline=
+          if [ "$GITHUB_EVENT_NAME" = push ] && [ -n "$pipeline" ]; then
+            echo 'provider=gitlab' >>"$GITHUB_OUTPUT"
+            printf 'GitLab CI passed for %s: %s\n' "$GITHUB_SHA" "$pipeline" >>"$GITHUB_STEP_SUMMARY"
+          else
+            echo 'provider=github' >>"$GITHUB_OUTPUT"
+            printf 'Running CI on GitHub for %s.\n' "$GITHUB_SHA" >>"$GITHUB_STEP_SUMMARY"
+          fi
+
+  verify:
+    needs: route
+    if: needs.route.outputs.provider == 'github'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      # Keep the image in step with .gitlab-ci.yml.
+      image: archlinux:base-20261018.0.612668@sha256:52dfbd5afb23a220d5ee92dafcb4c788d96c026ed04179890c23adef4c897fa0
+      options: --security-opt seccomp=unconfined
+    env:
+      GIT_LFS_SKIP_SMUDGE: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: scripts/ci-verify setup
+      - run: scripts/ci-verify check
