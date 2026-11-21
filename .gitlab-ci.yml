@@ -8,29 +8,7 @@ verify:
   timeout: 1 hour
   variables:
     GIT_LFS_SKIP_SMUDGE: "1"
-    CC: clang
-    CFLAGS: -std=c23
-    CARGO_PROFILE_DEV_DEBUG: "0"
-    CARGO_PROFILE_TEST_DEBUG: "0"
   before_script:
-    - |
-      printf '%s\n' \
-        'Server = https://fastly.mirror.pkgbuild.com/$repo/os/$arch' \
-        'Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch' \
-        > /etc/pacman.d/mirrorlist
-    - >-
-      pacman -Syu --noconfirm --needed
-      base-devel ca-certificates clang git pkgconf rust
-      libarchive fontconfig ttf-dejavu libxkbcommon wayland libx11 libxcb libxcursor
-      libxrandr libxi libxkbcommon-x11 libglvnd qt6-base
-      7zip ffmpeg zstd xz gzip bzip2 lz4 brotli
-    - >-
-      printf '%s\n' '#if __STDC_VERSION__ < 202311L' '#error C23 required' '#endif'
-      | "$CC" "$CFLAGS" -x c -fsyntax-only -
-    - useradd --create-home --user-group fm-test
-    - chown -R fm-test:fm-test "$CI_PROJECT_DIR"
+    - scripts/ci-verify setup
   script:
-    - >-
-      runuser --user fm-test --
-      env CARGO_HOME="$CI_PROJECT_DIR/.build/cargo-home"
-      make test-deep-delete fmt-check check lint test CARGO_FLAGS=--locked
+    - scripts/ci-verify check
