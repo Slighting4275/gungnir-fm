@@ -26,6 +26,7 @@ gungnir-fm/
 │   │   ├── src/local.rs       LocalPosixBackend (daily driver)
 │   │   ├── src/mock.rs        MockGungnirBackend (synthetic gungnir:// nodes, stress dirs)
 │   │   ├── src/remote.rs      RemoteVfsBackend (built-in sftp:// and smb://)
+│   │   ├── src/remote/gio.rs  GIO process lifecycle, output limits and cancellation
 │   │   ├── src/gungnir/       GungnirVfsBackend (live gungnird client)
 │   │   │   ├── proto.rs       protocol v2 wire format, mirrored from ../gungnir-vfs
 │   │   │   ├── link.rs        the gungnir-link thread: ring I/O, seq routing, health
@@ -47,6 +48,7 @@ gungnir-fm/
 │       └── src/
 │           ├── main.rs        runtime, backend selection, callback wiring
 │           ├── controller.rs  the controller actor (all application state)
+│           ├── controller/    tab directory views and copy/move conflict planning
 │           ├── bridge.rs      Update enum + the only code that touches models
 │           ├── rows.rs        FileEntry -> FileRow, filtering
 │           ├── actions.rs     custom actions engine (Nemo actions equivalent)
@@ -84,15 +86,19 @@ gungnir-fm/
 3. **CPU work runs on the blocking pool.** Sorting (`core_vfs::sort::sort_order`, an index
    permutation, so 100k entries are never moved), filtering and building `FileRow`s all run
    in `spawn_blocking`.
-4. **Every load can be pre-empted.** Each tab has a `CancellationToken` and two
-   generation counters. Navigating cancels the in-flight listing at once (the backend
-   stops reading), and late batches or re-views from older generations are dropped.
+4. **Every load can be pre-empted.** Navigating cancels the in-flight listing.
+   Directory results carry a stable tab ID and a generation for the relevant work.
+   A tab moved to the left pane can finish its listing there, and results from an
+   older location are dropped. Watch registration runs on a worker before enumeration.
    `controller_tests::navigating_away_cancels_the_inflight_listing` checks this.
 5. **Listings stream.** Backends send a first batch of 200 entries, sorted on arrival so
    the first screenful is in order, then batches of 2,000. Rows are appended as they come.
    When the listing completes, the whole folder is sorted and swapped in with one
    `set_vec`. Reloads caused by file-watch events or finished operations are silent: the
-   old rows stay on screen until the new listing is complete.
+   old entries and displayed rows stay usable while the next view is prepared. The
+   entries, display order and selection change together when the new rows are ready.
+   Row input carries the revision installed by Slint. The controller ignores input
+   from older revisions, and streaming batches append only to the active tab's model.
 6. **Rendering is virtualized.** Every view (detailed, compact, grid) is a Slint
    `ListView`, so only visible rows are instantiated. The grid view is a `ListView` over
    rows of N cells.
@@ -129,8 +135,8 @@ to gungnird reply statuses (`VfsError::from_gungnir_status`).
   that `fstatat` in parallel. The first 200 entries go out before the rest is even read.
 - **Watching.** `notify` (inotify) on the open folder, debounced 300 ms by the controller.
 - **Operations.** `mkdir`, rename via `renameat2(RENAME_NOREPLACE)` (never clobbers),
-  delete (`remove_dir_all` does not follow symlinks), and trash per the freedesktop.org
-  Trash spec (`.trashinfo` reserved with `O_EXCL`, cross-device refused with a hint).
+  descriptor-relative deletion with a bounded number of open directories, and trash
+  per the freedesktop.org Trash spec (`.trashinfo` reserved with `O_EXCL`, cross-device refused with a hint).
 - **Transfers.** Copy or move with 1 MiB chunks. Progress is reported every 100 ms with
   `try_send` (a busy UI never stalls a copy). Pause and cancel are checked between chunks.
   A cancelled copy removes its partial file. Modes and times are kept, symlinks are

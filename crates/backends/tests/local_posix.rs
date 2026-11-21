@@ -590,12 +590,15 @@ fn chain_depth(root: &std::path::Path) -> usize {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn deep_folders_are_copied_and_deleted_without_crashing() -> VfsResult<()> {
-    // One stack frame per level on a blocking-pool thread: deep enough trees overflowed
-    // the stack and aborted the whole file manager.
+    // 2,020 levels exceed the 1,024 descriptors used by the low-limit test job.
     let t = TempDir::new("deep-copy");
     std::fs::create_dir_all(t.path().join("src")).ok();
     std::fs::create_dir_all(t.path().join("dst")).ok();
     deep_chain(&t.path().join("src"), 2020);
+    let outside = t.path().join("outside");
+    std::fs::create_dir(&outside).unwrap_or_else(|e| panic!("{e}"));
+    std::fs::write(outside.join("keep"), b"keep").unwrap_or_else(|e| panic!("{e}"));
+    std::os::unix::fs::symlink(&outside, t.path().join("src/d/outside")).unwrap_or_else(|e| panic!("{e}"));
     let b = LocalPosixBackend::new();
     let (ctl, _prx, _p, _c) = control();
     let req = TransferRequest {
@@ -609,6 +612,26 @@ async fn deep_folders_are_copied_and_deleted_without_crashing() -> VfsResult<()>
     assert_eq!(chain_depth(&t.path().join("dst/src")), 2020, "the whole chain is copied");
     b.delete(&[t.uri("src"), t.uri("dst/src")], CancellationToken::new()).await?;
     assert!(!t.path().join("src").exists() && !t.path().join("dst/src").exists());
+    assert_eq!(std::fs::read(outside.join("keep")).unwrap_or_else(|e| panic!("{e}")), b"keep");
+    Ok(())
+}
+
+#[tokio::test]
+async fn deleting_a_tree_requires_search_but_not_read_permission_on_its_parent() -> VfsResult<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let t = TempDir::new("delete-search-only-parent");
+    let parent = t.path().join("parent");
+    let tree = parent.join("tree");
+    std::fs::create_dir_all(&tree).unwrap_or_else(|e| panic!("{e}"));
+    std::fs::write(tree.join("file"), b"remove this").unwrap_or_else(|e| panic!("{e}"));
+    std::fs::write(parent.join("sibling"), b"keep this").unwrap_or_else(|e| panic!("{e}"));
+    std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o300)).unwrap_or_else(|e| panic!("{e}"));
+    let result = LocalPosixBackend::new().delete(&[t.uri("parent/tree")], CancellationToken::new()).await;
+    std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o700)).unwrap_or_else(|e| panic!("{e}"));
+    result?;
+    assert!(!tree.exists());
+    assert_eq!(std::fs::read(parent.join("sibling")).unwrap_or_else(|e| panic!("{e}")), b"keep this");
     Ok(())
 }
 

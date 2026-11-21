@@ -4,11 +4,8 @@
 //! Communicates with remote servers via GIO/GVFS (GNOME Virtual File System) subsystem,
 //! streaming directory batches into [`core_vfs::EntrySink`].
 
-use std::io::Read;
-use std::process::{Command, Output, Stdio};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use core_vfs::error::{VfsError, VfsResult};
@@ -20,119 +17,15 @@ use core_vfs::provider::{EntrySink, ListOptions, TransferControl, VfsProvider};
 use core_vfs::uri::{Scheme, VfsUri};
 use tokio_util::sync::CancellationToken;
 
+mod gio;
+
+use gio::Capture;
+
 static TEST_MODE: AtomicBool = AtomicBool::new(false);
 
-/// Creates a `gio` Command that clears `GIO_USE_VFS` so child CLI calls talk to
-/// system GVfs (network:///, sftp://, smb://) rather than inheriting GungnirVfs.
-fn gio_cmd(program: &std::ffi::OsStr) -> Command {
-    let mut cmd = Command::new(program);
-    cmd.env_remove("GIO_USE_VFS").env("LC_ALL", "C");
-    cmd
-}
-
-/// How long one listing, info, mkdir or rename may take. GVfs waits on a hung SSH or SMB
-/// server for minutes; the folder then fails with a timeout instead of loading forever.
+/// Time limit for listing and metadata operations.
 const GIO_TIMEOUT: Duration = Duration::from_secs(20);
-
-/// Runs `gio args` (blocking; call it on the blocking pool), killed and reaped once
-/// `timeout` passes or `cancel` fires. Output is read on side threads so a full pipe
-/// cannot stall it.
-fn run_gio(
-    gio: &std::ffi::OsStr,
-    args: &[&str],
-    timeout: Option<Duration>,
-    cancel: Option<&CancellationToken>,
-) -> VfsResult<Output> {
-    run_gio_capped(gio, args, timeout, cancel, GIO_OUTPUT_MAX)
-}
-
-/// What one `gio` call may print before it is stopped: the whole output used to be read
-/// into memory, and a hostile server streaming a listing that never ends filled it with
-/// gigabytes before the time limit. Listings get [`GIO_LIST_OUTPUT_MAX`].
-const GIO_OUTPUT_MAX: usize = 4 << 20;
-/// A listing's bound (some 800,000 names), and the entries it may hold.
-const GIO_LIST_OUTPUT_MAX: usize = 64 << 20;
 const GIO_LIST_ENTRIES_MAX: usize = 500_000;
-/// gio's error output, shown in messages.
-const GIO_STDERR_MAX: usize = 64 << 10;
-
-/// [`run_gio`] with `max_stdout` bytes of output at most: past it gio is killed and the
-/// call fails ("too large").
-fn run_gio_capped(
-    gio: &std::ffi::OsStr,
-    args: &[&str],
-    timeout: Option<Duration>,
-    cancel: Option<&CancellationToken>,
-    max_stdout: usize,
-) -> VfsResult<Output> {
-    // Reads at most `max` bytes (then stops reading, which leaves gio blocked or failing
-    // on a full pipe) and flags it in `over`.
-    fn drain(
-        pipe: Option<impl Read + Send + 'static>,
-        max: usize,
-        over: Arc<AtomicBool>,
-    ) -> Option<std::thread::JoinHandle<Vec<u8>>> {
-        pipe.map(|r| {
-            std::thread::spawn(move || {
-                let mut b = Vec::new();
-                let read = r.take(max as u64 + 1).read_to_end(&mut b);
-                // Out of memory before the bound counts as too large, not as gio failing.
-                if b.len() > max || read.is_err_and(|e| e.kind() == std::io::ErrorKind::OutOfMemory) {
-                    b.truncate(max);
-                    over.store(true, Ordering::Release);
-                }
-                b
-            })
-        })
-    }
-    let what = args.first().copied().unwrap_or("");
-    let mut child = gio_cmd(gio)
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| VfsError::Transport(format!("gio {what} failed: {e}")))?;
-    let over = Arc::new(AtomicBool::new(false));
-    let (out, err) = (
-        drain(child.stdout.take(), max_stdout, Arc::clone(&over)),
-        drain(child.stderr.take(), GIO_STDERR_MAX, Arc::new(AtomicBool::new(false))),
-    );
-    let deadline = timeout.map(|t| Instant::now() + t);
-    let status = loop {
-        if let Some(status) = child.try_wait().map_err(|e| VfsError::Transport(format!("gio {what}: {e}")))? {
-            break status;
-        }
-        let stop = if over.load(Ordering::Acquire) {
-            Some(VfsError::Transport(format!(
-                "gio {what}: the server's answer is too large (over {} MiB)",
-                max_stdout >> 20
-            )))
-        } else if cancel.is_some_and(CancellationToken::is_cancelled) {
-            Some(VfsError::Cancelled)
-        } else if deadline.is_some_and(|d| Instant::now() >= d) {
-            Some(VfsError::Timeout)
-        } else {
-            None
-        };
-        if let Some(e) = stop {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(e);
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    };
-    let join = |t: Option<std::thread::JoinHandle<Vec<u8>>>| t.and_then(|t| t.join().ok()).unwrap_or_default();
-    let (stdout, stderr) = (join(out), join(err));
-    // gio may have finished on its own right after the bound was passed.
-    if over.load(Ordering::Acquire) {
-        return Err(VfsError::Transport(format!(
-            "gio {what}: the server's answer is too large (over {} MiB)",
-            max_stdout >> 20
-        )));
-    }
-    Ok(Output { status, stdout, stderr })
-}
 
 /// One line of `gio list -l -u`: `<child URI>\t<size>\t(<type>)`. The URI is the
 /// folder's child, escaped, so a name holding a newline or tab stays one entry (plain
@@ -149,40 +42,6 @@ fn parse_list_line(line: &str) -> Option<(String, u64, bool)> {
     let size = parts.next().and_then(|s| s.trim().parse::<u64>().ok()).unwrap_or(0);
     let is_dir = parts.next().is_some_and(|t| t.contains("directory"));
     Some((name, size, is_dir))
-}
-
-async fn remove_with_program(program: &std::ffi::OsStr, uris: &[VfsUri], cancel: CancellationToken) -> VfsResult<()> {
-    if cancel.is_cancelled() {
-        return Err(VfsError::Cancelled);
-    }
-    for uri in uris {
-        if cancel.is_cancelled() {
-            return Err(VfsError::Cancelled);
-        }
-        let mut child = tokio::process::Command::new(program)
-            .env_remove("GIO_USE_VFS")
-            .env("LC_ALL", "C")
-            .args(["remove", "--", &uri.to_uri_string()])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|e| VfsError::Transport(e.to_string()))?;
-        let status = tokio::select! {
-            biased;
-            () = cancel.cancelled() => {
-                let _ = child.kill().await;
-                let _ = child.wait().await;
-                return Err(VfsError::Cancelled);
-            }
-            status = child.wait() => status.map_err(|e| VfsError::Transport(e.to_string()))?,
-        };
-        if !status.success() {
-            return Err(VfsError::Transport(format!("gio remove failed for {}: {status}", uri.display())));
-        }
-    }
-    Ok(())
 }
 
 /// Enable hermetic test mode for unit tests without network access.
@@ -269,17 +128,15 @@ impl VfsProvider for RemoteVfsBackend {
             return list_mock_remote(&target_dir, opts, sink, cancel).await;
         }
 
-        let (gio, timeout) = (self.gio.clone(), self.timeout);
+        let args = ["list", "-l", "-u", "--", &uri_str];
+        let output = match gio::run(&self.gio, &args, Some(self.timeout), Some(&cancel), Capture::Listing).await {
+            // Network discovery that never answers is shown like one that failed.
+            Err(VfsError::Timeout) if target_dir.scheme() == Scheme::Network => {
+                return Ok(ListSummary { entries: 0, skipped: 0 });
+            }
+            r => r?,
+        };
         tokio::task::spawn_blocking(move || {
-            let args = ["list", "-l", "-u", "--", &uri_str];
-            let output = match run_gio_capped(&gio, &args, Some(timeout), Some(&cancel), GIO_LIST_OUTPUT_MAX) {
-                // Network discovery that never answers is shown like one that failed.
-                Err(VfsError::Timeout) if target_dir.scheme() == Scheme::Network => {
-                    return Ok(ListSummary { entries: 0, skipped: 0 });
-                }
-                r => r?,
-            };
-
             if !output.status.success() {
                 let err_msg = String::from_utf8_lossy(&output.stderr);
                 if target_dir.scheme() == Scheme::Network {
@@ -380,10 +237,9 @@ impl VfsProvider for RemoteVfsBackend {
             });
         }
 
-        let (gio, timeout) = (self.gio.clone(), self.timeout);
+        let args = ["info", "--", &uri_str];
+        let output = gio::run(&self.gio, &args, Some(self.timeout), None, Capture::Standard).await?;
         tokio::task::spawn_blocking(move || {
-            let output = run_gio(&gio, &["info", "--", &uri_str], Some(timeout), None)?;
-
             if !output.status.success() {
                 if target_uri.scheme() == Scheme::Network && target_uri.is_root() {
                     return Ok(FileEntry {
@@ -430,18 +286,13 @@ impl VfsProvider for RemoteVfsBackend {
         if self.mock() {
             return Ok(());
         }
-        let (gio, timeout) = (self.gio.clone(), self.timeout);
-        tokio::task::spawn_blocking(move || {
-            let status = run_gio(&gio, &["mkdir", "--", &uri_str], Some(timeout), None)?.status;
-            if status.success() { Ok(()) } else { Err(VfsError::Transport(format!("failed to create dir {uri_str}"))) }
-        })
-        .await
-        .map_err(|e| VfsError::Transport(e.to_string()))?
+        let args = ["mkdir", "--", &uri_str];
+        let status = gio::run(&self.gio, &args, Some(self.timeout), None, Capture::Standard).await?.status;
+        if status.success() { Ok(()) } else { Err(VfsError::Transport(format!("failed to create dir {uri_str}"))) }
     }
 
     async fn rename(&self, uri: &VfsUri, new_name: &str) -> VfsResult<VfsUri> {
         let uri_str = uri.to_uri_string();
-        let new_name_owned = new_name.to_string();
         let parent = uri.parent().ok_or_else(|| VfsError::InvalidUri("cannot rename root".into()))?;
         let new_uri = parent.join(new_name)?;
 
@@ -449,13 +300,9 @@ impl VfsProvider for RemoteVfsBackend {
             return Ok(new_uri);
         }
 
-        let (gio, timeout) = (self.gio.clone(), self.timeout);
-        tokio::task::spawn_blocking(move || {
-            let status = run_gio(&gio, &["rename", "--", &uri_str, &new_name_owned], Some(timeout), None)?.status;
-            if status.success() { Ok(new_uri) } else { Err(VfsError::Transport(format!("failed to rename {uri_str}"))) }
-        })
-        .await
-        .map_err(|e| VfsError::Transport(e.to_string()))?
+        let args = ["rename", "--", &uri_str, new_name];
+        let status = gio::run(&self.gio, &args, Some(self.timeout), None, Capture::Standard).await?.status;
+        if status.success() { Ok(new_uri) } else { Err(VfsError::Transport(format!("failed to rename {uri_str}"))) }
     }
 
     async fn delete(&self, uris: &[VfsUri], cancel: CancellationToken) -> VfsResult<()> {
@@ -465,7 +312,14 @@ impl VfsProvider for RemoteVfsBackend {
         if self.mock() {
             return Ok(());
         }
-        remove_with_program(&self.gio, uris, cancel).await
+        for uri in uris {
+            let args = ["remove", "--", &uri.to_uri_string()];
+            let status = gio::run(&self.gio, &args, None, Some(&cancel), Capture::Discard).await?.status;
+            if !status.success() {
+                return Err(VfsError::Transport(format!("gio remove failed for {}: {status}", uri.display())));
+            }
+        }
+        Ok(())
     }
 
     async fn transfer(&self, req: TransferRequest, ctl: TransferControl) -> VfsResult<()> {
@@ -489,23 +343,16 @@ impl VfsProvider for RemoteVfsBackend {
             return Ok(());
         }
 
-        let gio = self.gio.clone();
-        tokio::task::spawn_blocking(move || {
-            let cmd_name = if is_move { "move" } else { "copy" };
-            for s in &src_strings {
-                if ctl.cancel.is_cancelled() {
-                    return Err(VfsError::Cancelled);
-                }
-                // No time limit (a big copy takes as long as it takes), but a cancel kills it.
-                let status = run_gio(&gio, &[cmd_name, "--", s, &dest_str], None, Some(&ctl.cancel))?.status;
-                if !status.success() {
-                    return Err(VfsError::Transport(format!("transfer failed from {s} to {dest_str}")));
-                }
+        let command = if is_move { "move" } else { "copy" };
+        for source in &src_strings {
+            // A large transfer can outlast metadata deadlines. Cancellation still kills GIO.
+            let args = [command, "--", source, &dest_str];
+            let status = gio::run(&self.gio, &args, None, Some(&ctl.cancel), Capture::Standard).await?.status;
+            if !status.success() {
+                return Err(VfsError::Transport(format!("transfer failed from {source} to {dest_str}")));
             }
-            Ok(())
-        })
-        .await
-        .map_err(|e| VfsError::Transport(e.to_string()))?
+        }
+        Ok(())
     }
 
     async fn volume(&self, uri: &VfsUri) -> VfsResult<VolumeInfo> {
@@ -514,9 +361,9 @@ impl VfsProvider for RemoteVfsBackend {
             return Ok(VolumeInfo { total_bytes: 0, free_bytes: 0 });
         }
 
-        let (gio, timeout) = (self.gio.clone(), self.timeout);
+        let args = ["info", "-f", "--", &uri_str];
+        let output = gio::run(&self.gio, &args, Some(self.timeout), None, Capture::Standard).await.ok();
         tokio::task::spawn_blocking(move || {
-            let output = run_gio(&gio, &["info", "-f", "--", &uri_str], Some(timeout), None).ok();
             let mut free = 0;
             let mut total = 0;
             if let Some(out) = output {
@@ -546,10 +393,9 @@ impl VfsProvider for RemoteVfsBackend {
             ]);
         }
 
-        let (gio, timeout) = (self.gio.clone(), self.timeout);
+        let args = ["info", "--", &uri_str];
+        let output = gio::run(&self.gio, &args, Some(self.timeout), None, Capture::Standard).await?;
         tokio::task::spawn_blocking(move || {
-            let output = run_gio(&gio, &["info", "--", &uri_str], Some(timeout), None)?;
-
             if !output.status.success() {
                 if is_network {
                     return Ok(vec![
@@ -675,6 +521,7 @@ mod tests {
 mod removal_tests {
     use super::*;
     use std::path::PathBuf;
+    use std::time::Instant;
     struct Fixture(PathBuf);
     impl Fixture {
         fn new(body: &str) -> Self {
@@ -712,27 +559,22 @@ mod removal_tests {
     #[tokio::test]
     async fn failed_remote_remove_is_an_error() {
         let fixture = Fixture::new("exit 7");
-        assert!(remove_with_program(fixture.0.as_os_str(), &[remote_uri()], CancellationToken::new()).await.is_err());
+        let backend = RemoteVfsBackend::sftp().with_gio(&fixture.0, GIO_TIMEOUT);
+        assert!(backend.delete(&[remote_uri()], CancellationToken::new()).await.is_err());
     }
     #[tokio::test]
     async fn missing_remote_remove_program_is_an_error() {
         let fixture = Fixture::new("exit 0");
-        assert!(
-            remove_with_program(
-                fixture.0.with_file_name("missing").as_os_str(),
-                &[remote_uri()],
-                CancellationToken::new()
-            )
-            .await
-            .is_err()
-        );
+        let backend = RemoteVfsBackend::sftp().with_gio(&fixture.0.with_file_name("missing"), GIO_TIMEOUT);
+        assert!(backend.delete(&[remote_uri()], CancellationToken::new()).await.is_err());
     }
     #[tokio::test]
     async fn cancelled_remote_remove_does_not_start_a_process() {
         let fixture = Fixture::new("printf 'started' > \"$0.started\"\nexit 0");
         let cancel = CancellationToken::new();
         cancel.cancel();
-        let result = remove_with_program(fixture.0.as_os_str(), &[remote_uri()], cancel).await;
+        let backend = RemoteVfsBackend::sftp().with_gio(&fixture.0, GIO_TIMEOUT);
+        let result = backend.delete(&[remote_uri()], cancel).await;
         assert_eq!(result, Err(VfsError::Cancelled));
         assert!(!fixture.0.with_file_name("gio-test.started").exists());
     }
@@ -743,7 +585,8 @@ mod removal_tests {
             .into_iter()
             .map(|name| VfsUri::parse(&format!("sftp://example.invalid/{name}")).unwrap_or_else(|e| panic!("{e}")))
             .collect();
-        assert!(remove_with_program(fixture.0.as_os_str(), &uris, CancellationToken::new()).await.is_err());
+        let backend = RemoteVfsBackend::sftp().with_gio(&fixture.0, GIO_TIMEOUT);
+        assert!(backend.delete(&uris, CancellationToken::new()).await.is_err());
         let calls =
             std::fs::read_to_string(fixture.0.with_file_name("gio-test.calls")).unwrap_or_else(|e| panic!("{e}"));
         assert!(calls.contains("/one"));
@@ -756,8 +599,8 @@ mod removal_tests {
         let fixture = Fixture::new("printf '%s' \"$$\" > \"$0.pid\"\nexec sleep 30");
         let cancel = CancellationToken::new();
         let token = cancel.clone();
-        let program = fixture.0.clone();
-        let task = tokio::spawn(async move { remove_with_program(program.as_os_str(), &[remote_uri()], token).await });
+        let backend = RemoteVfsBackend::sftp().with_gio(&fixture.0, GIO_TIMEOUT);
+        let task = tokio::spawn(async move { backend.delete(&[remote_uri()], token).await });
         let pid_path = fixture.0.with_file_name("gio-test.pid");
         // The whole pid, not just the file: the shell creates it before writing to it,
         // and an empty pid made the reaped check look at /proc itself.

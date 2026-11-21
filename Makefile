@@ -34,7 +34,7 @@ TARGET_DIR      ?= target
 RELEASE_BIN      = $(TARGET_DIR)/release/gungnir-fm
 DEBUG_BIN        = $(TARGET_DIR)/debug/gungnir-fm
 
-.PHONY: packages snap all build release debug check test lint clippy fmt fmt-check doc \
+.PHONY: packages snap all build release debug check test test-deep-delete lint clippy fmt fmt-check doc \
         install install-user uninstall uninstall-user clean distclean \
         appimage flatpak gungnird help
 
@@ -63,18 +63,23 @@ check:
 	@echo "==> Running workspace check..."
 	$(CARGO) check --workspace $(CARGO_FLAGS)
 
-# Run full workspace test suite
-# The live tests need the companion daemon: build it first (they fail without it).
-test: gungnird
+# Run the regression with the same descriptor limit even on hosts with a higher limit.
+test-deep-delete:
+	ulimit -Sn 1024 && $(CARGO) test -p backends --test local_posix $(CARGO_FLAGS) \
+		deep_folders_are_copied_and_deleted_without_crashing -- --exact
+
+# Run the live tests against the committed companion revision.
+test:
 	@echo "==> Running test suite across all workspace crates..."
-	$(CARGO) test --workspace $(CARGO_FLAGS)
+	@daemon="$$(./scripts/build-gungnird.sh --pinned)" && \
+		GUNGNIRD_BIN="$$daemon" $(CARGO) test --workspace $(CARGO_FLAGS)
 
 # Run Clippy linter
 lint: clippy
 
 clippy:
 	@echo "==> Running Clippy across workspace..."
-	$(CARGO) clippy --workspace --all-targets $(CARGO_FLAGS)
+	$(CARGO) clippy --workspace --all-targets $(CARGO_FLAGS) -- -D warnings
 
 # Format codebase according to rustfmt.toml
 fmt:
@@ -196,6 +201,7 @@ help:
 	@echo "  debug          Build unoptimized debug binary ($(DEBUG_BIN))"
 	@echo "  check          Run cargo check on all workspace crates"
 	@echo "  test           Run all unit and integration tests"
+	@echo "  test-deep-delete  Run the deletion regression at a 1024-descriptor limit"
 	@echo "  lint / clippy  Run cargo clippy with strict warnings"
 	@echo "  fmt            Format Rust source files with rustfmt"
 	@echo "  fmt-check      Verify formatting compliance"

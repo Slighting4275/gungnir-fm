@@ -104,9 +104,12 @@ pub struct Flags {
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub enum Update {
+    /// Move the existing right row model with its pane, including streamed rows.
+    PromoteRightPane,
     /// Replace every row of a pane.
     Rows {
         pane: usize,
+        revision: i32,
         rows: Vec<RowItem>,
     },
     /// Append streamed rows.
@@ -220,9 +223,20 @@ fn model<T: Clone + 'static>(v: Vec<T>) -> ModelRc<T> {
 
 pub fn apply(ui: &AppWindow, u: Update) {
     match u {
-        Update::Rows { pane, rows } => {
+        Update::PromoteRightPane => {
+            ui.set_left_files(ui.get_right_files());
+            ui.set_right_files(model(Vec::new()));
+            ui.set_left_rows_revision(ui.get_right_rows_revision());
+            ui.set_right_rows_revision(0);
+        }
+        Update::Rows { pane, revision, rows } => {
             let file_rows: Vec<FileRow> = rows.iter().map(to_file_row).collect();
             with_vec_model(&files_model(ui, pane), |m| m.set_vec(file_rows));
+            if pane == 0 {
+                ui.set_left_rows_revision(revision);
+            } else {
+                ui.set_right_rows_revision(revision);
+            }
         }
         Update::AppendRows { pane, rows } => {
             let file_rows: Vec<FileRow> = rows.iter().map(to_file_row).collect();

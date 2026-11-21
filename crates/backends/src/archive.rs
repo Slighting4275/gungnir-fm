@@ -619,13 +619,14 @@ fn add_item(
 }
 
 /// Extract any archive (tar.zst, zip, tar.xz, 7z, tar.gz, tar.bz2, etc.) to target directory.
+/// If the attempt fails, its new destination is removed when it is still empty.
 pub fn extract_archive(
     archive_path: &Path,
     target_dir: &Path,
     password: Option<&str>,
 ) -> Result<ExtractStats, ArchiveError> {
-    std::fs::create_dir_all(target_dir)?;
-    let target_dir = std::fs::canonicalize(target_dir)?;
+    let mut destination = ExtractionDestination::new(target_dir)?;
+    let target_dir = std::fs::canonicalize(destination.path)?;
     // Everything is extracted into a private staging directory inside the destination
     // and only moved in once complete, never over anything already there. Extracting
     // straight into the destination replaced files of the same name, and an encrypted
@@ -653,7 +654,44 @@ pub fn extract_archive(
         r => r?,
     };
     move_in_without_replacing(&staging.0, &target_dir)?;
+    destination.created = None;
     Ok(stats)
+}
+
+struct ExtractionDestination<'a> {
+    path: &'a Path,
+    created: Option<std::fs::Metadata>,
+}
+
+impl<'a> ExtractionDestination<'a> {
+    fn new(path: &'a Path) -> std::io::Result<Self> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        // The exclusive creation result tells us whether this attempt owns the
+        // directory even when another extraction creates it at the same time.
+        let created = match std::fs::create_dir(path) {
+            Ok(()) => std::fs::symlink_metadata(path).ok().filter(std::fs::Metadata::is_dir),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && path.is_dir() => None,
+            Err(e) => return Err(e),
+        };
+        Ok(Self { path, created })
+    }
+}
+
+impl Drop for ExtractionDestination<'_> {
+    fn drop(&mut self) {
+        use std::os::unix::fs::MetadataExt;
+
+        if let Some(created) = &self.created
+            && std::fs::symlink_metadata(self.path)
+                .is_ok_and(|m| m.is_dir() && m.dev() == created.dev() && m.ino() == created.ino())
+        {
+            // Staging was already dropped. Preserve any published files or anything
+            // another operation put here by removing only an empty directory.
+            let _ = std::fs::remove_dir(self.path);
+        }
+    }
 }
 
 /// A private (0700) directory inside the destination, removed (without following a
@@ -1737,6 +1775,19 @@ mod tests {
         }
     }
 
+    #[test]
+    fn extraction_failure_only_removes_its_own_empty_destination() {
+        let t = TestTempDir::new("failed-destination");
+        let archive = t.path().join("missing.tar");
+        let target = t.path().join("out");
+        assert!(extract_archive(&archive, &target, None).is_err());
+        assert!(!target.exists(), "failed extraction left its empty destination");
+
+        std::fs::create_dir(&target).unwrap();
+        assert!(extract_archive(&archive, &target, None).is_err());
+        assert!(target.is_dir(), "a pre-existing empty destination must survive");
+    }
+
     fn write_test_tar(path: &Path, name: &str, kind: u8, link: &str) {
         let mut header = [0u8; 512];
         header[..name.len()].copy_from_slice(name.as_bytes());
@@ -2025,8 +2076,7 @@ mod tests {
         for pass in [Some("wrong-pass"), None] {
             let out = t.path().join(format!("out-{}", pass.is_some()));
             assert!(extract_archive(&archive, &out, pass).is_err(), "{pass:?}");
-            assert!(!out.join("secret.txt").exists(), "{pass:?}");
-            assert_eq!(staging_left(&out), Vec::<String>::new(), "{pass:?}");
+            assert!(!out.exists(), "password failure left a destination directory: {pass:?}");
         }
     }
 
@@ -2099,7 +2149,7 @@ mod tests {
             Err(ArchiveError::PasswordRequired { wrong: true })
         ));
         assert!(matches!(extract_archive(&zip, &out, None), Err(ArchiveError::PasswordRequired { wrong: false })));
-        assert_eq!(std::fs::read_dir(&out).unwrap().count(), 0, "a failed extraction left something");
+        assert!(!out.exists(), "a failed extraction left its new destination");
     }
 
     /// A folder that is already there is merged into: what was in it stays, the archive's
@@ -2422,7 +2472,7 @@ mod tests {
         );
         let out2 = t.path().join("out2");
         assert!(extract_archive(&bad, &out2, None).is_err());
-        assert_eq!(std::fs::read_dir(&out2).unwrap().count(), 0, "a failed extraction left something");
+        assert!(!out2.exists(), "a failed extraction left its new destination");
     }
 
     /// "." names the destination: a folder entry for it is skipped (its mode of 0451
@@ -2441,7 +2491,7 @@ mod tests {
         write_tar_entries(&file_dot, &[(".", b'0', "", 0o451, b"D"), ("b.txt", b'0', "", 0o644, b"b")]);
         let out2 = t.path().join("out2");
         assert!(matches!(extract_archive(&file_dot, &out2, None), Err(ArchiveError::PathTraversal(_))));
-        assert_eq!(std::fs::read_dir(&out2).unwrap().count(), 0);
+        assert!(!out2.exists(), "a failed extraction left its new destination");
     }
 
     /// The cleanup removes a tree whose folders the owner cannot enter or list.
