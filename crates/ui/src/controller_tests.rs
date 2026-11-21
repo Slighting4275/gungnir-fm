@@ -13,7 +13,7 @@ use core_vfs::{VfsRegistry, VfsUri};
 use tokio::sync::mpsc;
 
 use crate::bridge::{UiSink, Update};
-use crate::controller::{Command, Config, Controller, Msg};
+use crate::controller::{Command, Config, ContextAction, Controller, Event, Msg};
 
 struct Recorder(Mutex<std_mpsc::Sender<Update>>);
 
@@ -163,6 +163,36 @@ fn streams_a_small_first_batch_then_the_sorted_whole() {
     let Some(Update::Rows { rows, .. }) = ups.last() else { panic!("no final rows") };
     assert!(rows[0].name.starts_with("rune-000000."), "{}", rows[0].name);
     assert!(rows.windows(2).all(|w| w[0].name.as_str() < w[1].name.as_str()), "sorted by name");
+}
+
+#[test]
+fn a_dirty_scan_publishes_its_rows_before_refreshing_silently() {
+    let slow = MockConfig { batch_latency: Duration::from_millis(40), ..MockConfig::instant() };
+    let h = start("gungnir://odin/asgard/stress-50k", "gungnir://odin/asgard", slow);
+    h.until(Duration::from_secs(10), |u| matches!(u, Update::AppendRows { pane: 0, .. }));
+    h.tx.try_send(Msg::Ev(Event::DirChanged { tab: 1, watch_gen: 0, removed: false })).unwrap();
+
+    // Between the first and second completed snapshots, the silent refresh
+    // must keep the listing and item count on screen.
+    h.until(Duration::from_secs(10), |u| full_rows(u, 0, 50_000));
+    let updates = h.until(Duration::from_secs(10), |u| full_rows(u, 0, 50_000));
+    assert!(!updates.iter().any(|u| matches!(u, Update::Pane { pane: 0, view } if view.loading)));
+    assert!(!updates.iter().any(|u| matches!(u, Update::Status(s) if s.items.starts_with("Loading"))));
+}
+
+#[test]
+fn reactivating_a_dirty_tab_refreshes_the_directory() {
+    let h = start("gungnir://odin/asgard", "gungnir://odin/valhalla", MockConfig::instant());
+    h.until(Duration::from_secs(5), |u| full_rows(u, 0, 7));
+    h.send(Command::TabNew(0));
+    h.send(Command::Navigate { pane: 0, location: "gungnir://odin/valhalla".into() });
+    h.until(Duration::from_secs(5), |u| full_rows(u, 0, 3));
+
+    h.tx.try_send(Msg::Ev(Event::DirChanged { tab: 1, watch_gen: 0, removed: false })).unwrap();
+    h.send(Command::TabSelect(0, 0));
+    h.until(Duration::from_secs(5), |u| full_rows(u, 0, 7));
+    // The first publication shows the cached view, the second is the requested scan.
+    h.until(Duration::from_secs(5), |u| full_rows(u, 0, 7));
 }
 
 #[test]
@@ -619,14 +649,18 @@ fn test_open_terminal_here_command_and_action() {
     let handled = updates.iter().any(|u| matches!(u, Update::Status(..) | Update::Terminal { .. }));
     assert!(handled, "open-terminal-here command should produce a status or terminal update");
 
-    // CustomAction with id "open_terminal_here"
-    h.send(Command::CustomAction { pane: 0, id: "open_terminal_here".into() });
+    // Custom action with id "open_terminal_here"
+    h.send(Command::RunContextAction {
+        pane: 0,
+        action: ContextAction::Custom("open_terminal_here".into()),
+        targets: None,
+    });
     let updates2 = h.drain_for(Duration::from_millis(500));
     let handled2 = updates2.iter().any(|u| matches!(u, Update::Status(..) | Update::Terminal { .. }));
     assert!(handled2, "custom-action open_terminal_here should be handled");
 
-    // CustomAction with alias id "terminal"
-    h.send(Command::CustomAction { pane: 0, id: "terminal".into() });
+    // Custom action with alias id "terminal"
+    h.send(Command::RunContextAction { pane: 0, action: ContextAction::Custom("terminal".into()), targets: None });
     let updates3 = h.drain_for(Duration::from_millis(500));
     let handled3 = updates3.iter().any(|u| matches!(u, Update::Status(..) | Update::Terminal { .. }));
     assert!(handled3, "custom-action terminal alias should be handled");
@@ -2264,12 +2298,44 @@ fn row_input_from_an_older_display_is_rejected_after_refresh_commits() {
 
     let click = Command::RowClicked { pane: 0, index: 0, ctrl: false, shift: false };
     h.tx.try_send(Msg::UiRows { panes: [Some(*old_revision), None], command: click.clone() }).unwrap();
+    h.tx.try_send(Msg::UiRows {
+        panes: [Some(*old_revision), None],
+        command: Command::RunInPane { pane: 0, name: "delete".into() },
+    })
+    .unwrap();
     h.send(Command::SetDarkMode(false));
     let stale = h.until(Duration::from_secs(3), |u| matches!(u, Update::Flags(f) if !f.dark_mode));
     assert!(!stale.iter().any(|u| matches!(u, Update::Selection { .. })));
+    assert!(!stale.iter().any(|u| matches!(u, Update::Dialog(d) if d.kind == crate::DialogKind::ConfirmDelete)));
 
     h.tx.try_send(Msg::UiRows { panes: [Some(*revision), None], command: click }).unwrap();
     h.until(Duration::from_secs(3), |u| matches!(u, Update::Status(s) if s.selection == "1 selected (3 bytes)"));
+}
+
+#[test]
+fn popup_delete_rejects_selection_changes_without_a_row_revision_change() {
+    let d = DesktopSandbox(temp_dir("stale-popup-selection"));
+    std::fs::write(d.0.join("a"), b"a").unwrap();
+    std::fs::write(d.0.join("b"), b"b").unwrap();
+    let h = start(d.0.to_str().unwrap(), "gungnir://odin/asgard", MockConfig::instant());
+    let updates = h.until(Duration::from_secs(5), |u| full_rows(u, 0, 2));
+    let Some(Update::Rows { revision, rows, .. }) = updates.last() else { panic!("missing initial view") };
+    let panes = [Some(*revision), None];
+    let targets = Some(vec![rows[0].uri.clone()]);
+
+    h.send(Command::RowClicked { pane: 0, index: 0, ctrl: false, shift: false });
+    h.send(Command::Run("select-all".into()));
+    h.tx.try_send(Msg::UiRows { panes, command: Command::RowContext { pane: 0, index: 0 } }).unwrap();
+    h.tx.try_send(Msg::UiRows {
+        panes,
+        command: Command::RunContextAction { pane: 0, action: ContextAction::BuiltIn("delete".into()), targets },
+    })
+    .unwrap();
+    let updates = h.until(
+        Duration::from_secs(5),
+        |u| matches!(u, Update::Status(s) if s.message == "The selection changed. Open the menu again."),
+    );
+    assert!(!updates.iter().any(|u| matches!(u, Update::Dialog(d) if d.kind == crate::DialogKind::ConfirmDelete)));
 }
 
 #[test]

@@ -186,6 +186,7 @@ export component AppWindow inherits Window {
     callback row-clicked(pane: int, index: int, ctrl: bool, shift: bool);
     callback row-activated(pane: int, index: int);
     callback open-row-in-tab(pane: int, index: int);
+    callback context-target-count(pane: int, index: int, revision: int) -> int;
     callback context-command(pane: int, revision: int, name: string);
     callback context-custom-action(pane: int, revision: int, id: string);
     callback row-context(pane: int, index: int);
@@ -659,6 +660,7 @@ export component AppWindow inherits Window {
                         row-clicked(i, c, s) => { root.row-clicked(0, i, c, s); }
                         row-activated(i) => { root.row-activated(0, i); }
                         open-row-in-tab(i) => { root.open-row-in-tab(0, i); }
+                        context-target-count(i, r) => { root.context-target-count(0, i, r) }
                         context-command(r, n) => { root.context-command(0, r, n); }
                         context-custom-action(r, id) => { root.context-custom-action(0, r, id); }
                         row-context(i) => { root.row-context(0, i); }
@@ -701,6 +703,7 @@ export component AppWindow inherits Window {
                         row-clicked(i, c, s) => { root.row-clicked(1, i, c, s); }
                         row-activated(i) => { root.row-activated(1, i); }
                         open-row-in-tab(i) => { root.open-row-in-tab(1, i); }
+                        context-target-count(i, r) => { root.context-target-count(1, i, r) }
                         context-command(r, n) => { root.context-command(1, r, n); }
                         context-custom-action(r, id) => { root.context-custom-action(1, r, id); }
                         row-context(i) => { root.row-context(1, i); }

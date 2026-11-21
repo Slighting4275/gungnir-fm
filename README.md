@@ -403,6 +403,9 @@ Gungnir FM strictly adheres to zero-personal-data policies:
 - **Hybrid Path Bar**: Interactive breadcrumbs with Nemo-style home routing and remote badges, or direct editable path entry (`Ctrl+L`) for POSIX paths, `gungnir://`, `sftp://`, and `smb://` URIs.
 - **Virtualized Views**: Compact list, detailed list, and thumbnail grid views virtualized with Slint `ListView`. 100,000-entry folders scroll smoothly without UI stutters.
 - **Sortable Columns**: Natural, folders-first ordering by name, size, type, modified time, POSIX permissions, and Gungnir VFS sync status.
+- **Directory refreshes** keep the last completed listing visible while a
+  follow-up scan runs, even when files keep changing. If a watched folder changes
+  in an inactive tab, the folder refreshes when you return to that tab.
 
 ### Creating and selecting items
 
@@ -431,6 +434,10 @@ template permissions stay private, and executable/special bits are cleared.
 - **Select Items Matching** (`Ctrl+S`): match visible names with `*` and `?`.
 - **Invert Selection**, **Duplicate**, **Paste Into Folder**, and **Open in Other Pane**.
 - **New Window** (`Ctrl+N`) and multi-item **Open**; selected folders open in tabs.
+- Menu commands and shortcuts such as `Enter` and `Delete` use the active
+  pane's displayed listing. If the listing is replaced before the command is
+  handled, the command is dropped. Item context menus also check the selection
+  captured when the menu opened and ask you to reopen it if that selection changes.
 - Clipboard file selections interoperate with other file managers through
   `x-special/gnome-copied-files` when `xclip` (X11) or `wl-copy`/`wl-paste`
   (Wayland) is installed. Cut selections clear after a successful move.
@@ -463,7 +470,9 @@ See [workflow details and validation](docs/NEMO-WORKFLOWS.md).
 - **Top Toolbar Zoom Slider**: Interactive zoom slider located directly in the top toolbar alongside view modes. Features stepping buttons (`[-]` / `[+]`), interactive track drag, and a percentage pill with click-to-reset.
 - **Large-Scale Preview Scaling**: Smoothly scales previews from 50% to 350% (enlarging cards up to 840px in grid view and 80px in list view) with 512×512 thumbnail generation.
 - **Decoupled Text Typography**: Text label font sizes remain locked to crisp 11–13px system typography while thumbnail preview cards enlarge prominently.
-- **Disk Caching**: Asynchronous background generation cached under `~/.cache/gungnir-fm/thumbnails/` using source URI and modification timestamp keys.
+- **Thumbnail caching** uses the source URI and modification time as keys, with
+  `~/.cache/gungnir-fm/thumbnails/` as the usual cache location. Workers generate
+  and decode thumbnails for file listings and pass ready-to-display pixels to the UI.
 
 ### 📚 Master Encyclopedia: Universal Non-Image & Non-Video Format Engine
 Gungnir FM provides native format detection, authoritative human-readable classification, Freedesktop MIME resolution, and Spacebar Quick Preview inspection across all 10 core technical domains:
@@ -634,6 +643,9 @@ Gungnir FM includes an enterprise-grade, multi-format lossless compression subsy
 - **"Connect to Server…" Dialog**: Accessible from the File menu or command palette, enabling direct connections to remote network shares.
 - **Remote Operations**: Directory browsing, stat inspection, file operations, remote breadcrumbs, and status badges depend on the installed GIO/GVfs backends. Empty-document and template creation are currently unsupported remotely.
 - **Deletion Results & Cancellation**: A failed client exit or spawn is reported as an error. Batch deletion stops at the first failure; cancellation kills and reaps the active client before returning. Work already completed is retained.
+- GIO commands configure cancellation priority separately from output capture.
+  If completion and cancellation are ready together, deletion reports
+  cancellation and transfers report the client's completed result.
 
 ### ⚡ Custom Actions Engine (Nemo Actions Equivalent)
 - **Declarative TOML Actions**: Loads user-defined actions from `~/.config/gungnir-fm/actions/*.toml` (with built-in fallbacks).
@@ -711,6 +723,9 @@ Gungnir FM includes an enterprise-grade, multi-format lossless compression subsy
 
 ## Running Tests
 The workspace includes unit and integration tests across all crates. Controller tests use temporary desktop preferences and simulate update operations.
+Regression tests cover stale keyboard and context-menu commands, directory
+changes during scans and in inactive tabs, and displaying decoded thumbnails
+after the cache file has been removed.
 
 ```sh
 # Run the same checks as GitLab CI.

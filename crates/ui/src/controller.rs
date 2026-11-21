@@ -32,6 +32,12 @@ use transfer_plan::{TransferPlan, TransferPlanning};
 
 use crate::{Crumb, DialogKind, MountItem, PlaceItem, StatusInfo, TabInfo, TransferRow, TreeRow};
 
+#[derive(Debug, Clone)]
+pub enum ContextAction {
+    BuiltIn(String),
+    Custom(String),
+}
+
 /// Commands from the UI (one per Slint callback).
 #[derive(Debug, Clone)]
 pub enum Command {
@@ -83,15 +89,16 @@ pub enum Command {
         pane: usize,
         delta: i32,
     },
-    CustomAction {
-        pane: usize,
-        id: String,
-    },
     PaneFocused(usize),
     Run(String),
     RunInPane {
         pane: usize,
         name: String,
+    },
+    RunContextAction {
+        pane: usize,
+        action: ContextAction,
+        targets: Option<Vec<String>>,
     },
     ViewMode(i32),
     WindowChanged(crate::session::WindowState),
@@ -167,7 +174,7 @@ pub enum Event {
     ThumbnailsReady {
         tab: u64,
         view_gen: u64,
-        items: Vec<(String, PathBuf)>,
+        items: Vec<(usize, crate::thumbnails::ThumbnailPixels)>,
     },
     DirChanged {
         tab: u64,
@@ -1073,7 +1080,7 @@ impl Controller {
                 .map(|t| TabInfo {
                     title: t.title(&self.cfg.home).into(),
                     location: t.location.display().into(),
-                    loading: t.loading,
+                    loading: t.shows_loading(),
                 })
                 .collect(),
             active_tab: i32::try_from(pane.active).unwrap_or(0),
@@ -1081,7 +1088,7 @@ impl Controller {
             crumbs: crumb_views(&t.location, &self.cfg.home),
             sort_column: t.sort.column.index(),
             sort_ascending: t.sort.ascending,
-            loading: t.loading,
+            loading: t.shows_loading(),
             error: t.error.clone(),
             filter: t.filter.clone(),
             can_back: !t.back.is_empty(),
@@ -1257,7 +1264,7 @@ impl Controller {
         if !t.filter.is_empty() {
             items.push_str(&format!(" · filter \u{201c}{}\u{201d}", t.filter));
         }
-        if t.loading {
+        if t.shows_loading() {
             items = format!("Loading… {}", rows::thousands(t.entries().len()));
         }
         let selection = if t.selected.is_empty() {
@@ -1928,6 +1935,49 @@ impl Controller {
         };
         let Some(name) = destination.file_name() else { return };
         self.start_rename(from, name.to_string(), action, Some(record.identity));
+    }
+
+    /// Menu and keyboard commands whose file targets come from the displayed rows.
+    pub(crate) fn command_uses_rows(name: &str) -> bool {
+        matches!(
+            name,
+            "open"
+                | "open-in-tab"
+                | "open-in-new-window"
+                | "open-in-other-pane"
+                | "open-terminal-here"
+                | "open-containing-folder"
+                | "open-with"
+                | "duplicate"
+                | "make-link"
+                | "cut"
+                | "copy"
+                | "copy-path"
+                | "paste-into-folder"
+                | "copy-to-other"
+                | "move-to-other"
+                | "rename"
+                | "batch-rename"
+                | "trash"
+                | "restore"
+                | "delete"
+                | "properties"
+                | "check-hash"
+                | "compress"
+                | "quick-compress-zst"
+                | "quick-compress-zip"
+                | "extract-here"
+                | "extract-to"
+                | "test-archive"
+                | "quick-preview"
+                | "inspect"
+                | "bookmark-target"
+                | "select-all"
+                | "invert-selection"
+                | "clear-selection"
+                | "toggle-select"
+                | "select-pattern"
+        )
     }
 
     fn run_command(&mut self, name: &str) {
@@ -3623,7 +3673,6 @@ impl Controller {
                 self.select_tab(p, i);
             }
             Command::TabCycle { pane, delta } => self.cycle_tab(pane, delta),
-            Command::CustomAction { pane, id } => self.run_custom_action(pane, &id),
             Command::Quit => {
                 self.quitting = true;
                 self.trigger_save_session();
@@ -3641,6 +3690,19 @@ impl Controller {
             Command::RunInPane { pane, name } => {
                 self.focus_pane(pane);
                 self.run_command(&name);
+            }
+            Command::RunContextAction { pane, action, targets } => {
+                if let Some(targets) = targets
+                    && !self.panes[pane].tab().targets().iter().map(|entry| entry.uri.to_uri_string()).eq(targets)
+                {
+                    self.say("The selection changed. Open the menu again.", false);
+                    return;
+                }
+                self.focus_pane(pane);
+                match action {
+                    ContextAction::BuiltIn(name) => self.run_command(&name),
+                    ContextAction::Custom(id) => self.run_custom_action(pane, &id),
+                }
             }
             Command::Run(name) => self.run_command(&name),
             Command::SetDarkMode(dark) => {

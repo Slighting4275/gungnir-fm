@@ -540,6 +540,20 @@ pub fn lookup_cached(uri: &str, mtime_secs: i64) -> Option<PathBuf> {
     lookup_cached_in(&thumbnail_cache_dir(), uri, mtime_secs)
 }
 
+pub type ThumbnailPixels = slint::SharedPixelBuffer<slint::Rgba8Pixel>;
+
+/// Decode a cached or newly generated thumbnail on a worker. The UI receives pixels.
+pub fn load_pixels(path: &Path) -> Option<ThumbnailPixels> {
+    let mut reader = open_image(path)?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(512);
+    limits.max_image_height = Some(512);
+    limits.max_alloc = Some(16 * 1024 * 1024);
+    reader.limits(limits);
+    let rgba = reader.decode().ok()?.into_rgba8();
+    Some(ThumbnailPixels::clone_from_slice(rgba.as_raw(), rgba.width(), rgba.height()))
+}
+
 /// Generates a thumbnail for `source_path` and writes it to `cache_dir`.
 /// Returns the path to the generated thumbnail on success.
 pub fn generate_thumbnail_in(
@@ -1101,8 +1115,10 @@ mod tests {
         let cached = lookup_cached_in(&cache_dir, uri, 12345);
         assert_eq!(cached, Some(thumb.clone()));
 
-        let slint_img = slint::Image::load_from_path(&thumb);
-        assert!(slint_img.is_ok(), "slint must be able to load generated thumbnail: {:?}", slint_img.err());
+        let pixels = load_pixels(&thumb).unwrap_or_else(|| panic!("generated thumbnail did not decode"));
+        fs::remove_file(&thumb).unwrap_or_else(|e| panic!("{e}"));
+        let size = slint::Image::from_rgba8(pixels).size();
+        assert_eq!((size.width, size.height), (512, 512));
 
         // Cleanup
         let _ = fs::remove_dir_all(&sandbox);
