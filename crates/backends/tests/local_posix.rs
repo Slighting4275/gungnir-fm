@@ -616,6 +616,25 @@ async fn deep_folders_are_copied_and_deleted_without_crashing() -> VfsResult<()>
     Ok(())
 }
 
+#[tokio::test]
+async fn deleting_a_tree_requires_search_but_not_read_permission_on_its_parent() -> VfsResult<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let t = TempDir::new("delete-search-only-parent");
+    let parent = t.path().join("parent");
+    let tree = parent.join("tree");
+    std::fs::create_dir_all(&tree).unwrap_or_else(|e| panic!("{e}"));
+    std::fs::write(tree.join("file"), b"remove this").unwrap_or_else(|e| panic!("{e}"));
+    std::fs::write(parent.join("sibling"), b"keep this").unwrap_or_else(|e| panic!("{e}"));
+    std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o300)).unwrap_or_else(|e| panic!("{e}"));
+    let result = LocalPosixBackend::new().delete(&[t.uri("parent/tree")], CancellationToken::new()).await;
+    std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o700)).unwrap_or_else(|e| panic!("{e}"));
+    result?;
+    assert!(!tree.exists());
+    assert_eq!(std::fs::read(parent.join("sibling")).unwrap_or_else(|e| panic!("{e}")), b"keep this");
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn sparse_files_stay_sparse_and_identical() -> VfsResult<()> {
     // Every byte was copied: a sparse 2 GiB image with nothing allocated became 2 GiB of

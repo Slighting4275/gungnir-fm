@@ -144,7 +144,7 @@ impl Harness {
 }
 
 fn full_rows(u: &Update, pane: usize, len: usize) -> bool {
-    matches!(u, Update::Rows { pane: p, rows } if *p == pane && rows.len() == len)
+    matches!(u, Update::Rows { pane: p, rows, .. } if *p == pane && rows.len() == len)
 }
 
 #[test]
@@ -166,6 +166,30 @@ fn streams_a_small_first_batch_then_the_sorted_whole() {
 }
 
 #[test]
+fn streamed_and_completed_rows_apply_the_same_trimmed_filter() {
+    let d = DesktopSandbox(temp_dir("stream-filter-whitespace"));
+    let start_dir = d.0.join("start");
+    let target_dir = d.0.join("target");
+    std::fs::create_dir(&start_dir).unwrap();
+    std::fs::create_dir(&target_dir).unwrap();
+    std::fs::write(start_dir.join("initial.txt"), b"initial").unwrap();
+    std::fs::write(target_dir.join("match.txt"), b"match").unwrap();
+    std::fs::write(target_dir.join("other.txt"), b"other").unwrap();
+    let h = start(start_dir.to_str().unwrap(), "gungnir://odin/asgard", MockConfig::instant());
+    h.until(Duration::from_secs(5), |u| full_rows(u, 0, 1));
+    h.send(Command::Filter { pane: 0, text: "  match  ".into() });
+    h.until(Duration::from_secs(5), |u| full_rows(u, 0, 0));
+
+    h.send(Command::Navigate { pane: 0, location: target_dir.display().to_string() });
+    let updates = h.until(Duration::from_secs(5), |u| {
+        matches!(u, Update::Rows { pane: 0, rows, .. }
+        if rows.len() == 1 && rows[0].name == "match.txt")
+    });
+    assert!(updates.iter().any(|u| matches!(u, Update::AppendRows { pane: 0, rows }
+        if rows.len() == 1 && rows[0].name == "match.txt")));
+}
+
+#[test]
 fn navigating_away_cancels_the_inflight_listing() {
     // 100k entries in 2,000-entry batches, 20 ms apart: about a second of streaming.
     let slow = MockConfig { batch_latency: Duration::from_millis(20), ..MockConfig::instant() };
@@ -182,7 +206,7 @@ fn navigating_away_cancels_the_inflight_listing() {
     let tail = h.drain_for(Duration::from_millis(400));
     later.extend(tail.iter());
     for u in later {
-        if let Update::AppendRows { pane: 0, rows } | Update::Rows { pane: 0, rows } = u {
+        if let Update::AppendRows { pane: 0, rows } | Update::Rows { pane: 0, rows, .. } = u {
             assert!(rows.iter().all(|r| !r.name.starts_with("rune-")), "stale stress-100k rows after navigation");
         }
     }
@@ -220,7 +244,7 @@ fn hidden_toggle_sorting_and_range_selection() {
     std::fs::create_dir(d.join("zeta-dir")).ok();
     let h = start(d.to_str().unwrap_or("/"), "gungnir://odin/asgard", MockConfig::instant());
     let names = |u: &Update| match u {
-        Update::Rows { pane: 0, rows } => rows.iter().map(|r| r.name.to_string()).collect::<Vec<_>>(),
+        Update::Rows { pane: 0, rows, .. } => rows.iter().map(|r| r.name.to_string()).collect::<Vec<_>>(),
         _ => Vec::new(),
     };
     let ups = h.until(Duration::from_secs(5), |u| full_rows(u, 0, 3));
@@ -1005,7 +1029,7 @@ fn test_lossless_compression_and_extraction_workflow() {
     );
     let _ = h.until(
         Duration::from_millis(3000),
-        |u| matches!(u, Update::Rows { pane: 0, rows } if rows.iter().any(|r| r.name == "data_sample.txt.tar.zst" && r.selected)),
+        |u| matches!(u, Update::Rows { pane: 0, rows, .. } if rows.iter().any(|r| r.name == "data_sample.txt.tar.zst" && r.selected)),
     );
 
     // Test archive integrity
@@ -1336,6 +1360,35 @@ fn replace_if_newer_applies_to_each_conflict_independently() {
     assert_eq!(std::fs::read(right.join("newer")).unwrap(), b"source");
     assert_eq!(std::fs::read(right.join("older")).unwrap(), b"target");
     assert_eq!(std::fs::read(right.join("same")).unwrap(), b"target");
+}
+
+#[test]
+fn skip_conflict_keeps_the_existing_file_and_copies_other_sources() {
+    let tmp = DesktopSandbox(temp_dir("skip-conflicting-copy"));
+    let left = tmp.0.join("left");
+    let right = tmp.0.join("right");
+    std::fs::create_dir(&left).unwrap();
+    std::fs::create_dir(&right).unwrap();
+    std::fs::write(left.join("collision"), b"source").unwrap();
+    std::fs::write(left.join("new"), b"new").unwrap();
+    std::fs::write(right.join("collision"), b"target").unwrap();
+    let h = start(left.to_str().unwrap(), right.to_str().unwrap(), MockConfig::instant());
+    h.until(Duration::from_secs(5), |u| full_rows(u, 0, 2));
+    h.send(Command::Run("toggle-dual".into()));
+    h.send(Command::Run("select-all".into()));
+    h.send(Command::Run("copy-to-other".into()));
+    h.until(Duration::from_secs(5), |u| matches!(u, Update::Dialog(d) if d.kind == crate::DialogKind::Conflict));
+    h.send(Command::DialogCustomAction {
+        action: "skip".into(),
+        opt1: false,
+        opt2: false,
+        extra1: String::new(),
+        extra2: String::new(),
+    });
+    h.until(Duration::from_secs(5), |u| matches!(u, Update::Status(s) if s.message.contains("finished")));
+    assert_eq!(std::fs::read(right.join("collision")).unwrap(), b"target");
+    assert_eq!(std::fs::read(right.join("new")).unwrap(), b"new");
+    assert_eq!(std::fs::read_dir(&right).unwrap().count(), 2);
 }
 
 #[test]
@@ -1888,19 +1941,19 @@ fn switching_tabs_cancels_rename_before_a_stale_editor_can_commit() {
     h.send(Command::Navigate { pane: 0, location: b.to_str().unwrap().to_string() });
     h.until(
         Duration::from_secs(3),
-        |u| matches!(u, Update::Rows { pane: 0, rows } if rows.len()==1 && rows[0].name=="other.txt"),
+        |u| matches!(u, Update::Rows { pane: 0, rows, .. } if rows.len()==1 && rows[0].name=="other.txt"),
     );
     h.send(Command::TabSelect(0, 0));
     h.until(
         Duration::from_secs(3),
-        |u| matches!(u, Update::Rows { pane: 0, rows } if rows.len()==1 && rows[0].name=="original.txt"),
+        |u| matches!(u, Update::Rows { pane: 0, rows, .. } if rows.len()==1 && rows[0].name=="original.txt"),
     );
     h.send(Command::Run("rename".into()));
     h.until(Duration::from_secs(3), |u| matches!(u, Update::Rename { pane: 0, index: 0 }));
     h.send(Command::TabSelect(0, 1));
     h.until(
         Duration::from_secs(3),
-        |u| matches!(u, Update::Rows { pane: 0, rows } if rows.len()==1 && rows[0].name=="other.txt"),
+        |u| matches!(u, Update::Rows { pane: 0, rows, .. } if rows.len()==1 && rows[0].name=="other.txt"),
     );
     h.send(Command::RenameCommit { pane: 0, index: 0, name: "unexpected.txt".into() });
     h.drain_for(Duration::from_millis(200));
@@ -2002,7 +2055,7 @@ fn another_successful_rename_discards_redo() {
     wait_rename_status(&h, "Undid rename to first.txt");
     h.until(
         Duration::from_secs(3),
-        |u| matches!(u, Update::Rows { pane: 0, rows } if rows.len()==1 && rows[0].name=="first.txt"),
+        |u| matches!(u, Update::Rows { pane: 0, rows, .. } if rows.len()==1 && rows[0].name=="first.txt"),
     );
     commit_cursor_rename(&h, "third.txt");
     h.until(Duration::from_secs(3), |u| matches!(u, Update::RenameHistory { can_undo: true, can_redo: false }));
@@ -2085,7 +2138,7 @@ fn startup_preferences_do_not_erase_the_file_argument_selection() {
     let rows = updates
         .iter()
         .find_map(|u| match u {
-            Update::Rows { pane: 0, rows } if rows.len() == 2 => Some(rows),
+            Update::Rows { pane: 0, rows, .. } if rows.len() == 2 => Some(rows),
             _ => None,
         })
         .unwrap();
@@ -2127,7 +2180,7 @@ fn a_reordered_directory_snapshot_keeps_the_cursor_on_the_same_name() {
     .unwrap();
     h.until(
         Duration::from_secs(3),
-        |u| matches!(u, Update::Rows { pane: 0, rows } if rows.len()==2 && rows[1].name=="b"),
+        |u| matches!(u, Update::Rows { pane: 0, rows, .. } if rows.len()==2 && rows[1].name=="b"),
     );
     let updates = h.until(Duration::from_secs(3), |u| matches!(u, Update::Pane { pane: 0, .. }));
     let view = updates
@@ -2193,6 +2246,58 @@ fn row_click_uses_displayed_entries_while_silent_refresh_prepares_new_rows() {
 }
 
 #[test]
+fn row_input_from_an_older_display_is_rejected_after_refresh_commits() {
+    let d = DesktopSandbox(temp_dir("stale-displayed-row"));
+    std::fs::write(d.0.join("a"), b"a").unwrap();
+    std::fs::write(d.0.join("b"), b"bb").unwrap();
+    let location = d.0.to_str().unwrap();
+    let h = start(location, "gungnir://odin/asgard", MockConfig::instant());
+    let old = h.until(Duration::from_secs(5), |u| full_rows(u, 0, 2));
+    let Some(Update::Rows { revision: old_revision, .. }) = old.last() else { panic!("missing initial view") };
+
+    std::fs::write(d.0.join("0"), b"000").unwrap();
+    // Wait for the new snapshot in the actor while representing a UI that still
+    // has the older revision installed and sends a click on its first row.
+    let new = h.until(Duration::from_secs(5), |u| full_rows(u, 0, 3));
+    let Some(Update::Rows { revision, rows, .. }) = new.last() else { panic!("missing refreshed view") };
+    assert_eq!(rows[0].name, "0");
+
+    let click = Command::RowClicked { pane: 0, index: 0, ctrl: false, shift: false };
+    h.tx.try_send(Msg::UiRows { panes: [Some(*old_revision), None], command: click.clone() }).unwrap();
+    h.send(Command::SetDarkMode(false));
+    let stale = h.until(Duration::from_secs(3), |u| matches!(u, Update::Flags(f) if !f.dark_mode));
+    assert!(!stale.iter().any(|u| matches!(u, Update::Selection { .. })));
+
+    h.tx.try_send(Msg::UiRows { panes: [Some(*revision), None], command: click }).unwrap();
+    h.until(Duration::from_secs(3), |u| matches!(u, Update::Status(s) if s.selection == "1 selected (3 bytes)"));
+}
+
+#[test]
+fn activating_a_streaming_tab_clears_the_previous_tab_before_appending() {
+    let d = DesktopSandbox(temp_dir("switch-to-streaming-tab"));
+    std::fs::write(d.0.join("local.txt"), b"local").unwrap();
+    let location = d.0.to_str().unwrap();
+    let slow = MockConfig { batch_latency: Duration::from_millis(100), ..MockConfig::instant() };
+    let h = start("gungnir://odin/asgard/stress-50k", location, slow);
+    h.until(Duration::from_secs(5), |u| matches!(u, Update::AppendRows { pane: 0, .. }));
+    h.send(Command::TabNew(0));
+    h.send(Command::Navigate { pane: 0, location: location.to_owned() });
+    h.until(Duration::from_secs(5), |u| {
+        matches!(u, Update::Rows { pane: 0, rows, .. }
+        if rows.len() == 1 && rows[0].name == "local.txt")
+    });
+
+    h.send(Command::TabSelect(0, 0));
+    let updates = h.until(Duration::from_secs(5), |u| {
+        matches!(u, Update::Rows { pane: 0, rows, .. }
+        if rows.first().is_some_and(|row| row.name.starts_with("rune-")))
+    });
+    assert!(updates.iter().any(|u| full_rows(u, 0, 0)), "the local model must be cleared at activation");
+    let cleared = updates.iter().position(|u| full_rows(u, 0, 0)).unwrap();
+    assert!(!updates[..cleared].iter().any(|u| matches!(u, Update::AppendRows { pane: 0, .. })));
+}
+
+#[test]
 fn failed_rename_preserves_selection_and_does_not_create_undo_history() {
     let d = temp_dir("rename-failed-selection");
     std::fs::write(d.join("a"), b"a").unwrap();
@@ -2209,7 +2314,7 @@ fn failed_rename_preserves_selection_and_does_not_create_undo_history() {
     let rows = updates
         .iter()
         .find_map(|u| match u {
-            Update::Rows { pane: 0, rows } if rows.len() == 2 => Some(rows),
+            Update::Rows { pane: 0, rows, .. } if rows.len() == 2 => Some(rows),
             _ => None,
         })
         .unwrap();
@@ -2773,7 +2878,7 @@ fn test_restored_session_tabs_lazy_load_on_select() {
     // Initial load of restored tab 0 contains file1.txt
     h.until(
         Duration::from_secs(10),
-        |u| matches!(u, Update::Rows { pane: 0, rows } if rows.iter().any(|r| r.name == "file1.txt")),
+        |u| matches!(u, Update::Rows { pane: 0, rows, .. } if rows.iter().any(|r| r.name == "file1.txt")),
     );
 
     // Switch to tab 1 (sub2)
@@ -2782,7 +2887,7 @@ fn test_restored_session_tabs_lazy_load_on_select() {
     // Verify tab 1 loads sub2 and its row file2.txt
     h.until(
         Duration::from_secs(10),
-        |u| matches!(u, Update::Rows { pane: 0, rows } if rows.iter().any(|r| r.name == "file2.txt")),
+        |u| matches!(u, Update::Rows { pane: 0, rows, .. } if rows.iter().any(|r| r.name == "file2.txt")),
     );
 
     let _ = std::fs::remove_dir_all(tmp);

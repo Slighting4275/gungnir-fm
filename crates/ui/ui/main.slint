@@ -85,6 +85,8 @@ export component AppWindow inherits Window {
         can-back: false, can-forward: false, cursor: 0,
         is-trash: false, is-recent: false, is-read-only: false, selected-count: 0, has-clipboard: false,
     };
+    in-out property <int> left-rows-revision: 0;
+    in-out property <int> right-rows-revision: 0;
     in-out property <[FileRow]> left-files: [
         { name: "release_v1", size-text: "", type-text: "Folder", modified-text: "2026-10-12 21:40", perms-text: "drwxr-xr-x", status-text: "", status: 0, icon: 0, is-dir: true, hidden: false, selected: false, thumbnail: @image-url(""), has-thumbnail: false },
         { name: "assets", size-text: "", type-text: "Folder", modified-text: "2026-10-20 03:12", perms-text: "drwxr-xr-x", status-text: "", status: 0, icon: 0, is-dir: true, hidden: false, selected: false, thumbnail: @image-url(""), has-thumbnail: false },
@@ -183,6 +185,9 @@ export component AppWindow inherits Window {
     callback nav(pane: int, action: string);
     callback row-clicked(pane: int, index: int, ctrl: bool, shift: bool);
     callback row-activated(pane: int, index: int);
+    callback open-row-in-tab(pane: int, index: int);
+    callback context-command(pane: int, revision: int, name: string);
+    callback context-custom-action(pane: int, revision: int, id: string);
     callback row-context(pane: int, index: int);
     callback move-cursor(pane: int, delta: int, extend: bool);
     callback sort-by(pane: int, column: int);
@@ -209,10 +214,9 @@ export component AppWindow inherits Window {
     callback dialog-choose(index: int);
     callback rename-commit(pane: int, index: int, name: string);
     callback rename-cancel();
-    callback custom-action(pane: int, id: string);
     callback tab-cycle(pane: int, delta: int);
     callback zoom-changed(zoom: float);
-    callback dropped(src-pane: int, src-index: int, dst-pane: int, dst-index: int, copy: bool);
+    callback dropped(src-pane: int, src-index: int, src-revision: int, dst-pane: int, dst-index: int, copy: bool);
     pure callback drag-data(pane: int, index: int) -> data-transfer;
     callback terminal-run(cmd: string);
     callback terminal-clear();
@@ -235,6 +239,7 @@ export component AppWindow inherits Window {
     in-out property <bool> drag-active: false;
     in-out property <int> drag-pane: -1;
     in-out property <int> drag-index: -1;
+    property <int> drag-rows-revision: 0;
 
     // ---- Functions the controller calls -------------------------------------------
     public function focus-files() {
@@ -643,16 +648,19 @@ export component AppWindow inherits Window {
                         view-mode: root.view-mode;
                         info: root.left;
                         files: root.left-files;
+                        rows-revision: root.left-rows-revision;
                         thumbnail-rev: root.left-thumbnail-rev;
                         zoom-level: root.zoom-level;
                         zoom-changed(z) => { root.zoom-level = z; root.zoom-changed(z); }
                         custom-actions: root.left-custom-actions;
                         document-templates: root.document-templates;
-                        custom-action(id) => { root.custom-action(0, id); }
                         renaming-index: root.renaming-pane == 0 ? root.renaming-index : -1;
                         focus-pane => { root.activate-pane(0); }
                         row-clicked(i, c, s) => { root.row-clicked(0, i, c, s); }
                         row-activated(i) => { root.row-activated(0, i); }
+                        open-row-in-tab(i) => { root.open-row-in-tab(0, i); }
+                        context-command(r, n) => { root.context-command(0, r, n); }
+                        context-custom-action(r, id) => { root.context-custom-action(0, r, id); }
                         row-context(i) => { root.row-context(0, i); }
                         sort-by(c) => { root.sort-by(0, c); }
                         tab-select(i) => { root.tab-select(0, i); }
@@ -664,9 +672,9 @@ export component AppWindow inherits Window {
                         rename-commit(i, n) => { root.rename-commit(0, i, n); key-handler.focus(); }
                         rename-cancel => { root.rename-cancel(); key-handler.focus(); }
                         dragging-from-app: root.drag-active;
-                        drag-start(i) => { root.drag-active = true; root.drag-pane = 0; root.drag-index = i; }
+                        drag-start(i) => { root.drag-active = true; root.drag-pane = 0; root.drag-index = i; root.drag-rows-revision = root.left-rows-revision; }
                         drag-end => { root.drag-active = false; }
-                        drop-on(i, c) => { root.dropped(root.drag-pane, root.drag-index, 0, i, c); }
+                        drop-on(i, c) => { root.dropped(root.drag-pane, root.drag-index, root.drag-rows-revision, 0, i, c); }
                         drag-data(i) => { root.drag-data(0, i) }
                     }
                     if root.dual-pane: Rectangle {
@@ -682,16 +690,19 @@ export component AppWindow inherits Window {
                         view-mode: root.view-mode;
                         info: root.right;
                         files: root.right-files;
+                        rows-revision: root.right-rows-revision;
                         thumbnail-rev: root.right-thumbnail-rev;
                         zoom-level: root.zoom-level;
                         zoom-changed(z) => { root.zoom-level = z; root.zoom-changed(z); }
                         custom-actions: root.right-custom-actions;
                         document-templates: root.document-templates;
-                        custom-action(id) => { root.custom-action(1, id); }
                         renaming-index: root.renaming-pane == 1 ? root.renaming-index : -1;
                         focus-pane => { root.activate-pane(1); }
                         row-clicked(i, c, s) => { root.row-clicked(1, i, c, s); }
                         row-activated(i) => { root.row-activated(1, i); }
+                        open-row-in-tab(i) => { root.open-row-in-tab(1, i); }
+                        context-command(r, n) => { root.context-command(1, r, n); }
+                        context-custom-action(r, id) => { root.context-custom-action(1, r, id); }
                         row-context(i) => { root.row-context(1, i); }
                         sort-by(c) => { root.sort-by(1, c); }
                         tab-select(i) => { root.tab-select(1, i); }
@@ -703,9 +714,9 @@ export component AppWindow inherits Window {
                         rename-commit(i, n) => { root.rename-commit(1, i, n); key-handler.focus(); }
                         rename-cancel => { root.rename-cancel(); key-handler.focus(); }
                         dragging-from-app: root.drag-active;
-                        drag-start(i) => { root.drag-active = true; root.drag-pane = 1; root.drag-index = i; }
+                        drag-start(i) => { root.drag-active = true; root.drag-pane = 1; root.drag-index = i; root.drag-rows-revision = root.right-rows-revision; }
                         drag-end => { root.drag-active = false; }
-                        drop-on(i, c) => { root.dropped(root.drag-pane, root.drag-index, 1, i, c); }
+                        drop-on(i, c) => { root.dropped(root.drag-pane, root.drag-index, root.drag-rows-revision, 1, i, c); }
                         drag-data(i) => { root.drag-data(1, i) }
                     }
                 }

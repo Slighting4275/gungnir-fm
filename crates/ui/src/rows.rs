@@ -63,12 +63,6 @@ pub fn row_item(e: &FileEntry, selected: bool) -> RowItem {
     }
 }
 
-/// Compatibility alias for `row_item`.
-#[must_use]
-pub fn file_row(e: &FileEntry, selected: bool) -> RowItem {
-    row_item(e, selected)
-}
-
 /// Converts a pure `RowItem` to Slint's `FileRow` (loading the `slint::Image` on the UI thread).
 #[must_use]
 pub fn to_file_row(r: &RowItem) -> FileRow {

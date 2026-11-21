@@ -4,20 +4,23 @@ workflow:
     - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
 
 verify:
-  image: rust:1.99-slim-bookworm@sha256:86234e857a413004348b471d11a4ebe1aa92d2eae2b6b143cac68fd1ac3c48be
+  image: archlinux:base-20261018.0.612668@sha256:52dfbd5afb23a220d5ee92dafcb4c788d96c026ed04179890c23adef4c897fa0
   timeout: 30 minutes
   variables:
     GIT_LFS_SKIP_SMUDGE: "1"
+    CC: clang
+    CFLAGS: -std=c23
   before_script:
-    - apt-get update
+    - printf '%s\n' 'Server = https://archive.archlinux.org/repos/2026/10/18/$repo/os/$arch' > /etc/pacman.d/mirrorlist
     - >-
-      apt-get install -y --no-install-recommends
-      build-essential ca-certificates clang git pkg-config
-      libarchive-dev libfontconfig1-dev libxkbcommon-dev libwayland-dev
-      libx11-dev libx11-xcb-dev libxcb1-dev libxcursor-dev libxrandr-dev
-      libxi-dev libxkbcommon-x11-dev libegl1-mesa-dev qt6-base-dev
-      p7zip-full ffmpeg zstd xz-utils gzip bzip2 lz4 brotli
-    - rustup component add clippy rustfmt
+      pacman -Syu --noconfirm --needed
+      base-devel ca-certificates clang git pkgconf rust
+      libarchive fontconfig libxkbcommon wayland libx11 libxcb libxcursor
+      libxrandr libxi libxkbcommon-x11 libglvnd qt6-base
+      7zip ffmpeg zstd xz gzip bzip2 lz4 brotli
+    - >-
+      printf '%s\n' '#if __STDC_VERSION__ < 202311L' '#error C23 required' '#endif'
+      | "$CC" "$CFLAGS" -x c -fsyntax-only -
     - useradd --create-home --user-group fm-test
     - chown -R fm-test:fm-test "$CI_PROJECT_DIR"
   script:

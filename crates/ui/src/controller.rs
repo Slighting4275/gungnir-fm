@@ -27,7 +27,7 @@ use crate::rows::{self, RowItem};
 mod listing;
 mod transfer_plan;
 
-use listing::Tab;
+use listing::{ListingBatch, PaneRows, Tab};
 use transfer_plan::{TransferPlan, TransferPlanning};
 
 use crate::{Crumb, DialogKind, MountItem, PlaceItem, StatusInfo, TabInfo, TransferRow, TreeRow};
@@ -50,6 +50,10 @@ pub enum Command {
         shift: bool,
     },
     RowActivated {
+        pane: usize,
+        index: usize,
+    },
+    OpenRowInTab {
         pane: usize,
         index: usize,
     },
@@ -85,6 +89,10 @@ pub enum Command {
     },
     PaneFocused(usize),
     Run(String),
+    RunInPane {
+        pane: usize,
+        name: String,
+    },
     ViewMode(i32),
     WindowChanged(crate::session::WindowState),
     Zoom(f32),
@@ -140,7 +148,7 @@ pub enum Event {
     Batch {
         tab: u64,
         generation: u64,
-        entries: Vec<FileEntry>,
+        batch: ListingBatch,
     },
     ListDone {
         tab: u64,
@@ -258,6 +266,11 @@ pub enum Event {
 #[derive(Debug)]
 pub enum Msg {
     Ui(Command),
+    /// Commands whose indices or targets came from the displayed row model.
+    UiRows {
+        panes: [Option<i32>; 2],
+        command: Command,
+    },
     Ev(Event),
 }
 
@@ -655,6 +668,8 @@ pub struct Controller {
     tx: MsgTx,
     cfg: Config,
     panes: [Pane; 2],
+    pane_rows: [PaneRows; 2],
+    next_rows_revision: i32,
     active_pane: usize,
     dual: bool,
     sidebar: bool,
@@ -837,6 +852,8 @@ impl Controller {
             tx,
             cfg,
             panes,
+            pane_rows: [PaneRows::default(); 2],
+            next_rows_revision: 0,
             active_pane,
             dual,
             sidebar,
@@ -909,6 +926,17 @@ impl Controller {
                     break;
                 }
                 Msg::Ui(c) => self.command(c),
+                Msg::UiRows { panes, command } => {
+                    let current = panes.into_iter().enumerate().all(|(pane, revision)| {
+                        revision.is_none_or(|revision| {
+                            self.pane_rows[pane].revision == revision
+                                && self.pane_rows[pane].tab == Some(self.panes[pane].tab().id)
+                        })
+                    });
+                    if current {
+                        self.command(command);
+                    }
+                }
                 Msg::Ev(e) => self.event(e),
             }
             if self.quitting {
@@ -3318,6 +3346,9 @@ impl Controller {
             self.load(pane, loc, false);
         } else {
             let id = self.panes[pane].tab().id;
+            if self.pane_rows[pane].tab != Some(id) {
+                self.publish_rows(pane, None, Vec::new());
+            }
             self.prepare(pane, id, false);
             self.push_pane(pane);
             self.push_status();
@@ -3379,6 +3410,8 @@ impl Controller {
             } else if self.dual {
                 self.panes[0].tabs.remove(0);
                 self.panes.swap(0, 1);
+                self.pane_rows[0] = self.pane_rows[1];
+                self.pane_rows[1] = PaneRows::default();
                 self.ui.send(Update::PromoteRightPane);
                 let home = self.cfg.home.clone();
                 let id = self.next_tab;
@@ -3540,6 +3573,13 @@ impl Controller {
             }
             Command::RowClicked { pane, index, ctrl, shift } => self.click(pane, index, ctrl, shift),
             Command::RowActivated { pane, index } => self.activate(pane, index),
+            Command::OpenRowInTab { pane, index } => {
+                if let Some(entry) =
+                    self.panes[pane].tab().entry_at(index).filter(|entry| entry.is_navigable()).cloned()
+                {
+                    self.open_entry(pane, entry, true);
+                }
+            }
             Command::RowContext { pane, index } => {
                 self.focus_pane(pane);
                 self.panes[pane].tab_mut().cursor = index;
@@ -3598,6 +3638,10 @@ impl Controller {
                 self.ui.send(Update::Quit);
             }
             Command::PaneFocused(p) => self.focus_pane(p),
+            Command::RunInPane { pane, name } => {
+                self.focus_pane(pane);
+                self.run_command(&name);
+            }
             Command::Run(name) => self.run_command(&name),
             Command::SetDarkMode(dark) => {
                 self.dark_mode = dark;
@@ -4704,7 +4748,7 @@ impl Controller {
 
     fn event(&mut self, e: Event) {
         match e {
-            Event::Batch { tab, generation, entries } => self.on_batch(tab, generation, entries),
+            Event::Batch { tab, generation, batch } => self.on_batch(tab, generation, batch),
             Event::ListDone { tab, generation, result, collected, started } => {
                 self.on_list_done(tab, generation, result, collected, started)
             }

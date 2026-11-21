@@ -81,7 +81,7 @@ pub(super) async fn run(
         let (status, stdout, stderr) = tokio::try_join!(wait, stdout, stderr)?;
         Ok(Output { status, stdout, stderr })
     };
-    let cancelled = async {
+    let cancelled = || async {
         match cancel {
             Some(token) => token.cancelled().await,
             None => pending().await,
@@ -93,12 +93,14 @@ pub(super) async fn run(
             None => pending().await,
         }
     };
+    // Remote delete gives cancellation priority. A completed move can already
+    // have removed its source, so report its result when both futures are ready.
+    let cancel_first = matches!(capture, Capture::Discard);
     let result = tokio::select! {
         biased;
-        // Once the outcome is available, report it even if cancellation arrived
-        // at the same time. A finished move may already have removed its source.
+        () = cancelled(), if cancel_first => Err(VfsError::Cancelled),
         result = collect => result,
-        () = cancelled => Err(VfsError::Cancelled),
+        () = cancelled(), if !cancel_first => Err(VfsError::Cancelled),
         () = deadline => Err(VfsError::Timeout),
     };
     if result.is_err() {

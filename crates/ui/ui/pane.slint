@@ -235,6 +235,8 @@ export component Pane inherits Rectangle {
     property <bool> menu-is-trash;
     property <bool> menu-is-recent;
     property <bool> menu-is-read-only;
+    in property <int> rows-revision: 0;
+    property <int> menu-rows-revision;
     property <bool> menu-has-target;
     property <bool> menu-target-is-dir;
     property <bool> menu-target-is-archive;
@@ -255,6 +257,7 @@ export component Pane inherits Rectangle {
     }
     function capture-context(index: int) {
         root.context-index = index;
+        root.menu-rows-revision = root.rows-revision;
         root.menu-is-trash = root.is-trash;
         root.menu-is-recent = root.is-recent;
         root.menu-is-read-only = root.is-read-only;
@@ -268,8 +271,13 @@ export component Pane inherits Rectangle {
         root.menu-document-templates = root.document-templates;
     }
 
+    function run-context(name: string) { root.context-command(root.menu-rows-revision, name); }
+
     callback row-clicked(index: int, ctrl: bool, shift: bool);
     callback row-activated(index: int);
+    callback open-row-in-tab(index: int);
+    callback context-command(revision: int, name: string);
+    callback context-custom-action(revision: int, id: string);
     callback row-context(index: int);
     callback sort-by(column: int);
     callback tab-select(index: int);
@@ -280,13 +288,13 @@ export component Pane inherits Rectangle {
     callback zoom-changed(float);
     callback focus-pane();
     callback command(name: string);
-    callback custom-action(id: string);
     callback rename-commit(index: int, name: string);
     callback rename-cancel();
     // Drag and drop inside the app: the pane reports where a drag started and where
     // it was dropped (index -1: the pane's own folder).
     in property <bool> dragging-from-app: false;
     in-out property <int> pending-single: -1;
+    property <int> pending-single-revision;
     callback drag-start(index: int);
     callback drag-end();
     callback drop-on(index: int, copy: bool);
@@ -666,46 +674,46 @@ export component Pane inherits Rectangle {
                     // -----------------------------------------------------------------
                     if !root.menu-is-read-only: MenuItem {
                         title: "Create New Folder";
-                        activated => { root.command("new-folder-inline"); }
+                        activated => { root.run-context("new-folder-inline"); }
                     }
                     if !root.menu-is-read-only: Menu {
                         title: "Create New Document";
                         MenuItem {
                             title: "Empty Document";
-                            activated => { root.command("new-file-inline"); }
+                            activated => { root.run-context("new-file-inline"); }
                         }
                         if root.menu-document-templates.length > 0: MenuSeparator { }
                         for item in root.menu-document-templates: MenuItem {
                             title: item.title;
-                            activated => { root.command("create-template:" + item.id); }
+                            activated => { root.run-context("create-template:" + item.id); }
                         }
                         MenuSeparator { }
-                        MenuItem { title: "Refresh Templates"; activated => { root.command("refresh-templates"); } }
+                        MenuItem { title: "Refresh Templates"; activated => { root.run-context("refresh-templates"); } }
                     }
                     if !root.menu-is-read-only && root.menu-has-clipboard: MenuItem {
                         title: "Paste";
-                        activated => { root.command("paste"); }
+                        activated => { root.run-context("paste"); }
                     }
                     MenuItem {
                         title: "Copy Location";
-                        activated => { root.command("copy-location"); }
+                        activated => { root.run-context("copy-location"); }
                     }
                     MenuItem {
                         title: "Bookmark This Location";
-                        activated => { root.command("bookmark"); }
+                        activated => { root.run-context("bookmark"); }
                     }
                     MenuItem {
                         title: "Open Terminal Here";
-                        activated => { root.command("open-terminal-folder"); }
+                        activated => { root.run-context("open-terminal-folder"); }
                     }
                     MenuSeparator { }
                     MenuItem {
                         title: "Gungnir VFS Inspect";
-                        activated => { root.command("inspect-folder"); }
+                        activated => { root.run-context("inspect-folder"); }
                     }
                     MenuItem {
                         title: "Properties";
-                        activated => { root.command("folder-properties"); }
+                        activated => { root.run-context("folder-properties"); }
                     }
 
                 }
@@ -717,25 +725,25 @@ export component Pane inherits Rectangle {
                     // -----------------------------------------------------------------
                     if root.menu-is-trash && root.menu-has-target: MenuItem {
                         title: root.menu-is-multi-sel ? "Restore " + root.menu-effective-sel-count + " Items from Trash" : "Restore from Trash";
-                        activated => { root.command("restore"); }
+                        activated => { root.run-context("restore"); }
                     }
                     if root.menu-is-trash && root.menu-has-target: MenuItem {
                         title: root.menu-is-multi-sel ? "Delete " + root.menu-effective-sel-count + " Items Permanently…" : "Delete Permanently…";
-                        activated => { root.command("delete"); }
+                        activated => { root.run-context("delete"); }
                     }
                     if root.menu-is-trash && root.menu-has-target: MenuSeparator { }
                     if root.menu-is-trash: MenuItem {
                         title: "Empty Trash…";
-                        activated => { root.command("empty-trash"); }
+                        activated => { root.run-context("empty-trash"); }
                     }
                     if root.menu-is-trash: MenuSeparator { }
                     if root.menu-is-trash && root.menu-has-target: MenuItem {
                         title: "Properties";
-                        activated => { root.command("properties"); }
+                        activated => { root.run-context("properties"); }
                     }
                     if root.menu-is-trash && !root.menu-has-target: MenuItem {
                         title: "Properties";
-                        activated => { root.command("folder-properties"); }
+                        activated => { root.run-context("folder-properties"); }
                     }
 
                 }
@@ -747,29 +755,29 @@ export component Pane inherits Rectangle {
                     // -----------------------------------------------------------------
                     if root.menu-has-target: MenuItem {
                         title: "Open";
-                        activated => { root.command("open"); }
+                        activated => { root.run-context("open"); }
                     }
                     if root.menu-has-target: MenuItem {
                         title: "Open Containing Folder";
-                        activated => { root.command("open-containing-folder"); }
+                        activated => { root.run-context("open-containing-folder"); }
                     }
                     if root.menu-has-target: MenuItem {
                         title: "Copy Path";
-                        activated => { root.command("copy-path"); }
+                        activated => { root.run-context("copy-path"); }
                     }
                     if root.menu-has-target: MenuItem {
                         title: root.menu-is-multi-sel ? "Remove " + root.menu-effective-sel-count + " Items from Recent" : "Remove from Recent";
-                        activated => { root.command("delete"); }
+                        activated => { root.run-context("delete"); }
                     }
                     if root.menu-has-target: MenuSeparator { }
                     MenuItem {
                         title: "Clear Recent History…";
-                        activated => { root.command("clear-recent"); }
+                        activated => { root.run-context("clear-recent"); }
                     }
                     if root.menu-has-target: MenuSeparator { }
                     if root.menu-has-target: MenuItem {
                         title: "Properties";
-                        activated => { root.command("properties"); }
+                        activated => { root.run-context("properties"); }
                     }
                 }
             }
@@ -779,21 +787,21 @@ export component Pane inherits Rectangle {
                     // fills the pane and no empty background is easy to reach.
                     if !root.menu-is-trash && !root.menu-is-read-only: MenuItem {
                         title: "Create New Folder";
-                        activated => { root.command("new-folder-inline"); }
+                        activated => { root.run-context("new-folder-inline"); }
                     }
                     if !root.menu-is-trash && !root.menu-is-read-only: Menu {
                         title: "Create New Document";
                         MenuItem {
                             title: "Empty Document";
-                            activated => { root.command("new-file-inline"); }
+                            activated => { root.run-context("new-file-inline"); }
                         }
                         if root.menu-document-templates.length > 0: MenuSeparator { }
                         for item in root.menu-document-templates: MenuItem {
                             title: item.title;
-                            activated => { root.command("create-template:" + item.id); }
+                            activated => { root.run-context("create-template:" + item.id); }
                         }
                         MenuSeparator { }
-                        MenuItem { title: "Refresh Templates"; activated => { root.command("refresh-templates"); } }
+                        MenuItem { title: "Refresh Templates"; activated => { root.run-context("refresh-templates"); } }
                     }
                     if !root.menu-is-trash && !root.menu-is-read-only: MenuSeparator { }
                     // -----------------------------------------------------------------
@@ -801,27 +809,27 @@ export component Pane inherits Rectangle {
                     // -----------------------------------------------------------------
                     if !root.menu-is-trash && root.menu-has-target && !root.menu-is-multi-sel: MenuItem {
                         title: "Open";
-                        activated => { root.command("open"); }
+                        activated => { root.run-context("open"); }
                     }
                     if !root.menu-is-trash && root.menu-has-target && !root.menu-is-multi-sel && !root.menu-target-is-dir: MenuItem {
                         title: "Open Containing Folder";
-                        activated => { root.command("open-containing-folder"); }
+                        activated => { root.run-context("open-containing-folder"); }
                     }
                     if !root.menu-is-trash && root.menu-has-target && !root.menu-is-multi-sel && root.menu-target-is-dir: MenuItem {
                         title: "Open in New Tab";
-                        activated => { root.command("open-in-tab"); }
+                        activated => { root.run-context("open-in-tab"); }
                     }
                     if !root.menu-is-trash && root.menu-has-target && !root.menu-is-multi-sel && !root.menu-target-is-dir: MenuItem {
                         title: "Open With…";
-                        activated => { root.command("open-with"); }
+                        activated => { root.run-context("open-with"); }
                     }
                     if !root.menu-is-trash && root.menu-has-target && !root.menu-is-multi-sel && root.menu-target-is-dir: MenuItem {
                         title: "Open Terminal Here";
-                        activated => { root.command("open-terminal-here"); }
+                        activated => { root.run-context("open-terminal-here"); }
                     }
                     if !root.menu-is-trash && root.menu-has-target && !root.menu-is-multi-sel && root.menu-target-is-dir: MenuItem {
                         title: "Bookmark This Folder";
-                        activated => { root.command("bookmark-target"); }
+                        activated => { root.run-context("bookmark-target"); }
                     }
                     if !root.menu-is-trash && root.menu-has-target && !root.menu-is-multi-sel: MenuSeparator { }
 
@@ -830,15 +838,15 @@ export component Pane inherits Rectangle {
                     // -----------------------------------------------------------------
                     if !root.menu-is-trash && root.menu-has-target && !root.menu-is-multi-sel && root.menu-target-is-archive: MenuItem {
                         title: "Extract Here";
-                        activated => { root.command("extract-here"); }
+                        activated => { root.run-context("extract-here"); }
                     }
                     if !root.menu-is-trash && root.menu-has-target && !root.menu-is-multi-sel && root.menu-target-is-archive: MenuItem {
                         title: "Extract to Subfolder…";
-                        activated => { root.command("extract-to"); }
+                        activated => { root.run-context("extract-to"); }
                     }
                     if !root.menu-is-trash && root.menu-has-target && !root.menu-is-multi-sel && root.menu-target-is-archive: MenuItem {
                         title: "Test Archive Integrity";
-                        activated => { root.command("test-archive"); }
+                        activated => { root.run-context("test-archive"); }
                     }
                     if !root.menu-is-trash && root.menu-has-target && !root.menu-is-multi-sel && root.menu-target-is-archive: MenuSeparator { }
 
@@ -847,43 +855,43 @@ export component Pane inherits Rectangle {
                     // -----------------------------------------------------------------
                     if !root.menu-is-trash && root.menu-has-target && root.menu-target-is-dir && !root.menu-is-multi-sel: MenuItem {
                         title: "Open in New Window";
-                        activated => { root.command("open-in-new-window"); }
+                        activated => { root.run-context("open-in-new-window"); }
                     }
                     if !root.menu-is-trash && root.menu-has-target && root.menu-target-is-dir && !root.menu-is-multi-sel: MenuItem {
                         title: "Open in Other Pane";
-                        activated => { root.command("open-in-other-pane"); }
+                        activated => { root.run-context("open-in-other-pane"); }
                     }
                     if !root.menu-is-trash && root.menu-has-target: MenuItem {
                         title: "Duplicate";
-                        activated => { root.command("duplicate"); }
+                        activated => { root.run-context("duplicate"); }
                     }
                     if !root.menu-is-trash && root.menu-has-target && !root.menu-is-read-only: MenuItem {
                         title: "Create Link";
-                        activated => { root.command("make-link"); }
+                        activated => { root.run-context("make-link"); }
                     }
                     if !root.menu-is-trash && root.menu-has-target: MenuItem {
                         title: "Cut";
-                        activated => { root.command("cut"); }
+                        activated => { root.run-context("cut"); }
                     }
                     if !root.menu-is-trash && root.menu-has-target: MenuItem {
                         title: "Copy";
-                        activated => { root.command("copy"); }
+                        activated => { root.run-context("copy"); }
                     }
                     if !root.menu-is-trash && root.menu-has-target: MenuItem {
                         title: "Copy Path";
-                        activated => { root.command("copy-path"); }
+                        activated => { root.run-context("copy-path"); }
                     }
                     if !root.menu-is-trash && root.menu-has-target && root.menu-has-clipboard: MenuItem {
                         title: root.menu-target-is-dir && !root.menu-is-multi-sel ? "Paste Into Folder" : "Paste";
-                        activated => { root.command(root.menu-target-is-dir && !root.menu-is-multi-sel ? "paste-into-folder" : "paste"); }
+                        activated => { root.run-context(root.menu-target-is-dir && !root.menu-is-multi-sel ? "paste-into-folder" : "paste"); }
                     }
                     if !root.menu-is-trash && root.menu-has-target && root.split: MenuItem {
                         title: "Copy to Other Pane (F5)";
-                        activated => { root.command("copy-to-other"); }
+                        activated => { root.run-context("copy-to-other"); }
                     }
                     if !root.menu-is-trash && root.menu-has-target && root.split: MenuItem {
                         title: "Move to Other Pane (F6)";
-                        activated => { root.command("move-to-other"); }
+                        activated => { root.run-context("move-to-other"); }
                     }
                     if !root.menu-is-trash && root.menu-has-target: MenuSeparator { }
 
@@ -892,13 +900,13 @@ export component Pane inherits Rectangle {
                     // -----------------------------------------------------------------
                     if !root.menu-is-trash && root.menu-has-target: MenuItem {
                         title: root.menu-is-multi-sel ? "Rename " + root.menu-effective-sel-count + " Files… (F2)" : "Rename… (F2)";
-                        activated => { root.command("rename"); }
+                        activated => { root.run-context("rename"); }
                     }
                     Menu {
                         title: "Compress";
-                        MenuItem { title: "Compress…"; activated => { root.command("compress"); } }
-                        MenuItem { title: "Quick Compress to .tar.zst"; activated => { root.command("quick-compress-zst"); } }
-                        MenuItem { title: "Quick Compress to .zip"; activated => { root.command("quick-compress-zip"); } }
+                        MenuItem { title: "Compress…"; activated => { root.run-context("compress"); } }
+                        MenuItem { title: "Quick Compress to .tar.zst"; activated => { root.run-context("quick-compress-zst"); } }
+                        MenuItem { title: "Quick Compress to .zip"; activated => { root.run-context("quick-compress-zip"); } }
                     }
                     if !root.menu-is-trash && root.menu-has-target: MenuSeparator { }
 
@@ -907,11 +915,11 @@ export component Pane inherits Rectangle {
                     // -----------------------------------------------------------------
                     if !root.menu-is-trash && root.menu-has-target: MenuItem {
                         title: "Move to Trash";
-                        activated => { root.command("trash"); }
+                        activated => { root.run-context("trash"); }
                     }
                     if !root.menu-is-trash && root.menu-has-target: MenuItem {
                         title: "Delete Permanently…";
-                        activated => { root.command("delete"); }
+                        activated => { root.run-context("delete"); }
                     }
 
                     // -----------------------------------------------------------------
@@ -920,7 +928,7 @@ export component Pane inherits Rectangle {
                     if !root.menu-is-trash && root.menu-has-target && root.menu-custom-actions.length > 0: MenuSeparator { }
                     for act in (!root.menu-is-trash && root.menu-has-target ? root.menu-custom-actions : []): MenuItem {
                         title: act.title;
-                        activated => { root.custom-action(act.id); }
+                        activated => { root.context-custom-action(root.menu-rows-revision, act.id); }
                     }
 
                     // -----------------------------------------------------------------
@@ -929,15 +937,15 @@ export component Pane inherits Rectangle {
                     if !root.menu-is-trash && root.menu-has-target: MenuSeparator { }
                     if !root.menu-is-trash && root.menu-has-target && !root.menu-target-is-dir && !root.menu-is-multi-sel: MenuItem {
                         title: "Check File Hash…";
-                        activated => { root.command("check-hash"); }
+                        activated => { root.run-context("check-hash"); }
                     }
                     if !root.menu-is-trash && root.menu-has-target: MenuItem {
                         title: "Gungnir VFS Inspect";
-                        activated => { root.command("inspect"); }
+                        activated => { root.run-context("inspect"); }
                     }
                     if !root.menu-is-trash && root.menu-has-target: MenuItem {
                         title: "Properties";
-                        activated => { root.command("properties"); }
+                        activated => { root.run-context("properties"); }
                     }
                 }
 
@@ -992,6 +1000,7 @@ export component Pane inherits Rectangle {
                                         // press may start dragging the whole selection.
                                         if f.selected && !e.modifiers.control && !e.modifiers.shift {
                                             root.pending-single = idx;
+                                            root.pending-single-revision = root.rows-revision;
                                         } else {
                                             root.row-clicked(idx, e.modifiers.control, e.modifiers.shift);
                                         }
@@ -1017,8 +1026,7 @@ export component Pane inherits Rectangle {
                                     } else if e.button == PointerEventButton.middle {
                                         root.focus-pane();
                                         if f.is-dir {
-                                            root.row-clicked(idx, false, false);
-                                            root.command("open-in-tab");
+                                            root.open-row-in-tab(idx);
                                         }
                                     }
                                 }
@@ -1026,7 +1034,9 @@ export component Pane inherits Rectangle {
                             clicked => {
                                 if root.pending-single == idx {
                                     root.pending-single = -1;
-                                    root.row-clicked(idx, false, false);
+                                    if root.pending-single-revision == root.rows-revision {
+                                        root.row-clicked(idx, false, false);
+                                    }
                                 }
                             }
                             double-clicked => { root.row-activated(idx); }
@@ -1215,8 +1225,7 @@ export component Pane inherits Rectangle {
                                                 } else if e.button == PointerEventButton.middle {
                                                     root.focus-pane();
                                                     if cell.f.is-dir {
-                                                        root.row-clicked(cell.idx, false, false);
-                                                        root.command("open-in-tab");
+                                                        root.open-row-in-tab(cell.idx);
                                                     }
                                                 }
                                             }

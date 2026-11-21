@@ -10,12 +10,51 @@ use core_vfs::{
     BackendKind, CancellationToken, FileEntry, ListOptions, ListSummary, SortKey, VfsError, VfsResult, VfsUri,
     VolumeInfo, WatchEvent, format,
 };
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
 use super::{Controller, Event, Msg, RenameEdit, WATCH_DEBOUNCE};
 use crate::bridge::Update;
 use crate::rows::{self, RowItem};
+
+/// The tab and mapping currently published to a pane's row model.
+#[derive(Clone, Copy, Default)]
+pub(super) struct PaneRows {
+    pub(super) tab: Option<u64>,
+    pub(super) revision: i32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct StreamView {
+    show_hidden: bool,
+    filter: String,
+    sort: SortKey,
+}
+
+#[derive(Debug)]
+pub(crate) struct ListingBatch {
+    entries: Vec<FileEntry>,
+    visible: Vec<u32>,
+    rows: Vec<RowItem>,
+    view: StreamView,
+}
+
+impl ListingBatch {
+    fn prepare(mut entries: Vec<FileEntry>, view: StreamView, first: bool) -> Self {
+        if first {
+            core_vfs::sort::sort_entries(&mut entries, view.sort);
+        }
+        let order = (0..u32::try_from(entries.len()).unwrap_or(u32::MAX)).collect::<Vec<_>>();
+        let visible = rows::visible(&entries, &order, view.show_hidden, &view.filter);
+        let rows = rows::rows(&entries, &visible, &HashSet::new());
+        Self { entries, visible, rows, view }
+    }
+}
+
+struct FolderWatch {
+    task: JoinHandle<()>,
+    registered: watch::Receiver<bool>,
+}
 
 pub(super) struct Tab {
     pub(super) id: u64,
@@ -30,6 +69,8 @@ pub(super) struct Tab {
     visible: Vec<u32>,
     /// A silent refresh waiting for a display order. The old view remains usable.
     refreshed: Option<Arc<Vec<FileEntry>>>,
+    stream_view: Option<watch::Sender<StreamView>>,
+    pending_view: Option<u64>,
     pub(super) selected: HashSet<String>,
     pub(super) cursor: usize,
     pub(super) anchor: Option<usize>,
@@ -40,8 +81,9 @@ pub(super) struct Tab {
     load_gen: u64,
     view_gen: u64,
     cancel: CancellationToken,
-    watch: Option<JoinHandle<()>>,
+    watch: Option<FolderWatch>,
     watch_gen: u64,
+    watch_dirty: bool,
     pub(super) volume: Option<VolumeInfo>,
     pub(super) backend: Option<BackendKind>,
     /// Reselect this name after the next load.
@@ -60,6 +102,8 @@ impl Tab {
             order: Vec::new(),
             visible: Vec::new(),
             refreshed: None,
+            stream_view: None,
+            pending_view: None,
             selected: HashSet::new(),
             cursor: 0,
             anchor: None,
@@ -72,6 +116,7 @@ impl Tab {
             cancel: CancellationToken::new(),
             watch: None,
             watch_gen: 0,
+            watch_dirty: false,
             volume: None,
             backend: None,
             pending_select: None,
@@ -121,10 +166,14 @@ impl Tab {
         self.load_gen == 0
     }
 
+    fn stream_view(&self, show_hidden: bool) -> StreamView {
+        StreamView { show_hidden, filter: self.filter.clone(), sort: self.sort }
+    }
+
     fn stop_watch(&mut self) {
         self.watch_gen += 1;
         if let Some(watch) = self.watch.take() {
-            watch.abort();
+            watch.task.abort();
         }
     }
 
@@ -136,6 +185,8 @@ impl Tab {
         self.view_gen += 1;
         self.loading = false;
         self.refreshed = None;
+        self.stream_view = None;
+        self.pending_view = None;
         self.stop_watch();
     }
 
@@ -174,6 +225,13 @@ impl Drop for Tab {
 }
 
 impl Controller {
+    pub(super) fn publish_rows(&mut self, pane: usize, tab: Option<u64>, rows: Vec<RowItem>) {
+        self.next_rows_revision = self.next_rows_revision.wrapping_add(1);
+        let revision = self.next_rows_revision;
+        self.pane_rows[pane] = PaneRows { tab, revision };
+        self.ui.send(Update::Rows { pane, revision, rows });
+    }
+
     /// Tab IDs survive promotion of the right pane. The pane index captured by a
     /// worker may refer to a different tab by the time its result arrives.
     fn tab_position(&self, id: u64) -> Option<(usize, usize)> {
@@ -205,6 +263,7 @@ impl Controller {
             }
         };
         let trace = self.cfg.trace;
+        let show_hidden = self.show_hidden;
         let tx = self.tx.clone();
         let t = self.panes[pane].tab_mut();
         t.cancel.cancel(); // pre-empt whatever was loading
@@ -212,9 +271,13 @@ impl Controller {
         t.load_gen += 1;
         t.view_gen += 1;
         t.refreshed = None;
+        t.pending_view = None;
+        let (stream_view, view) = watch::channel(t.stream_view(show_hidden));
+        t.stream_view = Some(stream_view);
         let same_place = t.location == location;
         t.location = location.clone();
         t.loading = true;
+        t.watch_dirty = false;
         t.error.clear();
         t.backend = Some(provider.kind());
         if !same_place {
@@ -232,13 +295,22 @@ impl Controller {
         }
         let (tab, generation, cancel) = (t.id, t.load_gen, t.cancel.clone());
         if !silent && self.is_active_tab(pane, tab) {
-            self.ui.send(Update::Rows { pane, rows: Vec::new() });
+            self.publish_rows(pane, Some(tab), Vec::new());
         }
         self.push_pane(pane);
         self.push_status();
 
+        let watcher = self.start_watch(pane, tab);
         let started = Instant::now();
         tokio::spawn(async move {
+            // Register before enumerating, so a change between scanning and
+            // publishing the rows always has a watcher to report it.
+            if let Some(mut registered) = watcher {
+                tokio::select! {
+                    () = cancel.cancelled() => return,
+                    _ = registered.wait_for(|ready| *ready) => {}
+                }
+            }
             let (btx, mut brx) = mpsc::channel::<Vec<FileEntry>>(8);
             let list = provider.list_dir(&location, ListOptions::default(), btx, cancel.clone());
             let forward = async {
@@ -252,57 +324,63 @@ impl Controller {
                             batch.len(),
                             started.elapsed()
                         );
-                        first = false;
                     }
                     match collected.as_mut() {
                         Some(c) => c.extend(batch),
                         None => {
-                            if tx.send(Msg::Ev(Event::Batch { tab, generation, entries: batch })).await.is_err() {
-                                return None;
+                            let view = view.borrow().clone();
+                            let batch =
+                                match tokio::task::spawn_blocking(move || ListingBatch::prepare(batch, view, first))
+                                    .await
+                                {
+                                    Ok(batch) => batch,
+                                    Err(error) => {
+                                        cancel.cancel();
+                                        return Err(VfsError::Transport(format!("listing worker: {error}")));
+                                    }
+                                };
+                            if tx.send(Msg::Ev(Event::Batch { tab, generation, batch })).await.is_err() {
+                                return Err(VfsError::Cancelled);
                             }
                         }
                     }
+                    first = false;
                 }
-                Some(collected)
+                Ok(collected)
             };
             let (result, collected) = tokio::join!(list, forward);
-            if let Some(collected) = collected {
-                let _ = tx.send(Msg::Ev(Event::ListDone { tab, generation, result, collected, started })).await;
-            }
+            let (result, collected) = match collected {
+                Ok(collected) => (result, collected),
+                Err(error) => (Err(error), None),
+            };
+            let _ = tx.send(Msg::Ev(Event::ListDone { tab, generation, result, collected, started })).await;
         });
     }
 
-    pub(super) fn on_batch(&mut self, tab: u64, generation: u64, mut batch: Vec<FileEntry>) {
+    pub(super) fn on_batch(&mut self, tab: u64, generation: u64, batch: ListingBatch) {
         let Some((pane, ti)) = self.tab_position(tab) else { return };
-        let show_hidden = self.show_hidden;
         let active = self.is_active_tab(pane, tab);
         let t = &mut self.panes[pane].tabs[ti];
         if t.load_gen != generation {
             return;
         }
-        // Any pending re-view was prepared from an earlier prefix of the stream.
+        // A prepared full view for a shorter prefix must be refreshed.
         t.view_gen += 1;
-        if t.entries.is_empty() {
-            // First batch: sort it so the first screenful is already in order.
-            core_vfs::sort::sort_entries(&mut batch, t.sort);
-        }
-        let start = t.entries.len();
-        Arc::make_mut(&mut t.entries).extend(batch);
-        let needle = t.filter.to_lowercase();
-        let mut new_rows = Vec::new();
-        for i in start..t.entries.len() {
-            let e = &t.entries[i];
-            let idx = u32::try_from(i).unwrap_or(u32::MAX);
-            t.order.push(idx);
-            if (show_hidden || !e.is_hidden()) && (needle.is_empty() || e.name.to_lowercase().contains(&needle)) {
-                t.visible.push(idx);
-                if active {
-                    new_rows.push(rows::file_row(e, t.selected.contains(&e.name)));
+        let start = u32::try_from(t.entries.len()).unwrap_or(u32::MAX);
+        let ListingBatch { entries, visible, mut rows, view } = batch;
+        Arc::make_mut(&mut t.entries).extend(entries);
+        t.order.extend(start..u32::try_from(t.entries.len()).unwrap_or(u32::MAX));
+
+        if t.stream_view(self.show_hidden) == view {
+            t.visible.extend(visible.into_iter().map(|relative| start.saturating_add(relative)));
+            if active && self.pane_rows[pane].tab == Some(tab) && !rows.is_empty() {
+                for row in &mut rows {
+                    row.selected = t.selected.contains(&row.name);
                 }
+                self.ui.send(Update::AppendRows { pane, rows });
             }
-        }
-        if active && !new_rows.is_empty() {
-            self.ui.send(Update::AppendRows { pane, rows: new_rows });
+        } else if t.pending_view.is_none() {
+            self.prepare(pane, tab, true);
         }
         if active && pane == self.active_pane {
             self.push_status();
@@ -323,6 +401,7 @@ impl Controller {
             return;
         }
         t.loading = false;
+        t.stream_view = None;
         match result {
             Err(VfsError::Cancelled) => return,
             Err(e) => {
@@ -334,8 +413,9 @@ impl Controller {
                     t.cursor = 0;
                     t.anchor = None;
                     t.view_gen += 1;
+                    t.pending_view = None;
                     if self.is_active_tab(pane, tab) {
-                        self.ui.send(Update::Rows { pane, rows: Vec::new() });
+                        self.publish_rows(pane, Some(tab), Vec::new());
                     }
                 }
                 self.push_pane(pane);
@@ -355,9 +435,13 @@ impl Controller {
                 }
             }
         }
+        if std::mem::take(&mut t.watch_dirty) && self.panes[pane].active == ti {
+            let location = self.panes[pane].tabs[ti].location.clone();
+            self.load(pane, location, true);
+            return;
+        }
         t.refreshed = collected.map(Arc::new);
         self.prepare(pane, tab, true);
-        self.start_watch(pane, tab);
         let (provider, loc) =
             (self.registry.resolve(&self.panes[pane].tabs[ti].location), self.panes[pane].tabs[ti].location.clone());
         if let Ok(provider) = provider {
@@ -379,6 +463,10 @@ impl Controller {
         let show_hidden = self.show_hidden;
         let t = &mut self.panes[pane].tabs[ti];
         t.view_gen += 1;
+        t.pending_view = Some(t.view_gen);
+        if let Some(sender) = &t.stream_view {
+            sender.send_replace(t.stream_view(show_hidden));
+        }
         let resort = resort || t.refreshed.is_some();
         let (view_gen, entries, sort, filter, selected) = (
             t.view_gen,
@@ -415,7 +503,12 @@ impl Controller {
         let Some((pane, ti)) = self.tab_position(tab) else { return };
         let active = self.is_active_tab(pane, tab);
         let t = &mut self.panes[pane].tabs[ti];
+        if t.pending_view != Some(view_gen) {
+            return;
+        }
+        t.pending_view = None;
         if t.view_gen != view_gen {
+            self.prepare(pane, tab, true);
             return;
         }
         t.commit_view(order, visible);
@@ -430,7 +523,7 @@ impl Controller {
             for row in &mut rows {
                 row.selected = t.selected.contains(row.name.as_str());
             }
-            self.ui.send(Update::Rows { pane, rows });
+            self.publish_rows(pane, Some(tab), rows);
         }
         self.push_pane(pane);
         if pane == self.active_pane {
@@ -454,39 +547,35 @@ impl Controller {
         let Some(ti) = self.tab_index(pane, tab) else { return };
         let t = &self.panes[pane].tabs[ti];
         let view_gen = t.view_gen;
-        let mut candidates: Vec<(String, PathBuf, String, i64, bool)> = Vec::new();
-        for &idx in &t.visible {
-            if let Some(e) = t.entries.get(idx as usize) {
-                let cat = format::category(e);
-                let ext = format::extension(&e.name);
-                if crate::thumbnails::is_previewable(cat, ext.as_deref()) {
-                    let mtime_secs = e
-                        .modified
-                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                        .map(|d| i64::try_from(d.as_secs()).unwrap_or(0))
-                        .unwrap_or(0);
-                    let uri_str = e.uri.to_uri_string();
-                    if crate::thumbnails::lookup_cached(&uri_str, mtime_secs).is_none()
-                        && let Some(local) = e.uri.to_local_path()
-                    {
-                        let is_vid = matches!(cat, core_vfs::format::Category::Video)
-                            || crate::thumbnails::is_video_ext(ext.as_deref());
-                        candidates.push((e.name.clone(), local, uri_str, mtime_secs, is_vid));
-                    }
-                }
-            }
-        }
-
-        if candidates.is_empty() {
-            return;
-        }
-
+        let entries = Arc::clone(&t.entries);
+        let visible = t.visible.clone();
         let tx = self.tx.clone();
         tokio::task::spawn_blocking(move || {
+            let candidates = visible.into_iter().filter_map(|idx| {
+                let entry = entries.get(idx as usize)?;
+                let category = format::category(entry);
+                let extension = format::extension(&entry.name);
+                if !crate::thumbnails::is_previewable(category, extension.as_deref()) {
+                    return None;
+                }
+                let path = entry.uri.to_local_path()?;
+                let mtime = entry
+                    .modified
+                    .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                    .and_then(|duration| i64::try_from(duration.as_secs()).ok())
+                    .unwrap_or(0);
+                let uri = entry.uri.to_uri_string();
+                if crate::thumbnails::lookup_cached(&uri, mtime).is_some() {
+                    return None;
+                }
+                let video = category == core_vfs::format::Category::Video
+                    || crate::thumbnails::is_video_ext(extension.as_deref());
+                Some((&entry.name, path, uri, mtime, video))
+            });
             let mut batch = Vec::new();
             for (name, path, uri, mtime, is_vid) in candidates {
                 if let Ok(thumb) = crate::thumbnails::generate_thumbnail(&path, &uri, mtime, is_vid) {
-                    batch.push((name, thumb));
+                    batch.push((name.clone(), thumb));
                     if batch.len() >= 16 {
                         let _ = tx.blocking_send(Msg::Ev(Event::ThumbnailsReady {
                             tab,
@@ -502,30 +591,38 @@ impl Controller {
         });
     }
 
-    fn start_watch(&mut self, pane: usize, tab: u64) {
-        let Some(ti) = self.tab_index(pane, tab) else { return };
+    fn start_watch(&mut self, pane: usize, tab: u64) -> Option<watch::Receiver<bool>> {
+        let ti = self.tab_index(pane, tab)?;
         let t = &mut self.panes[pane].tabs[ti];
-        if t.watch.is_some() {
-            return;
+        if let Some(watch) = &t.watch
+            && !watch.task.is_finished()
+        {
+            return Some(watch.registered.clone());
         }
-        let Ok(provider) = self.registry.resolve(&t.location) else { return };
-        let Ok(Some(mut w)) = provider.watch(&t.location) else { return };
+        let location = t.location.clone();
+        let provider = self.registry.resolve(&location).ok()?;
         let tx = self.tx.clone();
         let watch_gen = t.watch_gen;
-        t.watch = Some(tokio::spawn(async move {
-            let _guard = w.guard;
-            while let Some(ev) = w.events.recv().await {
+        let (ready, registered) = watch::channel(false);
+        let task = tokio::spawn(async move {
+            let watch = tokio::task::spawn_blocking(move || provider.watch(&location)).await;
+            ready.send_replace(true);
+            let Ok(Ok(Some(mut watch))) = watch else { return };
+            let _guard = watch.guard;
+            while let Some(ev) = watch.events.recv().await {
                 let mut removed = ev == WatchEvent::Removed;
                 // Debounce bursts (an extraction writing 10k files is one reload).
                 tokio::time::sleep(WATCH_DEBOUNCE).await;
-                while let Ok(ev) = w.events.try_recv() {
+                while let Ok(ev) = watch.events.try_recv() {
                     removed |= ev == WatchEvent::Removed;
                 }
                 if tx.send(Msg::Ev(Event::DirChanged { tab, watch_gen, removed })).await.is_err() {
                     return;
                 }
             }
-        }));
+        });
+        t.watch = Some(FolderWatch { task, registered: registered.clone() });
+        Some(registered)
     }
 
     pub(super) fn on_dir_changed(&mut self, tab: u64, watch_gen: u64, removed: bool) {
@@ -537,7 +634,9 @@ impl Controller {
         if removed {
             t.stop_watch();
         }
-        if !t.loading && index == self.panes[pane].active {
+        if t.loading {
+            t.watch_dirty = true;
+        } else if index == self.panes[pane].active {
             let location = self.panes[pane].tab().location.clone();
             self.load(pane, location, true);
         }

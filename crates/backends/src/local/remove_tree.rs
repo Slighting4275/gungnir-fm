@@ -8,7 +8,7 @@ use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
 use rustix::fd::{AsFd, BorrowedFd};
-use rustix::fs::{AtFlags, Dir, FileType, Mode, OFlags, Stat, fstat, open, openat, statat, unlinkat};
+use rustix::fs::{AtFlags, CWD, Dir, FileType, Mode, OFlags, Stat, fstat, open, openat, statat, unlinkat};
 use rustix::io::Errno;
 
 const OPEN_LEVELS: usize = 16;
@@ -53,15 +53,24 @@ fn unlink_directory(parent: BorrowedFd<'_>, level: &Level) -> rustix::io::Result
 pub(super) fn remove(path: &Path, original: &Metadata) -> io::Result<()> {
     let name = path.file_name().ok_or(Errno::INVAL)?;
     let root_parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
-    // The containing directory only needs search permission on Linux.
-    #[cfg(target_os = "linux")]
+    // Use a search-only descriptor where available. Other platforms can anchor
+    // the walk at the root itself when its containing directory cannot be read.
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
     let anchor_flags = OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC;
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
     let anchor_flags = DIRECTORY;
-    let root_parent = open(root_parent, anchor_flags, Mode::empty())?;
+    let parent = match open(root_parent, anchor_flags, Mode::empty()) {
+        Ok(fd) => Some(fd),
+        Err(Errno::ACCESS) => None,
+        Err(error) => return Err(error.into()),
+    };
+    let (root_at, name) = match &parent {
+        Some(fd) => (fd.as_fd(), name),
+        None => (CWD, path.as_os_str()),
+    };
     let name = CString::new(name.as_bytes()).map_err(|_| Errno::INVAL)?;
     let identity = Identity { device: original.dev(), inode: original.ino() };
-    let root = open_directory(root_parent.as_fd(), &name, identity)?;
+    let root = open_directory(root_at, &name, identity)?;
     let mut ancestors = Vec::<Level>::new();
     let mut current = Level { name, identity, stream: Some(root) };
 
@@ -104,7 +113,7 @@ pub(super) fn remove(path: &Path, original: &Metadata) -> io::Result<()> {
             }
             current = parent;
         } else {
-            unlink_directory(root_parent.as_fd(), &current)?;
+            unlink_directory(root_at, &current)?;
             return Ok(());
         }
     }

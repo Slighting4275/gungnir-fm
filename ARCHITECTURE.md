@@ -89,7 +89,7 @@ gungnir-fm/
 4. **Every load can be pre-empted.** Navigating cancels the in-flight listing.
    Directory results carry a stable tab ID and a generation for the relevant work.
    A tab moved to the left pane can finish its listing there, and results from an
-   older location are dropped.
+   older location are dropped. Watch registration runs on a worker before enumeration.
    `controller_tests::navigating_away_cancels_the_inflight_listing` checks this.
 5. **Listings stream.** Backends send a first batch of 200 entries, sorted on arrival so
    the first screenful is in order, then batches of 2,000. Rows are appended as they come.
@@ -97,6 +97,8 @@ gungnir-fm/
    `set_vec`. Reloads caused by file-watch events or finished operations are silent: the
    old entries and displayed rows stay usable while the next view is prepared. The
    entries, display order and selection change together when the new rows are ready.
+   Row input carries the revision installed by Slint. The controller ignores input
+   from older revisions, and streaming batches append only to the active tab's model.
 6. **Rendering is virtualized.** Every view (detailed, compact, grid) is a Slint
    `ListView`, so only visible rows are instantiated. The grid view is a `ListView` over
    rows of N cells.

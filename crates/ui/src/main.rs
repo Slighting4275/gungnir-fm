@@ -69,9 +69,23 @@ fn index(i: i32) -> usize {
 }
 
 fn send(tx: &mpsc::Sender<Msg>, c: Command) {
-    if let Err(e) = tx.try_send(Msg::Ui(c)) {
+    send_message(tx, Msg::Ui(c));
+}
+
+fn send_message(tx: &mpsc::Sender<Msg>, msg: Msg) {
+    if let Err(e) = tx.try_send(msg) {
         eprintln!("gungnir-fm: command dropped ({e})");
     }
+}
+
+fn rows_revision(ui: &AppWindow, pane: usize) -> i32 {
+    if pane == 0 { ui.get_left_rows_revision() } else { ui.get_right_rows_revision() }
+}
+
+fn send_row_command(tx: &mpsc::Sender<Msg>, pane: usize, revision: i32, command: Command) {
+    let mut panes = [None; 2];
+    panes[pane] = Some(revision);
+    send_message(tx, Msg::UiRows { panes, command });
 }
 
 fn wire(ui: &AppWindow, tx: &mpsc::Sender<Msg>) {
@@ -85,12 +99,39 @@ fn wire(ui: &AppWindow, tx: &mpsc::Sender<Msg>) {
             ui.$method(move |$($arg),*| send(&tx, $cmd));
         }};
     }
+    macro_rules! on_rows {
+        ($method:ident, |$pane:ident $(,$arg:ident)*| $cmd:expr) => {{
+            let tx = tx.clone();
+            let window = ui.as_weak();
+            ui.$method(move |$pane $(,$arg)*| {
+                if let Some(window) = window.upgrade() {
+                    let $pane = pane($pane);
+                    send_row_command(&tx, $pane, rows_revision(&window, $pane), $cmd);
+                }
+            });
+        }};
+    }
     on!(on_navigate, |p, loc| Command::Navigate { pane: pane(p), location: loc.to_string() });
     on!(on_nav, |p, action| Command::Nav { pane: pane(p), action: action.to_string() });
-    on!(on_row_clicked, |p, i, ctrl, shift| Command::RowClicked { pane: pane(p), index: index(i), ctrl, shift });
-    on!(on_row_activated, |p, i| Command::RowActivated { pane: pane(p), index: index(i) });
-    on!(on_row_context, |p, i| Command::RowContext { pane: pane(p), index: index(i) });
-    on!(on_move_cursor, |p, d, extend| Command::MoveCursor { pane: pane(p), delta: i64::from(d), extend });
+    on_rows!(on_row_clicked, |p, i, ctrl, shift| Command::RowClicked { pane: p, index: index(i), ctrl, shift });
+    on_rows!(on_row_activated, |p, i| Command::RowActivated { pane: p, index: index(i) });
+    on_rows!(on_open_row_in_tab, |p, i| Command::OpenRowInTab { pane: p, index: index(i) });
+    on_rows!(on_row_context, |p, i| Command::RowContext { pane: p, index: index(i) });
+    on_rows!(on_move_cursor, |p, d, extend| Command::MoveCursor { pane: p, delta: i64::from(d), extend });
+    ui.on_context_command({
+        let tx = tx.clone();
+        move |p, revision, name| {
+            let pane = pane(p);
+            send_row_command(&tx, pane, revision, Command::RunInPane { pane, name: name.to_string() });
+        }
+    });
+    ui.on_context_custom_action({
+        let tx = tx.clone();
+        move |p, revision, id| {
+            let pane = pane(p);
+            send_row_command(&tx, pane, revision, Command::CustomAction { pane, id: id.to_string() });
+        }
+    });
     on!(on_sort_by, |p, c| Command::SortBy { pane: pane(p), column: c });
     on!(on_filter_changed, |p, t| Command::Filter { pane: pane(p), text: t.to_string() });
     on!(on_tab_new, |p| Command::TabNew(pane(p)));
@@ -99,7 +140,6 @@ fn wire(ui: &AppWindow, tx: &mpsc::Sender<Msg>) {
     on!(on_tab_duplicate, |p, i| Command::TabDuplicate(pane(p), index(i)));
     on!(on_tab_select, |p, i| Command::TabSelect(pane(p), index(i)));
     on!(on_tab_cycle, |p, d| Command::TabCycle { pane: pane(p), delta: d });
-    on!(on_custom_action, |p, id| Command::CustomAction { pane: pane(p), id: id.to_string() });
     on!(on_pane_focused, |p| Command::PaneFocused(pane(p)));
     on!(on_command, |name| Command::Run(name.to_string()));
     on!(on_view_mode_changed, |m| Command::ViewMode(m));
@@ -220,14 +260,24 @@ fn wire(ui: &AppWindow, tx: &mpsc::Sender<Msg>) {
     on!(on_dialog_choose, |i| Command::DialogChoose(index(i)));
     on!(on_device_open, |o| Command::DeviceOpen(o.to_string()));
     on!(on_device_eject, |o| Command::DeviceEject(o.to_string()));
-    on!(on_dropped, |sp, si, dp, di, copy| Command::Drop {
-        src_pane: pane(sp),
-        src_index: index(si),
-        dst_pane: pane(dp),
-        dst_index: usize::try_from(di).ok(),
-        copy
+    ui.on_dropped({
+        let tx = tx.clone();
+        let window = ui.as_weak();
+        move |sp, si, source_revision, dp, di, copy| {
+            let Some(window) = window.upgrade() else { return };
+            let (src_pane, dst_pane) = (pane(sp), pane(dp));
+            let mut panes = [None; 2];
+            panes[dst_pane] = Some(rows_revision(&window, dst_pane));
+            if src_pane == dst_pane && panes[dst_pane] != Some(source_revision) {
+                return;
+            }
+            panes[src_pane] = Some(source_revision);
+            let command =
+                Command::Drop { src_pane, src_index: index(si), dst_pane, dst_index: usize::try_from(di).ok(), copy };
+            send_message(&tx, Msg::UiRows { panes, command });
+        }
     });
-    on!(on_rename_commit, |p, i, n| Command::RenameCommit { pane: pane(p), index: index(i), name: n.to_string() });
+    on_rows!(on_rename_commit, |p, i, n| Command::RenameCommit { pane: p, index: index(i), name: n.to_string() });
     on!(on_rename_cancel, || Command::RenameCancel);
     on!(on_trigger_update, || Command::TriggerUpdate);
 }
