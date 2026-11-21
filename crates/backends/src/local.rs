@@ -24,6 +24,8 @@ use core_vfs::{
 use notify::{RecursiveMode, Watcher};
 use tokio::sync::mpsc;
 
+mod remove_tree;
+
 /// Longest file name (bytes) Linux filesystems take.
 const NAME_MAX: usize = 255;
 /// Threads that stat entries in parallel during a listing.
@@ -616,7 +618,7 @@ fn transfer_blocking(req: &TransferRequest, ctl: &TransferControl) -> VfsResult<
 fn remove_any(p: &Path) -> VfsResult<()> {
     let md = fs::symlink_metadata(p).map_err(io_err("lstat", p))?;
     if md.is_dir() {
-        fs::remove_dir_all(p).map_err(io_err("rmdir", p))?; // never follows symlinks
+        remove_tree::remove(p, &md).map_err(io_err("rmdir", p))?;
     } else {
         fs::remove_file(p).map_err(io_err("unlink", p))?;
     }

@@ -1,0 +1,27 @@
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+
+verify:
+  image: rust:1.99-slim-bookworm@sha256:86234e857a413004348b471d11a4ebe1aa92d2eae2b6b143cac68fd1ac3c48be
+  timeout: 30 minutes
+  variables:
+    GIT_LFS_SKIP_SMUDGE: "1"
+  before_script:
+    - apt-get update
+    - >-
+      apt-get install -y --no-install-recommends
+      build-essential ca-certificates clang git pkg-config
+      libarchive-dev libfontconfig1-dev libxkbcommon-dev libwayland-dev
+      libx11-dev libx11-xcb-dev libxcb1-dev libxcursor-dev libxrandr-dev
+      libxi-dev libxkbcommon-x11-dev libegl1-mesa-dev qt6-base-dev
+      p7zip-full ffmpeg zstd xz-utils gzip bzip2 lz4 brotli
+    - rustup component add clippy rustfmt
+    - useradd --create-home --user-group fm-test
+    - chown -R fm-test:fm-test "$CI_PROJECT_DIR"
+  script:
+    - >-
+      runuser --user fm-test --
+      env CARGO_HOME="$CI_PROJECT_DIR/.build/cargo-home"
+      make test-deep-delete fmt-check check lint test CARGO_FLAGS=--locked

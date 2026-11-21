@@ -710,15 +710,14 @@ Gungnir FM includes an enterprise-grade, multi-format lossless compression subsy
 ---
 
 ## Running Tests
-The workspace includes unit and integration tests across all crates. Controller tests use temporary desktop preferences; test update operations are simulated:
-```sh
-# Via Makefile:
-make test
+The workspace includes unit and integration tests across all crates. Controller tests use temporary desktop preferences and simulate update operations.
 
-# Or directly with Cargo:
-cargo test --workspace
-cargo clippy --workspace --all-targets
+```sh
+# Run the same checks as GitLab CI.
+make test-deep-delete fmt-check check lint test CARGO_FLAGS=--locked
 ```
+
+`make test-deep-delete` runs the deep-copy and deletion regression at a 1,024-descriptor limit in its own shell. `make test` prints and builds the pinned gungnird revision in `.build/`, then runs the live tests against that binary. The build uses the commit from a local `gungnir-vfs` checkout when available and fetches it from GitLab otherwise. `make gungnird` builds from the local companion checkout for development.
 
 ---
 

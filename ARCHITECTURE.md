@@ -133,8 +133,8 @@ to gungnird reply statuses (`VfsError::from_gungnir_status`).
   that `fstatat` in parallel. The first 200 entries go out before the rest is even read.
 - **Watching.** `notify` (inotify) on the open folder, debounced 300 ms by the controller.
 - **Operations.** `mkdir`, rename via `renameat2(RENAME_NOREPLACE)` (never clobbers),
-  delete (`remove_dir_all` does not follow symlinks), and trash per the freedesktop.org
-  Trash spec (`.trashinfo` reserved with `O_EXCL`, cross-device refused with a hint).
+  descriptor-relative deletion with a bounded number of open directories, and trash
+  per the freedesktop.org Trash spec (`.trashinfo` reserved with `O_EXCL`, cross-device refused with a hint).
 - **Transfers.** Copy or move with 1 MiB chunks. Progress is reported every 100 ms with
   `try_send` (a busy UI never stalls a copy). Pause and cancel are checked between chunks.
   A cancelled copy removes its partial file. Modes and times are kept, symlinks are
