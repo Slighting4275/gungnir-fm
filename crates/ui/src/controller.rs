@@ -4902,9 +4902,9 @@ impl Controller {
                     Err(m) => self.say(m, true),
                 }
                 if let Some((dir, name)) = select {
-                    for p in 0..2 {
-                        if self.panes[p].tab().location == dir {
-                            let t = self.panes[p].tab_mut();
+                    for pane in &mut self.panes {
+                        let t = pane.tab_mut();
+                        if t.location == dir {
                             t.pending_select = Some(name.clone());
                             t.selected = [name.clone()].into();
                         }
