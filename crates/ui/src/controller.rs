@@ -16,7 +16,7 @@ use core_vfs::sort::sort_order;
 use core_vfs::{
     BackendKind, CancellationToken, FileEntry, FileKind, ListOptions, ListSummary, MountInfo, Scheme, SortColumn,
     SortKey, TransferControl, TransferKind, TransferProgress, TransferRequest, TransferState, VfsError, VfsProvider,
-    VfsRegistry, VfsResult, VfsUri, VolumeInfo, WatchEvent, format,
+    VfsRegistry, VfsResult, VfsUri, VolumeInfo, format,
 };
 use slint::SharedString;
 use tokio::sync::{mpsc, watch};
@@ -24,6 +24,12 @@ use tokio::task::JoinHandle;
 
 use crate::bridge::{DialogView, Flags, PaneView, UiSink, Update};
 use crate::rows::{self, RowItem};
+mod listing;
+mod transfer_plan;
+
+use listing::Tab;
+use transfer_plan::{TransferPlan, TransferPlanning};
+
 use crate::{Crumb, DialogKind, MountItem, PlaceItem, StatusInfo, TabInfo, TransferRow, TreeRow};
 
 /// Commands from the UI (one per Slint callback).
@@ -132,13 +138,11 @@ pub enum Command {
 #[derive(Debug)]
 pub enum Event {
     Batch {
-        pane: usize,
         tab: u64,
         generation: u64,
         entries: Vec<FileEntry>,
     },
     ListDone {
-        pane: usize,
         tab: u64,
         generation: u64,
         result: VfsResult<ListSummary>,
@@ -146,7 +150,6 @@ pub enum Event {
         started: Instant,
     },
     Prepared {
-        pane: usize,
         tab: u64,
         view_gen: u64,
         order: Option<Vec<u32>>,
@@ -154,18 +157,18 @@ pub enum Event {
         rows: Vec<RowItem>,
     },
     ThumbnailsReady {
-        pane: usize,
         tab: u64,
+        view_gen: u64,
         items: Vec<(String, PathBuf)>,
     },
     DirChanged {
-        pane: usize,
         tab: u64,
+        watch_gen: u64,
         removed: bool,
     },
     Volume {
-        pane: usize,
         tab: u64,
+        generation: u64,
         info: VolumeInfo,
     },
     Mounts(Vec<MountInfo>),
@@ -188,6 +191,7 @@ pub enum Event {
         detail: String,
         image_path: Option<PathBuf>,
     },
+    TransferPlanned(Result<TransferPlan, tokio::task::JoinError>),
     Progress(TransferProgress),
     TransferEnded {
         id: u64,
@@ -285,96 +289,6 @@ const MESSAGE_TTL: Duration = Duration::from_secs(6);
 const WATCH_DEBOUNCE: Duration = Duration::from_millis(300);
 const TICK: Duration = Duration::from_millis(150);
 
-struct Tab {
-    id: u64,
-    location: VfsUri,
-    back: Vec<VfsUri>,
-    forward: Vec<VfsUri>,
-    /// Arrival order; never reordered (sorting produces `order`).
-    entries: Arc<Vec<FileEntry>>,
-    /// Sorted permutation of `entries` (arrival order while streaming).
-    order: Vec<u32>,
-    /// Shown entries, display order (subset of `order`).
-    visible: Vec<u32>,
-    selected: HashSet<String>,
-    cursor: usize,
-    anchor: Option<usize>,
-    sort: SortKey,
-    filter: String,
-    loading: bool,
-    error: String,
-    load_gen: u64,
-    view_gen: u64,
-    cancel: CancellationToken,
-    watch: Option<JoinHandle<()>>,
-    volume: Option<VolumeInfo>,
-    backend: Option<BackendKind>,
-    /// Reselect this name after the next load.
-    pending_select: Option<String>,
-    pending_rename: Option<String>,
-}
-
-impl Tab {
-    fn new(id: u64, location: VfsUri) -> Self {
-        Self {
-            id,
-            location,
-            back: Vec::new(),
-            forward: Vec::new(),
-            entries: Arc::new(Vec::new()),
-            order: Vec::new(),
-            visible: Vec::new(),
-            selected: HashSet::new(),
-            cursor: 0,
-            anchor: None,
-            sort: SortKey::default(),
-            filter: String::new(),
-            loading: false,
-            error: String::new(),
-            load_gen: 0,
-            view_gen: 0,
-            cancel: CancellationToken::new(),
-            watch: None,
-            volume: None,
-            backend: None,
-            pending_select: None,
-            pending_rename: None,
-        }
-    }
-
-    fn title(&self, home: &VfsUri) -> String {
-        if &self.location == home {
-            return "Home".to_owned();
-        }
-        match self.location.scheme() {
-            core_vfs::Scheme::Trash => "Trash".to_owned(),
-            core_vfs::Scheme::Recent => "Recent".to_owned(),
-            core_vfs::Scheme::Network => "Network".to_owned(),
-            _ => match self.location.file_name() {
-                Some(n) if !n.is_empty() => n.to_owned(),
-                _ if !self.location.crumbs().is_empty() => self.location.crumbs()[0].0.clone(),
-                _ => "/".into(),
-            },
-        }
-    }
-
-    fn entry_at(&self, visible_index: usize) -> Option<&FileEntry> {
-        self.visible.get(visible_index).and_then(|&i| self.entries.get(i as usize))
-    }
-
-    /// The selection as entries, or the cursor row when nothing is selected.
-    fn targets(&self) -> Vec<FileEntry> {
-        let sel: Vec<FileEntry> = self
-            .visible
-            .iter()
-            .filter_map(|&i| self.entries.get(i as usize))
-            .filter(|e| self.selected.contains(&e.name))
-            .cloned()
-            .collect();
-        if sel.is_empty() { self.entry_at(self.cursor).cloned().into_iter().collect() } else { sel }
-    }
-}
-
 struct Pane {
     tabs: Vec<Tab>,
     active: usize,
@@ -417,25 +331,6 @@ struct Transfer {
     took: Option<Duration>,
 }
 
-#[derive(Debug, Clone)]
-pub struct ConflictItem {
-    pub src: VfsUri,
-    pub filename: String,
-    pub src_size: u64,
-    pub dst_size: u64,
-    pub src_mtime: Option<std::time::SystemTime>,
-    pub dst_mtime: Option<std::time::SystemTime>,
-    pub src_is_newer: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConflictAction {
-    Replace,
-    ReplaceIfNewer,
-    AutoRename,
-    Skip,
-}
-
 enum PendingDialog {
     NewFolder {
         dir: VfsUri,
@@ -476,14 +371,7 @@ enum PendingDialog {
         selected_app_id: Option<String>,
     },
     Info,
-    Conflict {
-        kind: TransferKind,
-        sources: Vec<VfsUri>,
-        dest: VfsUri,
-        conflicts: Vec<ConflictItem>,
-        current_idx: usize,
-        resolutions: Vec<(VfsUri, ConflictAction)>,
-    },
+    Conflict(TransferPlan),
     Search {
         results: Vec<(String, String)>,
     },
@@ -779,6 +667,7 @@ pub struct Controller {
     next_transfer: u64,
     transfers: Vec<(u64, Transfer)>,
     transfers_dirty: bool,
+    transfer_planning: TransferPlanning,
     dialog: Option<PendingDialog>,
     /// Number of the latest Quick Preview, to drop a result that arrives too late.
     preview_seq: u64,
@@ -960,6 +849,7 @@ impl Controller {
             next_transfer: 1,
             transfers: Vec::new(),
             transfers_dirty: false,
+            transfer_planning: TransferPlanning::default(),
             dialog: None,
             preview_seq: 0,
             preview_wait: None,
@@ -1024,6 +914,7 @@ impl Controller {
             if self.quitting {
                 break;
             }
+            self.advance_transfer_planning();
         }
     }
 
@@ -1329,8 +1220,8 @@ impl Controller {
 
     fn push_status(&self) {
         let t = self.panes[self.active_pane].tab();
-        let hidden = if self.show_hidden { 0 } else { t.entries.iter().filter(|e| e.is_hidden()).count() };
-        let n = t.visible.len();
+        let hidden = if self.show_hidden { 0 } else { t.entries().iter().filter(|e| e.is_hidden()).count() };
+        let n = t.visible_len();
         let mut items = format!("{} item{}", rows::thousands(n), if n == 1 { "" } else { "s" });
         if hidden > 0 {
             items.push_str(&format!(" ({} hidden)", rows::thousands(hidden)));
@@ -1339,14 +1230,14 @@ impl Controller {
             items.push_str(&format!(" · filter \u{201c}{}\u{201d}", t.filter));
         }
         if t.loading {
-            items = format!("Loading… {}", rows::thousands(t.entries.len()));
+            items = format!("Loading… {}", rows::thousands(t.entries().len()));
         }
         let selection = if t.selected.is_empty() {
             String::new()
         } else {
             let bytes: u64 =
-                t.entries.iter().filter(|e| t.selected.contains(&e.name) && !e.is_navigable()).map(|e| e.size).sum();
-            let files = t.entries.iter().any(|e| t.selected.contains(&e.name) && !e.is_navigable());
+                t.entries().iter().filter(|e| t.selected.contains(&e.name) && !e.is_navigable()).map(|e| e.size).sum();
+            let files = t.entries().iter().any(|e| t.selected.contains(&e.name) && !e.is_navigable());
             if files {
                 format!("{} selected ({})", rows::thousands(t.selected.len()), format::size(bytes))
             } else {
@@ -1513,367 +1404,6 @@ impl Controller {
 
     // ---- loading ----------------------------------------------------------------------
 
-    fn tab_index(&self, pane: usize, id: u64) -> Option<usize> {
-        self.panes[pane].tabs.iter().position(|t| t.id == id)
-    }
-
-    fn is_active_tab(&self, pane: usize, id: u64) -> bool {
-        self.panes[pane].tab().id == id
-    }
-
-    /// Load `location` into the active tab of `pane`. `silent` keeps the current rows
-    /// on screen until the new listing is complete (reloads after changes).
-    fn load(&mut self, pane: usize, location: VfsUri, silent: bool) {
-        if !silent && self.renaming.as_ref().is_some_and(|edit| edit.pane == pane) {
-            self.cancel_rename();
-        }
-        let provider = match self.registry.resolve(&location) {
-            Ok(p) => p,
-            Err(e) => {
-                self.say(e.to_string(), true);
-                return;
-            }
-        };
-        let trace = self.cfg.trace;
-        let tx = self.tx.clone();
-        let t = self.panes[pane].tab_mut();
-        t.cancel.cancel(); // pre-empt whatever was loading
-        t.cancel = CancellationToken::new();
-        t.load_gen += 1;
-        t.view_gen += 1;
-        let same_place = t.location == location;
-        t.location = location.clone();
-        t.loading = true;
-        t.error.clear();
-        t.backend = Some(provider.kind());
-        if !same_place {
-            t.pending_rename = None;
-            if let Some(w) = t.watch.take() {
-                w.abort();
-            }
-            t.volume = None;
-        }
-        if !silent {
-            t.entries = Arc::new(Vec::new());
-            t.order.clear();
-            t.visible.clear();
-            if !same_place {
-                t.selected.clear();
-                t.cursor = 0;
-                t.anchor = None;
-            }
-        }
-        let (tab, generation, cancel) = (t.id, t.load_gen, t.cancel.clone());
-        if !silent && self.is_active_tab(pane, tab) {
-            self.ui.send(Update::Rows { pane, rows: Vec::new() });
-        }
-        self.push_pane(pane);
-        self.push_status();
-
-        let started = Instant::now();
-        tokio::spawn(async move {
-            let (btx, mut brx) = mpsc::channel::<Vec<FileEntry>>(8);
-            let list = provider.list_dir(&location, ListOptions::default(), btx, cancel.clone());
-            let forward = async {
-                let mut collected = silent.then(Vec::new);
-                let mut first = true;
-                while let Some(batch) = brx.recv().await {
-                    if trace && first {
-                        eprintln!(
-                            "[trace] {} first batch ({} entries) after {:?}",
-                            location,
-                            batch.len(),
-                            started.elapsed()
-                        );
-                        first = false;
-                    }
-                    match collected.as_mut() {
-                        Some(c) => c.extend(batch),
-                        None => {
-                            if tx.send(Msg::Ev(Event::Batch { pane, tab, generation, entries: batch })).await.is_err() {
-                                return None;
-                            }
-                        }
-                    }
-                }
-                Some(collected)
-            };
-            let (result, collected) = tokio::join!(list, forward);
-            if let Some(collected) = collected {
-                let _ = tx.send(Msg::Ev(Event::ListDone { pane, tab, generation, result, collected, started })).await;
-            }
-        });
-    }
-
-    fn on_batch(&mut self, pane: usize, tab: u64, generation: u64, mut batch: Vec<FileEntry>) {
-        let Some(ti) = self.tab_index(pane, tab) else { return };
-        let show_hidden = self.show_hidden;
-        let active = self.is_active_tab(pane, tab);
-        let t = &mut self.panes[pane].tabs[ti];
-        if t.load_gen != generation {
-            return;
-        }
-        if t.entries.is_empty() {
-            // First batch: sort it so the first screenful is already in order.
-            core_vfs::sort::sort_entries(&mut batch, t.sort);
-        }
-        let start = t.entries.len();
-        Arc::make_mut(&mut t.entries).extend(batch);
-        let needle = t.filter.to_lowercase();
-        let mut new_rows = Vec::new();
-        for i in start..t.entries.len() {
-            let e = &t.entries[i];
-            let idx = u32::try_from(i).unwrap_or(u32::MAX);
-            t.order.push(idx);
-            if (show_hidden || !e.is_hidden()) && (needle.is_empty() || e.name.to_lowercase().contains(&needle)) {
-                t.visible.push(idx);
-                if active {
-                    new_rows.push(rows::file_row(e, t.selected.contains(&e.name)));
-                }
-            }
-        }
-        if active && !new_rows.is_empty() {
-            self.ui.send(Update::AppendRows { pane, rows: new_rows });
-        }
-        if active && pane == self.active_pane {
-            self.push_status();
-        }
-    }
-
-    fn on_list_done(
-        &mut self,
-        pane: usize,
-        tab: u64,
-        generation: u64,
-        result: VfsResult<ListSummary>,
-        collected: Option<Vec<FileEntry>>,
-        started: Instant,
-    ) {
-        let Some(ti) = self.tab_index(pane, tab) else { return };
-        let t = &mut self.panes[pane].tabs[ti];
-        if t.load_gen != generation {
-            return;
-        }
-        t.loading = false;
-        match result {
-            Err(VfsError::Cancelled) => return,
-            Err(e) => {
-                t.error = e.to_string();
-                if collected.is_some() {
-                    // A failed silent reload: the folder is gone or unreadable now.
-                    t.entries = Arc::new(Vec::new());
-                    t.order.clear();
-                    t.visible.clear();
-                    if self.is_active_tab(pane, tab) {
-                        self.ui.send(Update::Rows { pane, rows: Vec::new() });
-                    }
-                }
-                self.push_pane(pane);
-                let msg = format!("{}: {e}", self.panes[pane].tabs[ti].location);
-                self.say(msg, true);
-                return;
-            }
-            Ok(summary) => {
-                if self.cfg.trace {
-                    eprintln!(
-                        "[trace] {} listed {} entries ({} skipped) in {:?}",
-                        t.location,
-                        summary.entries,
-                        summary.skipped,
-                        started.elapsed()
-                    );
-                }
-            }
-        }
-        if let Some(c) = collected {
-            // Visible indices belong to the old snapshot. Remember the name
-            // before replacing its entries with a new enumeration order.
-            if t.pending_select.is_none() {
-                t.pending_select = t.entry_at(t.cursor).map(|entry| entry.name.clone());
-            }
-            let names: HashSet<&str> = c.iter().map(|e| e.name.as_str()).collect();
-            t.selected.retain(|n| names.contains(n.as_str()));
-            t.entries = Arc::new(c);
-        }
-        self.prepare(pane, tab, true);
-        self.start_watch(pane, tab);
-        let (provider, loc) =
-            (self.registry.resolve(&self.panes[pane].tabs[ti].location), self.panes[pane].tabs[ti].location.clone());
-        if let Ok(provider) = provider {
-            let tx = self.tx.clone();
-            tokio::spawn(async move {
-                if let Ok(info) = provider.volume(&loc).await {
-                    let _ = tx.send(Msg::Ev(Event::Volume { pane, tab, info })).await;
-                }
-            });
-        }
-        if self.sidebar && self.sidebar_mode == 1 && pane == self.active_pane {
-            self.rebuild_tree();
-        }
-    }
-
-    /// Recompute order (if `resort`), visible rows and row data on a blocking thread.
-    fn prepare(&mut self, pane: usize, tab: u64, resort: bool) {
-        let Some(ti) = self.tab_index(pane, tab) else { return };
-        let show_hidden = self.show_hidden;
-        let t = &mut self.panes[pane].tabs[ti];
-        t.view_gen += 1;
-        let (view_gen, entries, sort, filter, selected) =
-            (t.view_gen, Arc::clone(&t.entries), t.sort, t.filter.clone(), t.selected.clone());
-        let order = (!resort).then(|| t.order.clone());
-        let build_rows = self.is_active_tab(pane, tab);
-        let tx = self.tx.clone();
-        tokio::task::spawn_blocking(move || {
-            let order = order.unwrap_or_else(|| sort_order(&entries, sort));
-            let visible = rows::visible(&entries, &order, show_hidden, &filter);
-            let rows = if build_rows { rows::rows(&entries, &visible, &selected) } else { Vec::new() };
-            let _ = tx.blocking_send(Msg::Ev(Event::Prepared {
-                pane,
-                tab,
-                view_gen,
-                order: resort.then_some(order),
-                visible,
-                rows,
-            }));
-        });
-    }
-
-    fn on_prepared(
-        &mut self,
-        pane: usize,
-        tab: u64,
-        view_gen: u64,
-        order: Option<Vec<u32>>,
-        visible: Vec<u32>,
-        mut rows: Vec<RowItem>,
-    ) {
-        let Some(ti) = self.tab_index(pane, tab) else { return };
-        let active = self.is_active_tab(pane, tab);
-        let t = &mut self.panes[pane].tabs[ti];
-        if t.view_gen != view_gen {
-            return;
-        }
-        // Keep the cursor on the same entry across re-sorts and reloads.
-        let cursor_entry = t.visible.get(t.cursor).and_then(|&i| t.entries.get(i as usize)).map(|e| e.name.clone());
-        if let Some(o) = order {
-            t.order = o;
-        }
-        t.visible = visible;
-        let visible_names: HashSet<&str> =
-            t.visible.iter().filter_map(|&i| t.entries.get(i as usize)).map(|e| e.name.as_str()).collect();
-        t.selected.retain(|name| visible_names.contains(name.as_str()));
-        let want = t.pending_select.take().or(cursor_entry);
-        if let Some(name) = want
-            && let Some(pos) = t.visible.iter().position(|&i| t.entries.get(i as usize).is_some_and(|e| e.name == name))
-        {
-            t.cursor = pos;
-        }
-        t.cursor = t.cursor.min(t.visible.len().saturating_sub(1));
-        let stale_editor = self.renaming.as_ref().is_some_and(|edit| {
-            edit.pane == pane && edit.tab == tab && t.entry_at(edit.index).is_none_or(|entry| entry.uri != edit.uri)
-        });
-        if stale_editor {
-            self.cancel_rename();
-        }
-        if active {
-            let t = &self.panes[pane].tabs[ti];
-            for row in &mut rows {
-                row.selected = t.selected.contains(row.name.as_str());
-            }
-            self.ui.send(Update::Rows { pane, rows });
-        }
-        self.push_pane(pane);
-        if pane == self.active_pane {
-            self.push_status();
-        }
-        if active && pane == self.active_pane && self.dialog.is_none() && self.renaming.is_none() {
-            let t = self.panes[pane].tab_mut();
-            if let Some(name) = t.pending_rename.clone()
-                && let Some(index) = t.visible.iter().position(|&i| t.entries[i as usize].name == name)
-            {
-                t.pending_rename = None;
-                let uri = t.entries[t.visible[index] as usize].uri.clone();
-                self.renaming = Some(RenameEdit { pane, tab, index, uri });
-                self.ui.send(Update::Rename { pane: pane as i32, index: index as i32 });
-            }
-        }
-        self.trigger_thumbnails(pane, tab);
-    }
-
-    fn trigger_thumbnails(&self, pane: usize, tab: u64) {
-        let Some(ti) = self.tab_index(pane, tab) else { return };
-        let t = &self.panes[pane].tabs[ti];
-        let mut candidates: Vec<(String, PathBuf, String, i64, bool)> = Vec::new();
-        for &idx in &t.visible {
-            if let Some(e) = t.entries.get(idx as usize) {
-                let cat = format::category(e);
-                let ext = format::extension(&e.name);
-                if crate::thumbnails::is_previewable(cat, ext.as_deref()) {
-                    let mtime_secs = e
-                        .modified
-                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                        .map(|d| i64::try_from(d.as_secs()).unwrap_or(0))
-                        .unwrap_or(0);
-                    let uri_str = e.uri.to_uri_string();
-                    if crate::thumbnails::lookup_cached(&uri_str, mtime_secs).is_none()
-                        && let Some(local) = e.uri.to_local_path()
-                    {
-                        let is_vid = matches!(cat, core_vfs::format::Category::Video)
-                            || crate::thumbnails::is_video_ext(ext.as_deref());
-                        candidates.push((e.name.clone(), local, uri_str, mtime_secs, is_vid));
-                    }
-                }
-            }
-        }
-
-        if candidates.is_empty() {
-            return;
-        }
-
-        let tx = self.tx.clone();
-        tokio::task::spawn_blocking(move || {
-            let mut batch = Vec::new();
-            for (name, path, uri, mtime, is_vid) in candidates {
-                if let Ok(thumb) = crate::thumbnails::generate_thumbnail(&path, &uri, mtime, is_vid) {
-                    batch.push((name, thumb));
-                    if batch.len() >= 16 {
-                        let _ = tx.blocking_send(Msg::Ev(Event::ThumbnailsReady {
-                            pane,
-                            tab,
-                            items: std::mem::take(&mut batch),
-                        }));
-                    }
-                }
-            }
-            if !batch.is_empty() {
-                let _ = tx.blocking_send(Msg::Ev(Event::ThumbnailsReady { pane, tab, items: batch }));
-            }
-        });
-    }
-
-    fn start_watch(&mut self, pane: usize, tab: u64) {
-        let Some(ti) = self.tab_index(pane, tab) else { return };
-        let t = &mut self.panes[pane].tabs[ti];
-        if t.watch.is_some() {
-            return;
-        }
-        let Ok(provider) = self.registry.resolve(&t.location) else { return };
-        let Ok(Some(mut w)) = provider.watch(&t.location) else { return };
-        let tx = self.tx.clone();
-        t.watch = Some(tokio::spawn(async move {
-            let _guard = w.guard;
-            while let Some(ev) = w.events.recv().await {
-                let removed = ev == WatchEvent::Removed;
-                // Debounce bursts (an extraction writing 10k files is one reload).
-                tokio::time::sleep(WATCH_DEBOUNCE).await;
-                while w.events.try_recv().is_ok() {}
-                if tx.send(Msg::Ev(Event::DirChanged { pane, tab, removed })).await.is_err() {
-                    return;
-                }
-            }
-        }));
-    }
-
     fn navigate_to(&mut self, pane: usize, location: VfsUri) {
         let t = self.panes[pane].tab_mut();
         if t.location != location {
@@ -1934,10 +1464,8 @@ impl Controller {
             return;
         }
         if !changed.is_empty() {
-            for (vi, &ei) in t.visible.iter().enumerate() {
-                if let Some(e) = t.entries.get(ei as usize)
-                    && changed.contains(&e.name)
-                {
+            for (vi, e) in t.visible_entries().enumerate() {
+                if changed.contains(&e.name) {
                     changes.push((vi, new.contains(&e.name)));
                 }
             }
@@ -1990,10 +1518,10 @@ impl Controller {
 
     fn move_cursor(&mut self, pane: usize, delta: i64, extend: bool) {
         let t = self.panes[pane].tab();
-        if t.visible.is_empty() {
+        if t.visible_len() == 0 {
             return;
         }
-        let max = t.visible.len() - 1;
+        let max = t.visible_len() - 1;
         let cur = i64::try_from(t.cursor).unwrap_or(0);
         let next = usize::try_from((cur + delta).clamp(0, i64::try_from(max).unwrap_or(0))).unwrap_or(0);
         let new = if extend {
@@ -2110,11 +1638,7 @@ impl Controller {
     fn spawn_extract(&self, job: Extraction, password: Option<String>) {
         let tx = self.tx.clone();
         tokio::task::spawn_blocking(move || {
-            let created = !job.target.exists();
             let r = backends::archive::extract_archive(&job.archive, &job.target, password.as_deref());
-            if r.is_err() && created {
-                let _ = std::fs::remove_dir(&job.target); // only if still empty
-            }
             let (name, loc) = (job.name.clone(), job.loc.clone());
             let msg = match r {
                 Err(backends::archive::ArchiveError::PasswordRequired { wrong }) => {
@@ -2184,196 +1708,6 @@ impl Controller {
         let dest = self.panes[1 - src_pane].tab().location.clone();
         let sources: Vec<VfsUri> = targets.iter().map(|e| e.uri.clone()).collect();
         self.start_transfer(kind, sources, dest);
-    }
-
-    /// Copy or move `sources` into the folder `dest` (F5/F6, paste, drag and drop).
-    fn start_transfer(&mut self, kind: TransferKind, sources: Vec<VfsUri>, dest: VfsUri) {
-        if sources.is_empty() {
-            return;
-        }
-        if sources.iter().any(|s| dest.starts_with(s)) {
-            self.say("A folder cannot be copied or moved into itself", true);
-            return;
-        }
-        // Moving files into the folder they are already in does nothing.
-        if kind == TransferKind::Move && sources.iter().all(|s| s.parent().as_ref() == Some(&dest)) {
-            return;
-        }
-
-        // Collision detection for local paths
-        let dest_path = match dest.scheme() {
-            Scheme::File => dest.to_local_path(),
-            Scheme::Gungnir if dest.authority().is_empty() => Some(PathBuf::from(dest.path())),
-            _ => None,
-        };
-        if let Some(ref dest_dir) = dest_path {
-            let mut conflicts = Vec::new();
-            for s in &sources {
-                if let Some(name) = s.file_name() {
-                    let target = dest_dir.join(name);
-                    if let Ok(dm) = target.symlink_metadata() {
-                        let src_path = match s.scheme() {
-                            Scheme::File => s.to_local_path(),
-                            Scheme::Gungnir if s.authority().is_empty() => Some(PathBuf::from(s.path())),
-                            _ => None,
-                        };
-                        let (src_size, src_mtime) =
-                            if let Some(sp) = src_path.as_ref().and_then(|p| p.symlink_metadata().ok()) {
-                                (sp.len(), sp.modified().ok())
-                            } else {
-                                (0, None)
-                            };
-                        let dst_size = dm.len();
-                        let dst_mtime = dm.modified().ok();
-                        let src_is_newer = match (src_mtime, dst_mtime) {
-                            (Some(sm), Some(dm_time)) => sm > dm_time,
-                            _ => false,
-                        };
-                        conflicts.push(ConflictItem {
-                            src: s.clone(),
-                            filename: name.to_string(),
-                            src_size,
-                            dst_size,
-                            src_mtime,
-                            dst_mtime,
-                            src_is_newer,
-                        });
-                    }
-                }
-            }
-            if !conflicts.is_empty() {
-                self.dialog = Some(PendingDialog::Conflict {
-                    kind,
-                    sources,
-                    dest,
-                    conflicts,
-                    current_idx: 0,
-                    resolutions: Vec::new(),
-                });
-                self.show_conflict();
-                return;
-            }
-        }
-
-        self.execute_transfer(kind, sources, dest, false);
-    }
-
-    fn show_conflict(&mut self) {
-        let Some(PendingDialog::Conflict { conflicts, current_idx, .. }) = &self.dialog else { return };
-        let Some(c) = conflicts.get(*current_idx) else { return };
-        let total = conflicts.len();
-        let idx_1based = *current_idx + 1;
-        let format_time = |t: Option<std::time::SystemTime>| {
-            t.and_then(|st| st.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| {
-                    let secs = d.as_secs();
-                    let hours = (secs / 3600) % 24;
-                    let mins = (secs % 3600) / 60;
-                    format!("{hours:02}:{mins:02} UTC")
-                })
-                .unwrap_or_else(|| "Unknown".into())
-        };
-        let src_mod = format!(
-            "{} · Modified: {} {}",
-            format::size(c.src_size),
-            format_time(c.src_mtime),
-            if c.src_is_newer { "[NEWER]" } else { "" }
-        );
-        let dst_mod = format!(
-            "{} · Modified: {} {}",
-            format::size(c.dst_size),
-            format_time(c.dst_mtime),
-            if !c.src_is_newer { "[NEWER/SAME]" } else { "" }
-        );
-        let rows = vec![
-            ("File name".to_string(), c.filename.clone()),
-            ("Source file".to_string(), src_mod),
-            ("Existing file".to_string(), dst_mod),
-            ("Conflict".to_string(), format!("{idx_1based} of {total} collisions")),
-        ];
-        self.ui.send(Update::Dialog(DialogView {
-            kind: DialogKind::Conflict,
-            title: format!("File Collision: {}", c.filename),
-            message: format!("A file named '{}' already exists in destination. Choose an action:", c.filename),
-            rows,
-            input: String::new(),
-            preview_path: c.src.to_local_path(),
-            opt1: false,
-            ..Default::default()
-        }));
-    }
-
-    fn handle_conflict_action(&mut self, action_str: &str, apply_all: bool) {
-        let action = match action_str {
-            "replace" => ConflictAction::Replace,
-            "replace-if-newer" => ConflictAction::ReplaceIfNewer,
-            "auto-rename" => ConflictAction::AutoRename,
-            "skip" => ConflictAction::Skip,
-            _ => return,
-        };
-        let Some(PendingDialog::Conflict { kind, sources, dest, conflicts, mut current_idx, mut resolutions, .. }) =
-            self.dialog.take()
-        else {
-            return;
-        };
-
-        if apply_all {
-            for c in &conflicts[current_idx..] {
-                resolutions.push((c.src.clone(), action));
-            }
-            current_idx = conflicts.len();
-        } else {
-            if let Some(c) = conflicts.get(current_idx) {
-                resolutions.push((c.src.clone(), action));
-            }
-            current_idx += 1;
-        }
-
-        if current_idx < conflicts.len() {
-            self.dialog = Some(PendingDialog::Conflict { kind, sources, dest, conflicts, current_idx, resolutions });
-            self.show_conflict();
-            return;
-        }
-
-        // All conflicts resolved!
-        self.ui.send(Update::CloseDialog);
-
-        let mut copies = Vec::new();
-        let mut replacements = Vec::new();
-
-        for s in sources {
-            if let Some((_, act)) = resolutions.iter().find(|(src_uri, _)| src_uri == &s) {
-                match act {
-                    ConflictAction::Skip => {
-                        continue;
-                    }
-                    ConflictAction::Replace => {
-                        replacements.push(s);
-                    }
-                    ConflictAction::ReplaceIfNewer => {
-                        let is_newer = conflicts.iter().find(|c| c.src == s).map(|c| c.src_is_newer).unwrap_or(false);
-                        if is_newer {
-                            replacements.push(s);
-                        }
-                    }
-                    ConflictAction::AutoRename => {
-                        copies.push(s);
-                    }
-                }
-            } else {
-                copies.push(s);
-            }
-        }
-
-        if copies.is_empty() && replacements.is_empty() {
-            self.say("Transfer skipped (all conflicting files skipped)", false);
-            return;
-        }
-
-        // Auto-rename and replacement need separate requests: overwrite is a
-        // request-wide flag. Never delete a destination in the controller.
-        self.execute_transfer(kind, copies, dest.clone(), false);
-        self.execute_transfer(kind, replacements, dest, true);
     }
 
     fn execute_transfer(&mut self, kind: TransferKind, sources: Vec<VfsUri>, dest: VfsUri, overwrite: bool) {
@@ -2663,7 +1997,7 @@ impl Controller {
                     let base_name = format!("Link to {}", entry.name);
                     let mut candidate = base_name.clone();
                     let mut counter = 1;
-                    while t.entries.iter().any(|e| e.name == candidate)
+                    while t.entries().iter().any(|e| e.name == candidate)
                         || to_create.iter().any(|(_, _, n)| n == &candidate)
                     {
                         candidate = format!("{base_name} ({counter})");
@@ -2804,11 +2138,7 @@ impl Controller {
                     let t = self.panes[p].tab();
                     let target_entry = targets.first();
                     let target_idx = target_entry
-                        .and_then(|target| {
-                            t.visible
-                                .iter()
-                                .position(|&ei| t.entries.get(ei as usize).is_some_and(|e| e.name == target.name))
-                        })
+                        .and_then(|target| t.visible_entries().position(|e| e.name == target.name))
                         .unwrap_or(t.cursor);
 
                     if let Some(e) = t.entry_at(target_idx) {
@@ -3504,7 +2834,7 @@ impl Controller {
                         self.panes[1].tabs.push(Tab::new(id, home.clone()));
                         self.panes[1].active = 0;
                     }
-                    if self.panes[1].tab().load_gen == 0 {
+                    if self.panes[1].tab().needs_load() {
                         let loc = self.panes[1].tab().location.clone();
                         self.load(1, loc, false);
                     } else {
@@ -3532,9 +2862,7 @@ impl Controller {
             "select-all" | "invert-selection" => {
                 let t = self.panes[p].tab();
                 let all: HashSet<String> = t
-                    .visible
-                    .iter()
-                    .filter_map(|&i| t.entries.get(i as usize))
+                    .visible_entries()
                     .filter(|e| name == "select-all" || !t.selected.contains(&e.name))
                     .map(|e| e.name.clone())
                     .collect();
@@ -3677,7 +3005,7 @@ impl Controller {
 
     fn move_cursor_keep(&mut self, pane: usize, delta: i64) {
         let t = self.panes[pane].tab_mut();
-        let max = t.visible.len().saturating_sub(1);
+        let max = t.visible_len().saturating_sub(1);
         t.cursor = usize::try_from((i64::try_from(t.cursor).unwrap_or(0) + delta).max(0)).unwrap_or(0).min(max);
         self.push_pane(pane);
     }
@@ -3723,7 +3051,7 @@ impl Controller {
             let rows = if targets.is_empty() {
                 vec![
                     ("Location".to_owned(), t.location.display()),
-                    ("Items".to_owned(), rows::thousands(t.entries.len())),
+                    ("Items".to_owned(), rows::thousands(t.entries().len())),
                     (
                         "Free".to_owned(),
                         t.volume
@@ -3757,7 +3085,7 @@ impl Controller {
         let t = self.panes[pane].tab();
         let rows = vec![
             ("Location".to_owned(), t.location.display()),
-            ("Items".to_owned(), rows::thousands(t.entries.len())),
+            ("Items".to_owned(), rows::thousands(t.entries().len())),
             (
                 "Free".to_owned(),
                 t.volume
@@ -3985,7 +3313,7 @@ impl Controller {
         }
         self.panes[pane].active = idx;
         let loc = self.panes[pane].tab().location.clone();
-        let needs_load = self.panes[pane].tab().load_gen == 0 && !self.panes[pane].tab().loading;
+        let needs_load = self.panes[pane].tab().needs_load();
         if needs_load {
             self.load(pane, loc, false);
         } else {
@@ -4004,12 +3332,7 @@ impl Controller {
             return;
         }
         let keep_tab = self.panes[pane].tabs.remove(keep_idx);
-        for t in self.panes[pane].tabs.drain(..) {
-            t.cancel.cancel();
-            if let Some(w) = t.watch {
-                w.abort();
-            }
-        }
+        self.panes[pane].tabs.clear();
         self.panes[pane].tabs.push(keep_tab);
         self.panes[pane].active = 0;
         self.select_tab(pane, 0);
@@ -4041,11 +3364,7 @@ impl Controller {
         }
         if self.panes[pane].tabs.len() == 1 {
             if pane == 1 {
-                let t = self.panes[1].tabs.remove(0);
-                t.cancel.cancel();
-                if let Some(w) = t.watch {
-                    w.abort();
-                }
+                self.panes[1].tabs.remove(0);
                 let home = self.cfg.home.clone();
                 let id = self.next_tab;
                 self.next_tab += 1;
@@ -4058,12 +3377,9 @@ impl Controller {
                 self.push_status();
                 self.trigger_save_session();
             } else if self.dual {
-                let t = self.panes[0].tabs.remove(0);
-                t.cancel.cancel();
-                if let Some(w) = t.watch {
-                    w.abort();
-                }
+                self.panes[0].tabs.remove(0);
                 self.panes.swap(0, 1);
+                self.ui.send(Update::PromoteRightPane);
                 let home = self.cfg.home.clone();
                 let id = self.next_tab;
                 self.next_tab += 1;
@@ -4077,11 +3393,7 @@ impl Controller {
                 self.push_status();
                 self.trigger_save_session();
             } else {
-                let t = self.panes[0].tabs.remove(0);
-                t.cancel.cancel();
-                if let Some(w) = t.watch {
-                    w.abort();
-                }
+                self.panes[0].tabs.remove(0);
                 let home = self.cfg.home.clone();
                 let id = self.next_tab;
                 self.next_tab += 1;
@@ -4093,11 +3405,7 @@ impl Controller {
             }
             return;
         }
-        let t = self.panes[pane].tabs.remove(idx);
-        t.cancel.cancel();
-        if let Some(w) = t.watch {
-            w.abort();
-        }
+        self.panes[pane].tabs.remove(idx);
         let a = self.panes[pane].active;
         self.panes[pane].active = if a > idx || a >= self.panes[pane].tabs.len() { a.saturating_sub(1) } else { a };
         let new = self.panes[pane].active;
@@ -4959,8 +4267,8 @@ impl Controller {
         self.push_flags();
         let left_loc = self.panes[0].tab().location.clone();
         let right_loc = self.panes[1].tab().location.clone();
-        let left_entries = &self.panes[0].tab().entries;
-        let right_entries = &self.panes[1].tab().entries;
+        let left_entries = self.panes[0].tab().entries();
+        let right_entries = self.panes[1].tab().entries();
 
         let mut names = BTreeSet::new();
         let mut left_map = BTreeMap::new();
@@ -5023,9 +4331,9 @@ impl Controller {
         let Some(PendingDialog::ComparePanes { left_loc, right_loc, .. }) = self.dialog.take() else { return };
         self.ui.send(Update::CloseDialog);
         if to_right {
-            let left_entries = &self.panes[0].tab().entries;
+            let left_entries = self.panes[0].tab().entries();
             let right_map: BTreeMap<String, &FileEntry> =
-                self.panes[1].tab().entries.iter().map(|e| (e.name.clone(), e)).collect();
+                self.panes[1].tab().entries().iter().map(|e| (e.name.clone(), e)).collect();
             let mut to_sync = Vec::new();
             for l in left_entries.iter() {
                 match right_map.get(&l.name) {
@@ -5041,9 +4349,9 @@ impl Controller {
                 self.start_transfer(TransferKind::Copy, to_sync, right_loc);
             }
         } else {
-            let right_entries = &self.panes[1].tab().entries;
+            let right_entries = self.panes[1].tab().entries();
             let left_map: BTreeMap<String, &FileEntry> =
-                self.panes[0].tab().entries.iter().map(|e| (e.name.clone(), e)).collect();
+                self.panes[0].tab().entries().iter().map(|e| (e.name.clone(), e)).collect();
             let mut to_sync = Vec::new();
             for r in right_entries.iter() {
                 match left_map.get(&r.name) {
@@ -5195,10 +4503,7 @@ impl Controller {
             for p in 0..2 {
                 for t in &mut self.panes[p].tabs {
                     if t.location.starts_with(&mp) {
-                        t.cancel.cancel();
-                        if let Some(w) = t.watch.take() {
-                            w.abort();
-                        }
+                        t.stop_listing();
                     }
                 }
                 if self.panes[p].tab().location.starts_with(&mp) {
@@ -5313,9 +4618,7 @@ impl Controller {
             PendingDialog::SelectPattern { pane } => {
                 let tab = self.panes[pane].tab();
                 let selected = tab
-                    .visible
-                    .iter()
-                    .filter_map(|&i| tab.entries.get(i as usize))
+                    .visible_entries()
                     .filter(|entry| core_vfs::pattern::matches_name_pattern(&text, &entry.name))
                     .map(|entry| entry.name.clone())
                     .collect();
@@ -5392,7 +4695,7 @@ impl Controller {
             PendingDialog::Info
             | PendingDialog::Properties { .. }
             | PendingDialog::OpenWith { .. }
-            | PendingDialog::Conflict { .. }
+            | PendingDialog::Conflict(_)
             | PendingDialog::Search { .. }
             | PendingDialog::BatchRename { .. }
             | PendingDialog::ComparePanes { .. } => {}
@@ -5401,39 +4704,16 @@ impl Controller {
 
     fn event(&mut self, e: Event) {
         match e {
-            Event::Batch { pane, tab, generation, entries } => self.on_batch(pane, tab, generation, entries),
-            Event::ListDone { pane, tab, generation, result, collected, started } => {
-                self.on_list_done(pane, tab, generation, result, collected, started)
+            Event::Batch { tab, generation, entries } => self.on_batch(tab, generation, entries),
+            Event::ListDone { tab, generation, result, collected, started } => {
+                self.on_list_done(tab, generation, result, collected, started)
             }
-            Event::Prepared { pane, tab, view_gen, order, visible, rows } => {
-                self.on_prepared(pane, tab, view_gen, order, visible, rows)
+            Event::Prepared { tab, view_gen, order, visible, rows } => {
+                self.on_prepared(tab, view_gen, order, visible, rows)
             }
-            Event::ThumbnailsReady { pane, tab, items } => {
-                if self.is_active_tab(pane, tab) && !items.is_empty() {
-                    self.ui.send(Update::ThumbnailsReady { pane, items });
-                }
-            }
-            Event::DirChanged { pane, tab, removed } => {
-                let Some(ti) = self.tab_index(pane, tab) else { return };
-                if self.panes[pane].tabs[ti].loading {
-                    return;
-                }
-                if removed {
-                    self.panes[pane].tabs[ti].watch = None;
-                }
-                if ti == self.panes[pane].active {
-                    let loc = self.panes[pane].tab().location.clone();
-                    self.load(pane, loc, true);
-                }
-            }
-            Event::Volume { pane, tab, info } => {
-                if let Some(ti) = self.tab_index(pane, tab) {
-                    self.panes[pane].tabs[ti].volume = Some(info);
-                    if pane == self.active_pane {
-                        self.push_status();
-                    }
-                }
-            }
+            Event::ThumbnailsReady { tab, view_gen, items } => self.on_thumbnails(tab, view_gen, items),
+            Event::DirChanged { tab, watch_gen, removed } => self.on_dir_changed(tab, watch_gen, removed),
+            Event::Volume { tab, generation, info } => self.on_volume(tab, generation, info),
             Event::Mounts(m) => {
                 if m != self.mounts {
                     self.mounts = m;
@@ -5558,6 +4838,7 @@ impl Controller {
                 Ok(rows) => self.info_dialog(kind, &title, "", rows),
                 Err(e) => self.info_dialog(DialogKind::Error, &title, &e.to_string(), Vec::new()),
             },
+            Event::TransferPlanned(result) => self.transfer_planning.complete(result),
             Event::Progress(p) => {
                 if let Some((_, t)) = self.transfers.iter_mut().find(|(i, _)| *i == p.id) {
                     let terminal =

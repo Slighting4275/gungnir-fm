@@ -56,12 +56,19 @@ fn start_configured(
     include_local: bool,
     configure: impl FnOnce(&mut Config),
 ) -> Harness {
+    start_on_runtime(left, right, mock, include_local, &mut tokio::runtime::Builder::new_multi_thread(), configure)
+}
+
+fn start_on_runtime(
+    left: &str,
+    right: &str,
+    mock: MockConfig,
+    include_local: bool,
+    runtime: &mut tokio::runtime::Builder,
+    configure: impl FnOnce(&mut Config),
+) -> Harness {
     data_home();
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .enable_all()
-        .build()
-        .unwrap_or_else(|e| panic!("{e}"));
+    let rt = runtime.worker_threads(2).enable_all().build().unwrap_or_else(|e| panic!("{e}"));
     let mut reg = VfsRegistry::new();
     if include_local {
         reg.register(Arc::new(LocalPosixBackend::new()));
@@ -389,6 +396,21 @@ fn tab_creation_cycling_and_closing() {
     h.until(Duration::from_secs(5), |u| matches!(u, Update::Quit));
 
     let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn promoted_pane_receives_the_rest_of_its_inflight_listing() {
+    let slow = MockConfig { batch_latency: Duration::from_millis(20), ..MockConfig::instant() };
+    let h = start("gungnir://odin/asgard", "gungnir://odin/asgard/stress-50k", slow);
+    h.send(Command::Run("toggle-dual".into()));
+    h.until(Duration::from_secs(5), |u| matches!(u, Update::AppendRows { pane: 1, .. }));
+
+    h.send(Command::TabClose(0, 0));
+    let updates = h.until(Duration::from_secs(6), |u| full_rows(u, 0, 50_000));
+    assert!(updates.iter().any(|u| matches!(u, Update::PromoteRightPane)));
+    assert!(updates.iter().any(|u| matches!(u, Update::Flags(f) if !f.dual_pane)));
+    let Some(Update::Rows { rows, .. }) = updates.last() else { panic!("promoted listing missing") };
+    assert!(rows[0].name.starts_with("rune-000000."));
 }
 
 #[test]
@@ -1278,6 +1300,45 @@ fn mixed_conflict_resolutions_keep_auto_renamed_original() {
 }
 
 #[test]
+fn replace_if_newer_applies_to_each_conflict_independently() {
+    use std::fs::{File, FileTimes};
+    use std::time::UNIX_EPOCH;
+
+    let tmp = DesktopSandbox(temp_dir("replace-if-newer"));
+    let left = tmp.0.join("left");
+    let right = tmp.0.join("right");
+    std::fs::create_dir(&left).unwrap();
+    std::fs::create_dir(&right).unwrap();
+    for (name, source_mtime) in [("newer", 300), ("older", 100), ("same", 200)] {
+        for (dir, contents, mtime) in [(&left, b"source", source_mtime), (&right, b"target", 200)] {
+            let path = dir.join(name);
+            std::fs::write(&path, contents).unwrap();
+            File::open(path)
+                .unwrap()
+                .set_times(FileTimes::new().set_modified(UNIX_EPOCH + Duration::from_secs(mtime)))
+                .unwrap();
+        }
+    }
+    let h = start(left.to_str().unwrap(), right.to_str().unwrap(), MockConfig::instant());
+    h.until(Duration::from_secs(5), |u| full_rows(u, 0, 3));
+    h.send(Command::Run("toggle-dual".into()));
+    h.send(Command::Run("select-all".into()));
+    h.send(Command::Run("copy-to-other".into()));
+    h.until(Duration::from_secs(5), |u| matches!(u, Update::Dialog(d) if d.kind == crate::DialogKind::Conflict));
+    h.send(Command::DialogCustomAction {
+        action: "replace-if-newer".into(),
+        opt1: true,
+        opt2: false,
+        extra1: String::new(),
+        extra2: String::new(),
+    });
+    h.until(Duration::from_secs(5), |u| matches!(u, Update::Status(s) if s.message.contains("finished")));
+    assert_eq!(std::fs::read(right.join("newer")).unwrap(), b"source");
+    assert_eq!(std::fs::read(right.join("older")).unwrap(), b"target");
+    assert_eq!(std::fs::read(right.join("same")).unwrap(), b"target");
+}
+
+#[test]
 fn batch_rename_collision_keeps_all_originals_and_reports_error() {
     let tmp = temp_dir("batch-collision");
     std::fs::write(tmp.join("a.txt"), b"a").unwrap();
@@ -2057,7 +2118,6 @@ fn a_reordered_directory_snapshot_keeps_the_cursor_on_the_same_name() {
     });
     // A valid silent refresh can enumerate the same files in a different raw order.
     h.tx.try_send(Msg::Ev(crate::controller::Event::ListDone {
-        pane: 0,
         tab: 1,
         generation: 1,
         result: Ok(core_vfs::ListSummary { entries: 2, skipped: 0 }),
@@ -2081,6 +2141,55 @@ fn a_reordered_directory_snapshot_keeps_the_cursor_on_the_same_name() {
     assert_eq!(view.selected_count, 1);
     drop(h);
     std::fs::remove_dir_all(d).ok();
+}
+
+#[test]
+fn row_click_uses_displayed_entries_while_silent_refresh_prepares_new_rows() {
+    use core_vfs::VfsProvider;
+
+    let d = DesktopSandbox(temp_dir("cursor-during-silent-refresh"));
+    std::fs::write(d.0.join("a"), b"a").unwrap();
+    std::fs::write(d.0.join("b"), b"bb").unwrap();
+    let mut runtime = tokio::runtime::Builder::new_multi_thread();
+    runtime.max_blocking_threads(1);
+    let h = start_on_runtime(
+        d.0.to_str().unwrap(),
+        "gungnir://odin/asgard",
+        MockConfig::instant(),
+        true,
+        &mut runtime,
+        |_| {},
+    );
+    h.until(Duration::from_secs(3), |u| full_rows(u, 0, 2));
+    let backend = LocalPosixBackend::new();
+    let entries = h._rt.block_on(async {
+        let mut entries = Vec::new();
+        for name in ["b", "a"] {
+            entries.push(backend.stat(&VfsUri::from_local_path(&d.0.join(name)).unwrap()).await.unwrap());
+        }
+        entries
+    });
+    // Hold the only blocking worker until the row command has been processed.
+    let (release, wait) = std_mpsc::channel::<()>();
+    let (started, waiting) = std_mpsc::channel();
+    h._rt.spawn_blocking(move || {
+        started.send(()).unwrap();
+        let _ = wait.recv_timeout(Duration::from_secs(5));
+    });
+    waiting.recv_timeout(Duration::from_secs(3)).unwrap();
+    h.tx.try_send(Msg::Ev(crate::controller::Event::ListDone {
+        tab: 1,
+        generation: 1,
+        result: Ok(core_vfs::ListSummary { entries: 2, skipped: 0 }),
+        collected: Some(entries),
+        started: Instant::now(),
+    }))
+    .unwrap();
+    h.send(Command::RowClicked { pane: 0, index: 0, ctrl: false, shift: false });
+    let updates = h.until(Duration::from_secs(3), |u| matches!(u, Update::Status(s) if !s.selection.is_empty()));
+    drop(release);
+    let Some(Update::Status(status)) = updates.last() else { panic!("selection status missing") };
+    assert_eq!(status.selection, "1 selected (1 byte)", "row zero still displays a");
 }
 
 #[test]
