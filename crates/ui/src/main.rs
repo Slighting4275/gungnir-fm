@@ -47,7 +47,7 @@ use slint::{ComponentHandle, Model};
 use tokio::sync::mpsc;
 
 use bridge::SlintSink;
-use controller::{Command, Config, Controller, Msg};
+use controller::{Command, Config, ContextAction, Controller, Msg};
 
 // Code generated from ui/*.slint. The workspace denies `unwrap`/`expect`; the generator
 // uses them internally, so the allowance is scoped to the generated module only.
@@ -88,6 +88,21 @@ fn send_row_command(tx: &mpsc::Sender<Msg>, pane: usize, revision: i32, command:
     send_message(tx, Msg::UiRows { panes, command });
 }
 
+struct PopupTargets {
+    revision: i32,
+    rows: Option<Vec<String>>,
+}
+
+fn popup_targets(ui: &AppWindow, pane: usize, index: i32) -> Option<Vec<String>> {
+    let index = usize::try_from(index).ok()?;
+    let files = if pane == 0 { ui.get_left_files() } else { ui.get_right_files() };
+    let clicked = files.row_data(index)?;
+    if !clicked.selected {
+        return Some(vec![clicked.uri.to_string()]);
+    }
+    Some(files.iter().filter(|row| row.selected).map(|row| row.uri.to_string()).collect())
+}
+
 fn wire(ui: &AppWindow, tx: &mpsc::Sender<Msg>) {
     macro_rules! on {
         ($method:ident, || $cmd:expr) => {{
@@ -118,19 +133,36 @@ fn wire(ui: &AppWindow, tx: &mpsc::Sender<Msg>) {
     on_rows!(on_open_row_in_tab, |p, i| Command::OpenRowInTab { pane: p, index: index(i) });
     on_rows!(on_row_context, |p, i| Command::RowContext { pane: p, index: index(i) });
     on_rows!(on_move_cursor, |p, d, extend| Command::MoveCursor { pane: p, delta: i64::from(d), extend });
-    ui.on_context_command({
-        let tx = tx.clone();
-        move |p, revision, name| {
+    let popup = std::rc::Rc::new(std::cell::RefCell::new([None::<PopupTargets>, None]));
+    ui.on_context_target_count({
+        let popup = popup.clone();
+        let window = ui.as_weak();
+        move |p, index, revision| {
+            let Some(window) = window.upgrade() else { return 0 };
             let pane = pane(p);
-            send_row_command(&tx, pane, revision, Command::RunInPane { pane, name: name.to_string() });
+            let rows = popup_targets(&window, pane, index);
+            let count = rows.as_ref().map_or(0, |rows| i32::try_from(rows.len()).unwrap_or(i32::MAX));
+            popup.borrow_mut()[pane] = Some(PopupTargets { revision, rows });
+            count
         }
     });
-    ui.on_context_custom_action({
+    let popup_action = {
         let tx = tx.clone();
-        move |p, revision, id| {
+        move |p, revision, action| {
             let pane = pane(p);
-            send_row_command(&tx, pane, revision, Command::CustomAction { pane, id: id.to_string() });
+            let targets = popup.borrow_mut()[pane].take().filter(|targets| targets.revision == revision);
+            if let Some(targets) = targets {
+                let command = Command::RunContextAction { pane, action, targets: targets.rows };
+                send_row_command(&tx, pane, revision, command);
+            }
         }
+    };
+    ui.on_context_command({
+        let popup_action = popup_action.clone();
+        move |p, revision, name| popup_action(p, revision, ContextAction::BuiltIn(name.to_string()))
+    });
+    ui.on_context_custom_action(move |p, revision, id| {
+        popup_action(p, revision, ContextAction::Custom(id.to_string()))
     });
     on!(on_sort_by, |p, c| Command::SortBy { pane: pane(p), column: c });
     on!(on_filter_changed, |p, t| Command::Filter { pane: pane(p), text: t.to_string() });
@@ -141,7 +173,20 @@ fn wire(ui: &AppWindow, tx: &mpsc::Sender<Msg>) {
     on!(on_tab_select, |p, i| Command::TabSelect(pane(p), index(i)));
     on!(on_tab_cycle, |p, d| Command::TabCycle { pane: pane(p), delta: d });
     on!(on_pane_focused, |p| Command::PaneFocused(pane(p)));
-    on!(on_command, |name| Command::Run(name.to_string()));
+    ui.on_command({
+        let tx = tx.clone();
+        let window = ui.as_weak();
+        move |name| {
+            if Controller::command_uses_rows(name.as_str()) {
+                let Some(window) = window.upgrade() else { return };
+                let pane = pane(window.get_active_pane());
+                let command = Command::RunInPane { pane, name: name.to_string() };
+                send_row_command(&tx, pane, rows_revision(&window, pane), command);
+            } else {
+                send(&tx, Command::Run(name.to_string()));
+            }
+        }
+    });
     on!(on_view_mode_changed, |m| Command::ViewMode(m));
     on!(on_zoom_changed, |z| Command::Zoom(z));
     on!(on_sidebar_open, |uri| Command::SidebarOpen(uri.to_string()));

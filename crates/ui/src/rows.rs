@@ -2,15 +2,15 @@
 //! `Send`: everything here runs on blocking worker threads, never the UI thread.
 
 use std::collections::HashSet;
-use std::path::PathBuf;
 
 use core_vfs::{FileEntry, format};
 use slint::SharedString;
 
 use crate::FileRow;
+use crate::thumbnails::{self, ThumbnailPixels};
 
 /// Representation of a file row that is pure data and completely `Send + Sync`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct RowItem {
     pub name: String,
     pub size_text: String,
@@ -24,8 +24,7 @@ pub struct RowItem {
     pub hidden: bool,
     pub selected: bool,
     pub uri: String,
-    pub mtime_secs: i64,
-    pub thumbnail_path: Option<PathBuf>,
+    pub thumbnail: Option<ThumbnailPixels>,
 }
 
 #[must_use]
@@ -39,8 +38,8 @@ pub fn row_item(e: &FileEntry, selected: bool) -> RowItem {
     let uri_str = e.uri.to_uri_string();
     let cat = format::category(e);
     let ext = format::extension(&e.name);
-    let thumbnail_path = if crate::thumbnails::is_previewable(cat, ext.as_deref()) {
-        crate::thumbnails::lookup_cached(&uri_str, mtime_secs)
+    let thumbnail = if thumbnails::is_previewable(cat, ext.as_deref()) {
+        thumbnails::lookup_cached(&uri_str, mtime_secs).and_then(|path| thumbnails::load_pixels(&path))
     } else {
         None
     };
@@ -58,19 +57,15 @@ pub fn row_item(e: &FileEntry, selected: bool) -> RowItem {
         hidden: e.is_hidden(),
         selected,
         uri: uri_str,
-        mtime_secs,
-        thumbnail_path,
+        thumbnail,
     }
 }
 
-/// Converts a pure `RowItem` to Slint's `FileRow` (loading the `slint::Image` on the UI thread).
+/// Converts worker-prepared data into Slint's row type.
 #[must_use]
-pub fn to_file_row(r: &RowItem) -> FileRow {
-    let (thumbnail, has_thumbnail) = if let Some(path) = &r.thumbnail_path {
-        if let Ok(img) = slint::Image::load_from_path(path) { (img, true) } else { (slint::Image::default(), false) }
-    } else {
-        (slint::Image::default(), false)
-    };
+pub fn to_file_row(r: RowItem) -> FileRow {
+    let has_thumbnail = r.thumbnail.is_some();
+    let thumbnail = r.thumbnail.map(slint::Image::from_rgba8).unwrap_or_default();
 
     FileRow {
         name: SharedString::from(r.name.as_str()),

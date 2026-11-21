@@ -1,7 +1,6 @@
 //! Per-tab directory work and the view published from its current listing.
 
 use std::collections::HashSet;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -76,7 +75,8 @@ pub(super) struct Tab {
     pub(super) anchor: Option<usize>,
     pub(super) sort: SortKey,
     pub(super) filter: String,
-    pub(super) loading: bool,
+    loading: bool,
+    silent: bool,
     pub(super) error: String,
     load_gen: u64,
     view_gen: u64,
@@ -110,6 +110,7 @@ impl Tab {
             sort: SortKey::default(),
             filter: String::new(),
             loading: false,
+            silent: false,
             error: String::new(),
             load_gen: 0,
             view_gen: 0,
@@ -160,6 +161,10 @@ impl Tab {
     pub(super) fn targets(&self) -> Vec<FileEntry> {
         let sel: Vec<FileEntry> = self.visible_entries().filter(|e| self.selected.contains(&e.name)).cloned().collect();
         if sel.is_empty() { self.entry_at(self.cursor).cloned().into_iter().collect() } else { sel }
+    }
+
+    pub(super) fn shows_loading(&self) -> bool {
+        self.loading && !self.silent
     }
 
     pub(super) fn needs_load(&self) -> bool {
@@ -277,6 +282,7 @@ impl Controller {
         let same_place = t.location == location;
         t.location = location.clone();
         t.loading = true;
+        t.silent = silent;
         t.watch_dirty = false;
         t.error.clear();
         t.backend = Some(provider.kind());
@@ -435,11 +441,6 @@ impl Controller {
                 }
             }
         }
-        if std::mem::take(&mut t.watch_dirty) && self.panes[pane].active == ti {
-            let location = self.panes[pane].tabs[ti].location.clone();
-            self.load(pane, location, true);
-            return;
-        }
         t.refreshed = collected.map(Arc::new);
         self.prepare(pane, tab, true);
         let (provider, loc) =
@@ -541,6 +542,13 @@ impl Controller {
             }
         }
         self.trigger_thumbnails(pane, tab);
+        // Publish every completed scan. Changes observed during it request one
+        // more silent refresh, including when an inactive tab is shown again.
+        let t = &self.panes[pane].tabs[ti];
+        if active && !t.loading && t.watch_dirty {
+            let location = t.location.clone();
+            self.load(pane, location, true);
+        }
     }
 
     fn trigger_thumbnails(&self, pane: usize, tab: u64) {
@@ -551,7 +559,7 @@ impl Controller {
         let visible = t.visible.clone();
         let tx = self.tx.clone();
         tokio::task::spawn_blocking(move || {
-            let candidates = visible.into_iter().filter_map(|idx| {
+            let candidates = visible.into_iter().enumerate().filter_map(|(row, idx)| {
                 let entry = entries.get(idx as usize)?;
                 let category = format::category(entry);
                 let extension = format::extension(&entry.name);
@@ -570,12 +578,14 @@ impl Controller {
                 }
                 let video = category == core_vfs::format::Category::Video
                     || crate::thumbnails::is_video_ext(extension.as_deref());
-                Some((&entry.name, path, uri, mtime, video))
+                Some((row, path, uri, mtime, video))
             });
             let mut batch = Vec::new();
-            for (name, path, uri, mtime, is_vid) in candidates {
-                if let Ok(thumb) = crate::thumbnails::generate_thumbnail(&path, &uri, mtime, is_vid) {
-                    batch.push((name.clone(), thumb));
+            for (row, path, uri, mtime, is_vid) in candidates {
+                if let Ok(path) = crate::thumbnails::generate_thumbnail(&path, &uri, mtime, is_vid)
+                    && let Some(pixels) = crate::thumbnails::load_pixels(&path)
+                {
+                    batch.push((row, pixels));
                     if batch.len() >= 16 {
                         let _ = tx.blocking_send(Msg::Ev(Event::ThumbnailsReady {
                             tab,
@@ -634,9 +644,9 @@ impl Controller {
         if removed {
             t.stop_watch();
         }
-        if t.loading {
+        if t.loading || t.pending_view.is_some() || index != self.panes[pane].active {
             t.watch_dirty = true;
-        } else if index == self.panes[pane].active {
+        } else {
             let location = self.panes[pane].tab().location.clone();
             self.load(pane, location, true);
         }
@@ -653,7 +663,12 @@ impl Controller {
         }
     }
 
-    pub(super) fn on_thumbnails(&self, tab: u64, view_gen: u64, items: Vec<(String, PathBuf)>) {
+    pub(super) fn on_thumbnails(
+        &self,
+        tab: u64,
+        view_gen: u64,
+        items: Vec<(usize, crate::thumbnails::ThumbnailPixels)>,
+    ) {
         let Some((pane, index)) = self.tab_position(tab) else { return };
         if self.panes[pane].active == index && self.panes[pane].tabs[index].view_gen == view_gen && !items.is_empty() {
             self.ui.send(Update::ThumbnailsReady { pane, items });

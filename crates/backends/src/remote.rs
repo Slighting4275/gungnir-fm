@@ -19,7 +19,7 @@ use tokio_util::sync::CancellationToken;
 
 mod gio;
 
-use gio::Capture;
+use gio::{CancellationPriority, Capture};
 
 static TEST_MODE: AtomicBool = AtomicBool::new(false);
 
@@ -129,7 +129,16 @@ impl VfsProvider for RemoteVfsBackend {
         }
 
         let args = ["list", "-l", "-u", "--", &uri_str];
-        let output = match gio::run(&self.gio, &args, Some(self.timeout), Some(&cancel), Capture::Listing).await {
+        let output = match gio::run(
+            &self.gio,
+            &args,
+            Some(self.timeout),
+            Some(&cancel),
+            Capture::Listing,
+            CancellationPriority::ExitFirst,
+        )
+        .await
+        {
             // Network discovery that never answers is shown like one that failed.
             Err(VfsError::Timeout) if target_dir.scheme() == Scheme::Network => {
                 return Ok(ListSummary { entries: 0, skipped: 0 });
@@ -238,7 +247,9 @@ impl VfsProvider for RemoteVfsBackend {
         }
 
         let args = ["info", "--", &uri_str];
-        let output = gio::run(&self.gio, &args, Some(self.timeout), None, Capture::Standard).await?;
+        let output =
+            gio::run(&self.gio, &args, Some(self.timeout), None, Capture::Standard, CancellationPriority::ExitFirst)
+                .await?;
         tokio::task::spawn_blocking(move || {
             if !output.status.success() {
                 if target_uri.scheme() == Scheme::Network && target_uri.is_root() {
@@ -287,7 +298,10 @@ impl VfsProvider for RemoteVfsBackend {
             return Ok(());
         }
         let args = ["mkdir", "--", &uri_str];
-        let status = gio::run(&self.gio, &args, Some(self.timeout), None, Capture::Standard).await?.status;
+        let status =
+            gio::run(&self.gio, &args, Some(self.timeout), None, Capture::Standard, CancellationPriority::ExitFirst)
+                .await?
+                .status;
         if status.success() { Ok(()) } else { Err(VfsError::Transport(format!("failed to create dir {uri_str}"))) }
     }
 
@@ -301,7 +315,10 @@ impl VfsProvider for RemoteVfsBackend {
         }
 
         let args = ["rename", "--", &uri_str, new_name];
-        let status = gio::run(&self.gio, &args, Some(self.timeout), None, Capture::Standard).await?.status;
+        let status =
+            gio::run(&self.gio, &args, Some(self.timeout), None, Capture::Standard, CancellationPriority::ExitFirst)
+                .await?
+                .status;
         if status.success() { Ok(new_uri) } else { Err(VfsError::Transport(format!("failed to rename {uri_str}"))) }
     }
 
@@ -314,7 +331,10 @@ impl VfsProvider for RemoteVfsBackend {
         }
         for uri in uris {
             let args = ["remove", "--", &uri.to_uri_string()];
-            let status = gio::run(&self.gio, &args, None, Some(&cancel), Capture::Discard).await?.status;
+            let status =
+                gio::run(&self.gio, &args, None, Some(&cancel), Capture::Discard, CancellationPriority::CancelFirst)
+                    .await?
+                    .status;
             if !status.success() {
                 return Err(VfsError::Transport(format!("gio remove failed for {}: {status}", uri.display())));
             }
@@ -347,7 +367,10 @@ impl VfsProvider for RemoteVfsBackend {
         for source in &src_strings {
             // A large transfer can outlast metadata deadlines. Cancellation still kills GIO.
             let args = [command, "--", source, &dest_str];
-            let status = gio::run(&self.gio, &args, None, Some(&ctl.cancel), Capture::Standard).await?.status;
+            let status =
+                gio::run(&self.gio, &args, None, Some(&ctl.cancel), Capture::Standard, CancellationPriority::ExitFirst)
+                    .await?
+                    .status;
             if !status.success() {
                 return Err(VfsError::Transport(format!("transfer failed from {source} to {dest_str}")));
             }
@@ -362,7 +385,10 @@ impl VfsProvider for RemoteVfsBackend {
         }
 
         let args = ["info", "-f", "--", &uri_str];
-        let output = gio::run(&self.gio, &args, Some(self.timeout), None, Capture::Standard).await.ok();
+        let output =
+            gio::run(&self.gio, &args, Some(self.timeout), None, Capture::Standard, CancellationPriority::ExitFirst)
+                .await
+                .ok();
         tokio::task::spawn_blocking(move || {
             let mut free = 0;
             let mut total = 0;
@@ -394,7 +420,9 @@ impl VfsProvider for RemoteVfsBackend {
         }
 
         let args = ["info", "--", &uri_str];
-        let output = gio::run(&self.gio, &args, Some(self.timeout), None, Capture::Standard).await?;
+        let output =
+            gio::run(&self.gio, &args, Some(self.timeout), None, Capture::Standard, CancellationPriority::ExitFirst)
+                .await?;
         tokio::task::spawn_blocking(move || {
             if !output.status.success() {
                 if is_network {

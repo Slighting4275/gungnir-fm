@@ -7,6 +7,8 @@ use slint::ComponentHandle;
 use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferType};
 use slint::platform::{Key, Platform, PlatformError, WindowAdapter, WindowEvent};
 
+use crate::controller::{Command, ContextAction, Msg};
+
 struct HeadlessPlatform(Rc<MinimalSoftwareWindow>);
 
 impl Platform for HeadlessPlatform {
@@ -21,6 +23,60 @@ fn press(ui: &crate::AppWindow, text: impl Into<slint::SharedString>) {
 
 fn release(ui: &crate::AppWindow, text: impl Into<slint::SharedString>) {
     ui.window().dispatch_event(WindowEvent::KeyReleased { text: text.into() });
+}
+
+#[test]
+fn keyboard_file_commands_use_the_displayed_row_revision() -> Result<(), Box<dyn std::error::Error>> {
+    let window = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
+    slint::platform::set_platform(Box::new(HeadlessPlatform(window.clone())))?;
+    window.set_size(slint::PhysicalSize::new(1320, 820));
+    let ui = crate::AppWindow::new()?;
+    let (tx, mut rx) = tokio::sync::mpsc::channel(32);
+    crate::wire(&ui, &tx);
+    ui.set_left_rows_revision(41);
+    ui.show()?;
+    ui.window().dispatch_event(WindowEvent::WindowActiveChanged(true));
+    ui.invoke_focus_files();
+
+    for (key, expected) in [(Key::Return, "open"), (Key::Delete, "trash")] {
+        press(&ui, key);
+        release(&ui, key);
+        let commands: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        assert!(commands.iter().any(|msg| matches!(msg,
+            Msg::UiRows { panes: [Some(41), None], command: Command::RunInPane { pane: 0, name } } if name == expected
+        )), "{commands:?}");
+        assert!(!commands.iter().any(|msg| matches!(msg, Msg::Ui(Command::Run(name)) if name == expected)));
+    }
+    ui.hide()?;
+    Ok(())
+}
+
+#[test]
+fn popup_commands_keep_the_selection_presented_when_opened() -> Result<(), Box<dyn std::error::Error>> {
+    let window = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
+    slint::platform::set_platform(Box::new(HeadlessPlatform(window)))?;
+    let ui = crate::AppWindow::new()?;
+    let (tx, mut rx) = tokio::sync::mpsc::channel(32);
+    crate::wire(&ui, &tx);
+    let model = Rc::new(slint::VecModel::from(vec![
+        crate::FileRow { uri: "file:///a".into(), selected: true, ..Default::default() },
+        crate::FileRow { uri: "file:///b".into(), ..Default::default() },
+    ]));
+    ui.set_left_files(slint::ModelRc::from(model.clone()));
+    assert_eq!(ui.invoke_context_target_count(0, 0, 17), 1);
+
+    slint::Model::set_row_data(
+        &*model,
+        1,
+        crate::FileRow { uri: "file:///b".into(), selected: true, ..Default::default() },
+    );
+    ui.invoke_context_command(0, 17, "delete".into());
+    assert!(std::iter::from_fn(|| rx.try_recv().ok()).any(|msg| matches!(msg,
+        Msg::UiRows { panes: [Some(17), None], command: Command::RunContextAction {
+            pane: 0, action: ContextAction::BuiltIn(name), targets: Some(targets)
+        } } if name == "delete" && targets == ["file:///a"]
+    )));
+    Ok(())
 }
 
 #[test]

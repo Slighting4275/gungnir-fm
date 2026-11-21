@@ -19,12 +19,18 @@ pub(super) enum Capture {
     Discard,
 }
 
+pub(super) enum CancellationPriority {
+    ExitFirst,
+    CancelFirst,
+}
+
 pub(super) async fn run(
     program: &OsStr,
     args: &[&str],
     timeout: Option<Duration>,
     cancel: Option<&CancellationToken>,
     capture: Capture,
+    priority: CancellationPriority,
 ) -> VfsResult<Output> {
     if cancel.is_some_and(CancellationToken::is_cancelled) {
         return Err(VfsError::Cancelled);
@@ -95,7 +101,7 @@ pub(super) async fn run(
     };
     // Remote delete gives cancellation priority. A completed move can already
     // have removed its source, so report its result when both futures are ready.
-    let cancel_first = matches!(capture, Capture::Discard);
+    let cancel_first = matches!(priority, CancellationPriority::CancelFirst);
     let result = tokio::select! {
         biased;
         () = cancelled(), if cancel_first => Err(VfsError::Cancelled),

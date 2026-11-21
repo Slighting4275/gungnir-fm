@@ -226,9 +226,6 @@ export component Pane inherits Rectangle {
     property <bool> has-target: root.context-index >= 0 && root.context-index < root.files.length;
     property <bool> target-is-dir: root.has-target ? root.files[root.context-index].is-dir : false;
     property <bool> target-is-archive: root.has-target ? root.files[root.context-index].icon == 5 : false;
-    property <bool> target-selected: root.has-target ? root.files[root.context-index].selected : false;
-    property <int> effective-sel-count: root.target-selected ? Math.max(1, root.info.selected-count) : (root.has-target ? 1 : 0);
-    property <bool> is-multi-sel: root.effective-sel-count > 1;
 
     // Slint assigns IDs when the popup is opened. Changing menu inputs while
     // it is open invalidates those IDs, so child menus must use this snapshot.
@@ -264,8 +261,8 @@ export component Pane inherits Rectangle {
         root.menu-has-target = root.has-target;
         root.menu-target-is-dir = root.target-is-dir;
         root.menu-target-is-archive = root.target-is-archive;
-        root.menu-is-multi-sel = root.is-multi-sel;
-        root.menu-effective-sel-count = root.effective-sel-count;
+        root.menu-effective-sel-count = root.context-target-count(index, root.menu-rows-revision);
+        root.menu-is-multi-sel = root.menu-effective-sel-count > 1;
         root.menu-has-clipboard = root.info.has-clipboard;
         root.menu-custom-actions = root.custom-actions;
         root.menu-document-templates = root.document-templates;
@@ -276,6 +273,7 @@ export component Pane inherits Rectangle {
     callback row-clicked(index: int, ctrl: bool, shift: bool);
     callback row-activated(index: int);
     callback open-row-in-tab(index: int);
+    callback context-target-count(index: int, revision: int) -> int;
     callback context-command(revision: int, name: string);
     callback context-custom-action(revision: int, id: string);
     callback row-context(index: int);

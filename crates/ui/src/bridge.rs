@@ -120,7 +120,7 @@ pub enum Update {
     /// Loaded thumbnails ready to be shown.
     ThumbnailsReady {
         pane: usize,
-        items: Vec<(String, PathBuf)>,
+        items: Vec<(usize, crate::thumbnails::ThumbnailPixels)>,
     },
     /// Display full quick-preview modal.
     Preview {
@@ -230,7 +230,7 @@ pub fn apply(ui: &AppWindow, u: Update) {
             ui.set_right_rows_revision(0);
         }
         Update::Rows { pane, revision, rows } => {
-            let file_rows: Vec<FileRow> = rows.iter().map(to_file_row).collect();
+            let file_rows: Vec<FileRow> = rows.into_iter().map(to_file_row).collect();
             with_vec_model(&files_model(ui, pane), |m| m.set_vec(file_rows));
             if pane == 0 {
                 ui.set_left_rows_revision(revision);
@@ -239,25 +239,18 @@ pub fn apply(ui: &AppWindow, u: Update) {
             }
         }
         Update::AppendRows { pane, rows } => {
-            let file_rows: Vec<FileRow> = rows.iter().map(to_file_row).collect();
+            let file_rows: Vec<FileRow> = rows.into_iter().map(to_file_row).collect();
             with_vec_model(&files_model(ui, pane), |m| m.extend(file_rows));
         }
         Update::ThumbnailsReady { pane, items } => {
             let mut any = false;
             with_vec_model(&files_model(ui, pane), |m| {
-                for (name, path) in items {
-                    if let Ok(img) = slint::Image::load_from_path(&path) {
-                        for i in 0..m.row_count() {
-                            if let Some(mut r) = m.row_data(i)
-                                && r.name.as_str() == name
-                            {
-                                r.thumbnail = img;
-                                r.has_thumbnail = true;
-                                m.set_row_data(i, r);
-                                any = true;
-                                break;
-                            }
-                        }
+                for (index, pixels) in items {
+                    if let Some(mut row) = m.row_data(index) {
+                        row.thumbnail = slint::Image::from_rgba8(pixels);
+                        row.has_thumbnail = true;
+                        m.set_row_data(index, row);
+                        any = true;
                     }
                 }
             });
